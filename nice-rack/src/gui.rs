@@ -1000,8 +1000,16 @@ impl RackUi {
     }
 }
 impl Process for RackUi {
+    fn render_when_occluded(&self) -> bool {
+        false
+    }
     fn native_about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.windows.service(event_loop, &mut self.runtime);
+        self.windows.capture(&mut self.runtime);
+        self.runtime.tick();
+        if self.runtime.closing && self.runtime.stopped() {
+            event_loop.exit();
+        }
     }
     fn native_window_event(
         &mut self,
@@ -1009,7 +1017,15 @@ impl Process for RackUi {
         id: winit::window::WindowId,
         event: &winit::event::WindowEvent,
     ) -> bool {
-        self.windows.event(id, event, &mut self.runtime)
+        if self.windows.event(id, event, &mut self.runtime) {
+            return true;
+        }
+        if matches!(event, winit::event::WindowEvent::CloseRequested) {
+            // Shutdown must also complete while hidden, without a draw frame.
+            self.runtime.close();
+            return true;
+        }
+        false
     }
 
     fn file_hovered(&mut self, path: Option<PathBuf>) {
@@ -1028,8 +1044,6 @@ impl Process for RackUi {
     }
     fn process(&mut self, ctx: &mut Context, dt: f32) {
         self.windows.probe_shell(ctx.window());
-        self.windows.capture(&mut self.runtime);
-        self.runtime.tick();
         // Every wire the rack carries gets its meter here, before anything is
         // drawn, so a clip shows up on a stub nobody has ever clicked. A wire
         // whose card came out of the settings file is born at the trim the rack

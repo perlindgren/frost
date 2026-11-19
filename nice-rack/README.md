@@ -208,3 +208,8 @@ gate has run them on both runners since pull request 31.
 
 The UI embeds frost's Fira Code and the same Fluent settings font as nice-tuner.
 Distributable packaging must include their existing license notices.
+
+When the main rack window is occluded or minimized, its UI stops drawing.
+Audio continues independently, and the event loop services plugin callbacks,
+recovery and shutdown on a 20 ms maintenance wake. Restoring the window resumes
+rendering. This is an opt-in Frost policy; games keep their existing behavior.

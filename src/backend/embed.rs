@@ -17,9 +17,9 @@
 //! whose thread this is. Nothing here blocks on the display: every
 //! configure presents as soon as a frame is rendered. And nothing here
 //! panics at a bad frame: a surface that will not configure, or will not
-//! hand over a texture, skips the frame and says so through
-//! [`Embedded::surface_lost`], because a failed call inside someone else's
-//! process is not frost's to end.
+//! hand over a texture, skips the frame. [`Embedded::surface_lost`] asks for
+//! replacement only after actual surface loss, not temporary occlusion or a
+//! timeout. A failed call inside someone else's process is not frost's to end.
 //!
 //! ```
 //! # fn example(
@@ -301,12 +301,10 @@ impl<P: Process> Embedded<P> {
             .attach_surface(surface, surface_format, self.physical, self.scale_factor);
     }
 
-    /// Whether the surface stopped handing over frames: the current frame
-    /// returned without drawing, and the host should build a new surface
-    /// and [`Self::replace_surface`] it. This is how wgpu tells a plugin
-    /// that its drawable layer moved (a window dragged to another Retina
-    /// screen, a macOS Space transition) without ever dropping an error
-    /// on the host's thread.
+    /// Whether acquisition reported a lost native surface that the host should
+    /// recreate and pass to [`Self::replace_surface`]. Occlusion and timeouts
+    /// merely skip a frame and return false; outdated configurations are repaired
+    /// in place. A hidden panel must not rebuild its pipelines on every tick.
     pub fn surface_lost(&self) -> bool {
         self.frost.surface_lost()
     }
