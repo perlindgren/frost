@@ -24,8 +24,7 @@ pub struct Config {
     pub real_driver: Option<String>,
     pub hw_in: u32,
     pub hw_out: u32,
-    /// Frames per hardware callback; 0 leaves the choice to the driver's
-    /// `preferred`.
+    /// Frames per hardware callback; 0 lets the first host to start decide.
     ///
     /// This is the one knob that decides whether the whole bus makes its
     /// deadlines, because the hardware's block is the bus's clock: every
@@ -36,9 +35,14 @@ pub struct Config {
     /// boundaries will answer it in 2 ms gaps — a sixth of them measured
     /// here, see `master::CLOCK_FLOOR`, where the same driver at 128
     /// frames misses 4 callbacks in 751 instead.
-    /// `HwBlock` says how much room the clock gets, and it is set in the
-    /// registry rather than in a host's UI so the A/B never depends on
-    /// somebody clicking through a preferences dialog.
+    ///
+    /// Left at 0, the size comes from the host that has the deadline: the
+    /// first client to start names a block in its own `createBuffers`, and
+    /// the hardware is clocked at that, fitted upward into the driver's own
+    /// set of sizes. `HwBlock` outranks it for the cases where that trade is
+    /// the wrong one — and it is set in the registry rather than in a host's
+    /// UI so the A/B never depends on somebody clicking through a preferences
+    /// dialog.
     pub hw_block: u32,
 }
 
@@ -125,10 +129,10 @@ pub fn register(
     Ok(())
 }
 
-/// Point the bus's clock at a specific hardware block size; 0 restores
-/// the driver's own preference. Separate from [`register`] because it is
-/// a knob an operator turns while the device is installed, not part of
-/// installing it — and because it lives in the registry, changing it
+/// Point the bus's clock at a specific hardware block size; 0 hands the
+/// choice back to the first host to start. Separate from [`register`]
+/// because it is a knob an operator turns while the device is installed, not
+/// part of installing it — and because it lives in the registry, changing it
 /// needs no host restarted through its preferences.
 pub fn set_hw_block(frames: u32) -> std::io::Result<()> {
     RegKey::create(Hive::CurrentUser, CONFIG_KEY)?.set_dword("HwBlock", frames.min(4096))

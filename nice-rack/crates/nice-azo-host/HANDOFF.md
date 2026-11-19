@@ -16,13 +16,13 @@ looked byte-order related was correct.
 
 | check | result |
 |---|---|
-| `cargo test -p nice-azo-host` | 9/9, debug **and** `--release` (the probes and the DLL under test are release builds — see "Real-time"); 4 of the 9 are the sample-shape conversions of bug 7 |
+| `cargo test --release -p nice-azo-host` | 11/11 (probes and the DLL under test are release builds — see "Real-time"); 4 of the 11 are the sample-shape conversions of bug 7, 2 are `fit_size` (see "The clock, and who names its size") |
 | `cargo test -p nice-common` | all pass |
 | `cargo test -p nice-rack` | 33 pass / 5 ignored (unchanged; copy card intact) |
 | `cargo clippy -p nice-azo-host` | zero warnings, zero errors |
 | `niceroute-probe loopback 3` | **PASS** — 1124/1125 and 1125/1125 callbacks in 3 s (= full 48 000/128 cadence), B hears A's 440 Hz at RMS 0.1767 (theory 0.1768), peak 0.2500, crosstalk 0.0, and **A's own inputs measure exact 0.0** (nobody hears themselves — see bug 4) |
 | `niceroute-probe cocreate` | **PASS** — full host path: `CoCreateInstance(CLSID)` resolves via the registry, loads the DLL, answers 8 in / 8 out at 48 kHz |
-| `niceroute-probe solo 3` | **PASS** — one instance, real Komplete hosted; latest run `solo 8 --tone 440` = 3001/3002 callbacks in 8 s, driver note "hosting 'Komplete Audio ASIO Driver' at 48000 Hz, block 128" (128, not the driver's preferred 64 — see "The clock, and why it has a floor") |
+| `niceroute-probe solo 3` | **PASS** — one instance, real Komplete hosted; latest run `solo 8 --tone 440` = 3001/3002 callbacks in 8 s, driver note "hosting 'Komplete Audio ASIO Driver' at 48000 Hz, block 128" — that run predates the follow-the-host rule below, when the floor was what spoke; re-run it after the next install and expect the size the probe asked for ("The clock, and who names its size") |
 | `verify-hwout.ps1 6 440` | **PASS** — `master: hw-out peak 0.250000 over 256 callbacks at block 128`, repeated across the run: the mix demonstrably lands in the real driver's output buffers, muted so nothing was heard. Baseline with the bug-6 read restored (`out_g = self.g`) logs `0.000000` and **FAIL**s — the FAIL→PASS pair for the leg loopback cannot hear |
 | `Engine::witness` on that same run | clean: `0 repeated blocks, 0 dropped, 0 stalls` in every two-second window (the two counters that used to cry wolf are described in "Real-time") |
 | `nice-rack.exe --audio-probe 5 0` | silent regression green: 3751/3751 live blocks, copy card copying, 0 overloads |
@@ -264,28 +264,59 @@ the direction that teaches the wrong lesson:
 A clean window reads `0 repeated blocks, 0 dropped, 0 stalls`, which is
 what every window of the runs below does.
 
-## The clock, and why it has a floor
+## The clock, and who gets to pick its size
 
 The hardware's block size is the bus's clock, and every client is paced by
 it whatever its own host asked for — a client's block and the hardware's
 quantum are independent, because the publish gate is `f0 + block >
 committed` rather than "in step with the DAC". So REAPER at 512 and a host
-at 64 both ride a 128-frame DAC clock, and "it works better with a larger
+at 64 both ride the same DAC clock, and "it works better with a larger
 blocksize" is a statement about the *hardware* block, not the one in a
-host's preferences dialog.
+host's preferences dialog. A client whose block is smaller than the clock
+simply gets several `bufferSwitch`es per hardware tick: native rate, coarser
+spacing.
 
-Three knobs, in order of permanence: `HwBlock` (DWORD,
-`HKCU\Software\NiceRackAsio`; 0 = the driver's own preferred), the
-`NICEASIO_HW_BLOCK` environment variable, which outranks the registry
-because a sandboxed probe cannot write HKCU at all, and
-`niceroute-probe hwblock [FRAMES]` to read and write the registry value.
-All of them are clamped into the driver's advertised range and into
-`MIN_BLOCK..=MAX_BLOCK`.
+The size itself comes from, in order of authority:
 
-`CLOCK_FLOOR = 128` applies **only** when the driver picked the size; an
-explicit `HwBlock` is honoured exactly, because the floor is a default, not
-a veto. The measurements behind it, on this machine, tone muted at the
-driver door (`solo --tone 440`, no host but the probe):
+1. **`HwBlock`** (DWORD, `HKCU\Software\NiceRackAsio`), or
+   `NICEASIO_HW_BLOCK`, which outranks the registry because a sandboxed probe
+   cannot write HKCU at all; `niceroute-probe hwblock [FRAMES]` reads and
+   writes it. Honoured exactly.
+2. **The first host to start.** A seat goes active only from
+   `Instance::start`, and the block published beside it is the one that host
+   passed to our own `createBuffers` — so waiting for a seat is waiting for
+   the settings page on the other side of the boundary, and the number the
+   user chose in NiceRack's Output device row is now the number the DAC runs
+   at. It wins over the driver's preference because the host is the one with
+   deadlines to keep: holding the clock at twice the period a DAW told its
+   plugins to finish inside adds latency and moves the driver's jitter onto
+   every seat, and buys nobody extra time.
+3. **`CLOCK_FLOOR = 128`**, which only speaks when nobody started — the case
+   where the only opinion left is the driver's own `preferred`.
+
+Whatever speaks, its number is fitted *upward* into the driver's advertised
+set (`fit_size`: clamp to `min..max`, then next multiple of a linear step or
+next power of two, because a host asked for this much and less is not an
+answer). One size is refused outright: one outside the rings' own
+`MIN_BLOCK..=MAX_BLOCK`. `createBuffers` is the only call in the ASIO vtable
+that names a size — there is no `setBufferSize` in `azo-sys-0.4.1/src/lib.rs`
+— so a refusal is retried once at the driver's own floored preference, and if
+even that is refused the device goes virtual-only and puts the refusal in the
+note and the log.
+
+The consequence worth knowing: **the hardware is no longer opened into
+buffering at `ASIOInit`.** `open_hardware` initializes the driver and reads
+its channels, formats and range, then the master waits (5 ms polls, up to 30
+s, cancellable by teardown) for a host to start, and only then creates
+buffers and calls `start`. `header.quantum` reads `0` until then, on purpose:
+a placeholder that looks like an answer is the one thing a diagnostic header
+must not be. Nobody playing means the converters are untouched — which is
+most of what the "a copy card that also grabs the converters" item below was
+asking for, and why a second output no longer lands on the DAC the instant a
+host opens the device.
+
+The measurements behind the floor, on this machine, tone muted at the driver
+door (`solo --tone 440`, no host but the probe):
 
 | hw quantum | period | late callbacks | worst gap | work max | dropped/stalls/repeated |
 |---|---|---|---|---|---|
@@ -298,11 +329,12 @@ driver wakes on 1 ms USB frames and 1.33 ms does not divide them, so a
 sixth of its callbacks came up to 2.08 ms apart and the two halves of the
 DMA ring were the *entire* margin. At 128 and above the same jitter is
 simply smaller than the period, and the late count drops by an order of
-magnitude. One and a third milliseconds of extra latency for that, in a
-metric that had no margin in it, is the trade this device exists to make:
-nobody is holding a microphone to a speaker through this path. When the
-floor lifts a driver's preference the log says so — `master: driver prefers
-64 frames, clocking at 128; HwBlock overrides`.
+magnitude. So the floor is insurance for the case with no deadline attached;
+a host that asked for 64 gets 64 and gives up jitter tolerance, not safety —
+nothing in those rows is a dropped frame, and nobody is holding a microphone
+to a speaker through this path. The log says which voice spoke:
+`master: clocking the hardware at 64 frames (seat 0 asked for 64, this driver
+takes 64)`.
 
 ## The trace log
 
@@ -533,6 +565,11 @@ being bad for a reason that has nothing to do with the code.
   first tenant and the interface ends up with two ASIO instances. Either
   give a non-first instance a reason to refuse the hardware, or accept it
   and say why. It is a design decision, not a bug found in the field.
+  *Partly answered since:* the hardware is now buffered and started only
+  after a host actually starts (`Instance::start` → the seat's published
+  block → `HwOpen::arm`), so an opened-but-idle copy card leaves the
+  converters alone. Two tenants *playing at once* still both hold the
+  interface, which is the half that needs the decision.
 * Register the **release** path instead of overwriting
   `target\debug\niceroute.dll`, so installing the fast device no longer
   depends on the trap two paragraphs above.

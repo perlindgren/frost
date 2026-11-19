@@ -25,11 +25,11 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use azo::driver::{Driver as AzDriver, SafeHandle};
-use azo::dto::{ChannelCounts, ChannelId};
+use azo::dto::{BufferSize, ChannelCounts, ChannelId, Granularity};
 use azo::sys::{self, Callbacks, Time};
 
 use crate::bus::{Dir, SharedBus};
-use crate::proto::{self, MAX_BLOCK, SLOT_ACTIVE, VIRT_CH, VIRT_FIRST, align_up};
+use crate::proto::{self, MAX_BLOCK, MIN_BLOCK, SLOT_ACTIVE, VIRT_CH, VIRT_FIRST, align_up};
 use crate::register::{self, Config};
 use crate::win;
 
@@ -106,8 +106,16 @@ enum HwFmt {
 /// Both supported shapes are four bytes a frame.
 const HW_SAMPLE_BYTES: usize = 4;
 
-/// The smallest block the bus will let the hardware clock it at, when the
-/// driver picked the size itself.
+/// The block the hardware clocks itself at when nobody has asked for one.
+///
+/// Three things can name the size, in this order: an explicit `HwBlock`
+/// (or `NICEASIO_HW_BLOCK`), which is honoured exactly and speaks for a
+/// human who measured something; the block the first host to start asked
+/// its own `createBuffers` for, which is the size that host has deadlines
+/// against and is fitted into the driver's own set of sizes by [`fit_size`];
+/// and this constant, which only speaks when neither of them has — which in
+/// practice means the driver was opened by something that inquired but never
+/// played.
 ///
 /// This is a measured floor, not a guess. On the machine this was built
 /// on, with a tone muted at the driver door so measuring stayed silent, the
@@ -127,11 +135,12 @@ const HW_SAMPLE_BYTES: usize = 4;
 /// the load. The ring held everywhere — 0 dropped, 0 stalls — but at 64 it
 /// held on a schedule the driver was missing a sixth of the time.
 ///
-/// 1.33 ms of extra latency buys a thirty-fold drop in a metric that had
-/// no margin in it, which is the trade this device exists to make: nobody
-/// is holding a microphone to a speaker through this path. An explicit
-/// `HwBlock` is honoured exactly and ignores this floor; the floor only
-/// speaks for the size the driver chose.
+/// So a host that chose 64 is given 64, and what it gives up is jitter
+/// tolerance rather than safety: nothing in these rows is a dropped frame,
+/// and the copy is not a monitoring path anyone is holding a microphone
+/// through. The floor is for the case where this module would otherwise be
+/// picking a size on a driver's behalf with no deadline in sight, and 1.33
+/// ms of latency is cheap insurance there.
 const CLOCK_FLOOR: i32 = 128;
 
 impl HwFmt {
@@ -438,10 +447,15 @@ fn master_thread(
         config.real_driver.as_deref().unwrap_or("(none)")
     ));
     let mut message = String::new();
-    let mut hw: Option<Hw> = None;
+    let mut open: Option<HwOpen> = None;
     if let Some(name) = config.real_driver.as_deref() {
-        match open_hardware(name, &config, &mut message) {
-            Ok(opened) => hw = Some(opened),
+        match open_hardware(name, &config) {
+            Ok(opened) => {
+                message = format!(
+                    "NiceRack ASIO: hosting '{name}'; its block waits for the first host to start"
+                );
+                open = Some(opened);
+            }
             Err(e) => {
                 crate::trace::log(&format!("master: '{name}' unavailable: {e}"));
                 message = format!("NiceRack ASIO: '{name}' unavailable ({e}); virtual-only")
@@ -449,17 +463,21 @@ fn master_thread(
         }
     }
 
-    let (rate, hw_in, hw_out, quantum) = match &hw {
-        Some(Hw { handle, block, .. }) => {
+    let (rate, hw_in, hw_out) = match &open {
+        Some(HwOpen {
+            handle,
+            in_n,
+            out_n,
+            ..
+        }) => {
             let counts = handle
                 .channel_counts()
                 .unwrap_or(ChannelCounts { in_: 0, out: 0 });
             let rate = handle.get_sample_rate().unwrap_or(48000.0);
             (
                 rate as u32,
-                (counts.in_.max(0) as usize).min(config.hw_in as usize),
-                (counts.out.max(0) as usize).min(config.hw_out as usize),
-                *block,
+                (counts.in_.max(0) as usize).min(*in_n),
+                (counts.out.max(0) as usize).min(*out_n),
             )
         }
         None => {
@@ -470,10 +488,9 @@ fn master_thread(
             } else {
                 48000
             };
-            (rate, 0, 0, proto::DEFAULT_QUANTUM)
+            (rate, 0, 0)
         }
     };
-    let quantum = quantum.clamp(1, MAX_BLOCK);
 
     {
         use Ordering::Relaxed;
@@ -481,13 +498,106 @@ fn master_thread(
         h.rate_hz.store(rate, Relaxed);
         h.hw_in.store(hw_in as u32, Relaxed);
         h.hw_out.store(hw_out as u32, Relaxed);
-        h.quantum.store(quantum as u32, Relaxed);
+        // Zero, not the eventual size: a client reading this before the
+        // first host starts is reading it before there is a clock, and a
+        // placeholder that looks like an answer is the one thing a
+        // diagnostic header must not be.
+        h.quantum.store(0, Relaxed);
         h.master_pid.store(win::pid(), Relaxed);
         h.epoch.fetch_add(1, Relaxed);
     }
-    crate::trace::log(&format!(
-        "master: bus is {rate} Hz, hw {hw_in}+{hw_out}, quantum {quantum}"
-    ));
+    crate::trace::log(&format!("master: bus is {rate} Hz, hw {hw_in}+{hw_out}"));
+
+    // `init` blocks on this decision, so it goes out before anything that
+    // can wait. What it cannot carry is the block: the size question is
+    // answered a few lines below, once a host has named one, and holding a
+    // host's `ASIOInit` open for that is how a device that opens fine
+    // becomes a device whose preferences dialog hangs.
+    if !message.is_empty() {
+        crate::trace::log(&format!("master: note: {message}"));
+    }
+    let _ = tx.send(Decision {
+        message: message.clone(),
+    });
+
+    // The block, and the buffers that come with it. `createBuffers` is the
+    // only call in the ASIO vtable that names a size — there is no
+    // `setBufferSize` to ask afterwards (`azo-sys-0.4.1/src/lib.rs:26-48`)
+    // — so the size is chosen here, at the first moment anybody has asked
+    // for one, and not at the open above, which `init` needs answered.
+    let quantum;
+    let mut hw: Option<Hw> = None;
+    if let Some(open) = open.take() {
+        let (frames, why) = choose_block(&open, &bus, &config, &stop);
+        if stop.load(Ordering::Relaxed) {
+            // The host that opened us walked away while we were asking.
+            // Never start a driver nobody is listening to, and never hold
+            // a teardown for the length of a wait.
+            crate::trace::log("master: stopped before the hardware was armed");
+            drop(open); // SafeHandle dies here, on its apartment thread
+            return;
+        }
+        crate::trace::log(&format!(
+            "master: clocking the hardware at {frames} frames ({why})"
+        ));
+        // One retry, at the size the driver itself asked for. A host that
+        // named something this particular driver will not take is a
+        // settings mismatch, and sound is worth more than the argument; if
+        // even the driver's own preference is refused, the loop below ends
+        // virtual-only and says so.
+        let fallback = open.fit(open.size.preferred.max(CLOCK_FLOOR)) as usize;
+        let mut candidates = vec![frames];
+        if fallback != frames {
+            candidates.push(fallback);
+        }
+        // The handle lives in `hold` until an `arm` keeps it, because a
+        // driver that refuses the size is still a driver that has to be
+        // released on the thread its apartment belongs to.
+        let mut hold = Some(open);
+        let mut armed: Option<Hw> = None;
+        let mut refusal = String::new();
+        for size in candidates {
+            let Some(o) = hold.take() else { break };
+            match o.arm(size) {
+                Ok(h) => {
+                    armed = Some(h);
+                    break;
+                }
+                Err(r) => {
+                    crate::trace::log(&format!("master: {size} frames refused: {}", r.why));
+                    refusal = format!("{size} frames: {}", r.why);
+                    hold = Some(r.open);
+                }
+            }
+        }
+        drop(hold);
+        match armed {
+            Some(h) => {
+                // The note names the size the driver actually took, which
+                // after a retry is not necessarily the one that was asked
+                // for.
+                quantum = h.block;
+                let armed_at = h.block;
+                hw = Some(h);
+                if let Some(name) = config.real_driver.as_deref() {
+                    message =
+                        format!("NiceRack ASIO: hosting '{name}' at {rate} Hz, block {armed_at}");
+                }
+            }
+            None => {
+                message =
+                    format!("NiceRack ASIO: hardware buffers refused ({refusal}); virtual-only");
+                quantum = proto::DEFAULT_QUANTUM;
+            }
+        }
+    } else {
+        quantum = proto::DEFAULT_QUANTUM;
+    }
+    let quantum = quantum.clamp(1, MAX_BLOCK);
+    bus.header()
+        .quantum
+        .store(quantum as u32, Ordering::Relaxed);
+    crate::trace::log(&format!("master: bus quantum {quantum}"));
 
     // The real driver starts with its `hw` detached from the engine: a
     // driver that primes inside `start` finds a no-op tick and zeroed
@@ -573,10 +683,17 @@ fn master_thread(
     if !started_hw {
         crate::trace::log("master: no hardware clock; running the virtual clock");
     }
+    // The note a host reads back out of `getErrorMessage`. The decision
+    // `init` waited for went out above, before any of this was known, so
+    // what this thread chose lands here instead — a few seconds after the
+    // init side wrote the placeholder it was handed. That ordering is the
+    // price of not holding a host's `ASIOInit` open while a driver waits
+    // for a host of its own, and the worst it costs is a note that reads
+    // "waits for the first host" on a stream that has since started.
     if !message.is_empty() {
         crate::trace::log(&format!("master: note: {message}"));
+        *note.lock().unwrap() = message;
     }
-    let _ = tx.send(Decision { message });
 
     if started_hw {
         // The hardware is the clock; park until the role ends.
@@ -637,13 +754,231 @@ fn master_thread(
     }
     // `engine` — and with it the SafeHandle, on its own apartment
     // thread — drops here.
-    let _ = note;
 }
 
-/// Resolve a display name to a CLSID (both registry hives), instantiate
-/// and initialize it, and negotiate buffers — all on the master thread,
-/// so the driver keeps the COM apartment it was born in.
-fn open_hardware(name: &str, config: &Config, note: &mut String) -> Result<Hw, String> {
+/// What the real driver has answered before a single buffer exists: its
+/// channels, its rate, and the shape of every channel's samples.
+///
+/// This is the part of an open that cannot wait, because `ASIOInit` needs
+/// it: a host reads the channel list out of the bus header the moment it
+/// opens the device, long before it asks anybody for buffers. The size is
+/// deliberately *not* here. `createBuffers` is the only call in the ASIO
+/// vtable that names one, so `arm` is where the question gets answered,
+/// and by then there is usually a host that has named the size it wants.
+struct HwOpen {
+    handle: SafeHandle,
+    /// The channel list `createBuffers` will be handed: inputs first, then
+    /// outputs, in bus order.
+    ids: Vec<ChannelId>,
+    size: BufferSize,
+    in_n: usize,
+    out_n: usize,
+    in_fmt: Vec<HwFmt>,
+    out_fmt: Vec<HwFmt>,
+}
+
+/// Fit a wanted size into what a driver will take, rounding *up*: a driver
+/// whose granularity is a step gets the next multiple of it, one that
+/// answers powers of two gets the next power of two, and a want below the
+/// driver's own minimum is a want it has already refused. Up rather than to
+/// the nearest because a host asked for this much, and less is not an answer
+/// to that.
+///
+/// Only the driver's own range is applied here. The bus has a range of its
+/// own — [`MIN_BLOCK`] to [`MAX_BLOCK`], because that is the size of the
+/// rings the frames are indexed through — and a driver whose floor is above
+/// it is a driver [`HwOpen::arm`] refuses by name rather than one quietly
+/// clocked at a size it never agreed to. A driver that answers nonsense for
+/// all four numbers therefore comes out of here with nonsense in range,
+/// which is the honest place for it to stop.
+fn fit_size(size: &BufferSize, want: i32) -> i32 {
+    let min = size.min.max(1);
+    let max = size.max.max(min);
+    let want = want.clamp(min, max).max(1) as u32;
+    let fitted = match size.granularity {
+        Some(Granularity::Linear { step }) if step.get() > 1 => {
+            want.div_ceil(step.get() as u32) * step.get() as u32
+        }
+        // `Exponential`, and the drivers that answer `0` where the spec
+        // wants `-1`: the set they mean is `min * 2^n` either way.
+        _ => want.next_power_of_two(),
+    };
+    fitted.clamp(min as u32, max as u32) as i32
+}
+
+/// Why one `HwOpen::arm` failed, carrying the driver it could not clock.
+///
+/// Boxed at the `Result` because the open is the size of a driver's whole
+/// answer — two `Vec`s of formats, a channel list, four numbers — and an
+/// error that fits in a register is worth more than the twelve bytes this
+/// costs on a path that runs once per master startup.
+struct Refused {
+    open: HwOpen,
+    why: String,
+}
+
+impl HwOpen {
+    /// [`fit_size`] for this driver's own answer.
+    fn fit(&self, want: i32) -> i32 {
+        fit_size(&self.size, want)
+    }
+
+    /// Ask for buffers at `frames` and keep the handle.
+    ///
+    /// `Err` hands the whole open back rather than dropping it, because a
+    /// driver that refuses a size is still a driver that has to be released
+    /// on the thread its apartment belongs to.
+    ///
+    /// # Errors
+    /// A size this driver cannot take, a format this module does not know
+    /// how to read, or a `createBuffers` that answered with a short list.
+    fn arm(self, frames: usize) -> Result<Hw, Box<Refused>> {
+        // The bus indexes a driver's half-block with `MAX_BLOCK`-frame
+        // rings, so a driver whose own floor is above it cannot be clocked
+        // here at all — say that instead of copying the wrong number of
+        // frames per callback, which is the failure that sounds like
+        // stuttering and logs as nothing.
+        let refused = |open: Self, why: String| Box::new(Refused { open, why });
+        let frames = match frames {
+            f if !(MIN_BLOCK..=MAX_BLOCK).contains(&f) => {
+                return Err(refused(
+                    self,
+                    format!("{f} frames does not fit the bus ({MIN_BLOCK}..{MAX_BLOCK})"),
+                ));
+            }
+            f => f,
+        };
+        // The list is collected inside the block that borrows `self`, so the
+        // open is whole again by the time an error has to hand it back: the
+        // driver answers with an iterator `azo` builds from the borrow, and
+        // carrying that across the `return` would mean carrying the borrow.
+        let buffers = {
+            let ids = self.ids.clone();
+            // SAFETY: the callbacks are a static that outlives the handle,
+            // and the pointers the driver hands back are what `Hw` carries
+            // from here on — they are valid until `disposeBuffers`, which is
+            // the master thread's to call.
+            unsafe {
+                self.handle
+                    .create_buffers(ids, frames as i32, ptr::addr_of!(CALLBACKS))
+                    .map(|list| list.collect::<Vec<_>>())
+            }
+        };
+        let buffers = match buffers {
+            Ok(list) => list,
+            Err(e) => return Err(refused(self, format!("createBuffers: {e:?}"))),
+        };
+        if buffers.len() != self.ids.len() {
+            return Err(refused(self, "createBuffers returned a short list".into()));
+        }
+        let HwOpen {
+            handle,
+            in_n,
+            out_fmt,
+            in_fmt,
+            ..
+        } = self;
+        Ok(Hw {
+            handle,
+            block: frames,
+            in_bufs: buffers[..in_n].to_vec(),
+            out_bufs: buffers[in_n..].to_vec(),
+            in_fmt,
+            out_fmt,
+        })
+    }
+}
+
+/// How long to wait for a host to start before clocking the bus on the
+/// driver's own offer instead, and how often to look. Five milliseconds is
+/// imperceptible against a driver open and a buffer negotiation; six
+/// thousand looks is half a minute of a host sitting in a preferences
+/// dialog with the DAC untouched.
+const SEAT_WAIT_POLLS: usize = 6_000;
+const SEAT_POLL_MS: u32 = 5;
+
+/// The block to clock the real driver at, and the sentence saying why.
+///
+/// Three voices can speak, in this order of authority: an `HwBlock` in the
+/// registry, because a person wrote it for this device; the block the first
+/// host to start asked for, which is the size that host's own settings page
+/// settled on and the reason the DAC is being opened at all; and the
+/// driver's own preference, floored by [`CLOCK_FLOOR`], for a host that
+/// never arrives.
+///
+/// The host's number wins over the driver's preference because the host is
+/// the one with a deadline to keep: a DAW told every plugin in its project
+/// to finish inside the period it asked for, and holding the clock at twice
+/// that period does not give anything more time, it only adds latency and
+/// moves the driver's own jitter onto every seat in the process. Where the
+/// preference still matters is the case it was measured in — nobody has
+/// asked for anything, so the only opinion left is the driver's, and the
+/// floor keeps that one out of the trouble the measurement found.
+fn choose_block(
+    open: &HwOpen,
+    bus: &SharedBus,
+    config: &Config,
+    stop: &AtomicBool,
+) -> (usize, String) {
+    let asked = i32::try_from(config.hw_block).unwrap_or(0);
+    if asked > 0 {
+        return (open.fit(asked) as usize, "HwBlock".to_string());
+    }
+    if let Some((seat, frames)) = seat_request(bus, stop) {
+        let fitted = open.fit(frames);
+        return (
+            fitted as usize,
+            format!("seat {seat} asked for {frames}, this driver takes {fitted}"),
+        );
+    }
+    let floored = open.fit(open.size.preferred.max(CLOCK_FLOOR));
+    (
+        floored as usize,
+        format!("no host started; the driver's own {CLOCK_FLOOR}-frame floor"),
+    )
+}
+
+/// The first seat to go active, and the block it published.
+///
+/// A seat is only claimed from `Instance::start`, and the block written
+/// beside it is the one that host passed to our own `createBuffers`, so
+/// waiting for a seat is waiting for the settings page on the other side of
+/// the boundary: whoever configures the output device is the one that asks
+/// for its size. First come, because one DAC has one period and the host
+/// already running has committed its graph to the one it named; a second
+/// host that starts later gets its own block size delivered at that clock's
+/// rate, which is what the ring is for.
+///
+/// `None` means nobody started, or the wait was stopped short of that by a
+/// teardown — both end the same way, with the driver's own offer.
+fn seat_request(bus: &SharedBus, stop: &AtomicBool) -> Option<(usize, i32)> {
+    use Ordering::Acquire;
+    for _ in 0..SEAT_WAIT_POLLS {
+        for seat in 0..proto::SLOTS {
+            let slot = bus.slot(seat);
+            if slot.state.load(Acquire) != proto::SLOT_ACTIVE {
+                continue;
+            }
+            let frames = slot.block.load(Acquire);
+            if frames >= MIN_BLOCK as u32 {
+                return Some((seat, frames.min(i32::MAX as u32) as i32));
+            }
+        }
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        win::sleep_ms(SEAT_POLL_MS);
+    }
+    None
+}
+
+/// Resolve a display name to a CLSID (both registry hives), instantiate and
+/// initialize it, and read back what it is — channels, rate, the shape of
+/// every channel's samples. All on the master thread, so the driver keeps
+/// the COM apartment it was born in.
+///
+/// No buffers, and so no block size: see [`HwOpen`].
+fn open_hardware(name: &str, config: &Config) -> Result<HwOpen, String> {
     let clsid = register::clsid_for_name(name).ok_or("not registered")?;
     let guid: azo::windows_core::GUID = unsafe { std::mem::transmute_copy(&clsid) };
     debug_assert_eq!(
@@ -660,34 +995,10 @@ fn open_hardware(name: &str, config: &Config, note: &mut String) -> Result<Hw, S
     let size = handle
         .buffer_size()
         .map_err(|e| format!("getBufferSize: {e:?}"))?;
-    // The driver's preferred size is by definition inside its
-    // granularity set; `HwBlock` overrides the offer but is still clamped
-    // into the driver's own range, and everything is clamped against
-    // nonsense.
-    let asked = i32::try_from(config.hw_block).unwrap_or(0);
-    let block = if asked > 0 {
-        asked.clamp(size.min.max(1), size.max.max(size.min))
-    } else {
-        // A driver asking for 64 frames is talking about its own DMA
-        // ring, not about how late it is allowed to be. Measured here, a
-        // 1.33 ms clock on this USB device gets answered in 2.07 ms gaps
-        // a sixth of the time, because the callbacks land on 1 ms frames
-        // and 1.33 does not divide 2. Nothing dropped — the two halves of
-        // the ring were exactly the margin that saved it — but that was
-        // the entire margin, and the same shape at 128 frames and above
-        // costs 1 late callback in a hundred instead of one in six.
-        // So a preference is honoured upward, never downward, and
-        // `HwBlock` (or `NICEASIO_HW_BLOCK`) still says otherwise.
-        let preferred = size.preferred.max(size.min).min(size.max.max(size.min));
-        let floor = preferred.max(CLOCK_FLOOR);
-        if floor != preferred {
-            crate::trace::log(&format!(
-                "master: driver prefers {preferred} frames, clocking at {floor}; HwBlock overrides"
-            ));
-        }
-        floor
-    };
-    let block = block.clamp(32, MAX_BLOCK as i32) as usize;
+    // No block is chosen here. `createBuffers` is the call that names a
+    // size, there is no other, and the host that has one is not here yet:
+    // `init` wants the channels and the formats below the moment it asks,
+    // and the size question waits for `arm`.
     let in_n = (counts.in_.max(0) as usize).min(config.hw_in as usize);
     let out_n = (counts.out.max(0) as usize).min(config.hw_out as usize);
     let mut ids = Vec::new();
@@ -752,23 +1063,12 @@ fn open_hardware(name: &str, config: &Config, note: &mut String) -> Result<Hw, S
     }
     let in_fmt = fmts[..in_n].to_vec();
     let out_fmt = fmts[in_n..].to_vec();
-    let buffers: Vec<[*mut c_void; 2]> = unsafe {
-        handle.create_buffers(ids.iter().copied(), block as i32, ptr::addr_of!(CALLBACKS))
-    }
-    .map_err(|e| format!("createBuffers: {e:?}"))?
-    .collect();
-    if buffers.len() != ids.len() {
-        return Err("createBuffers returned a short list".into());
-    }
-    *note = format!(
-        "NiceRack ASIO: hosting '{name}' at {} Hz, block {block}",
-        handle.get_sample_rate().unwrap_or(0.0)
-    );
-    Ok(Hw {
+    Ok(HwOpen {
         handle,
-        block,
-        in_bufs: buffers[..in_n].to_vec(),
-        out_bufs: buffers[in_n..].to_vec(),
+        ids,
+        size,
+        in_n,
+        out_n,
         in_fmt,
         out_fmt,
     })
@@ -1216,7 +1516,11 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{HW_SAMPLE_BYTES, HwFmt, load_frames, silence_frames, store_frames};
+    use super::{
+        BufferSize, Granularity, HW_SAMPLE_BYTES, HwFmt, fit_size, load_frames, silence_frames,
+        store_frames,
+    };
+    use std::num::NonZeroI32;
 
     /// The shape of the bug this module had, written down as bytes.
     ///
@@ -1285,5 +1589,54 @@ mod tests {
             unsafe { load_frames(fmt, buf.as_ptr().cast(), &mut back) };
             assert!(back.iter().all(|&s| s == 0.0), "{fmt:?}");
         }
+    }
+
+    /// A driver's four numbers, the way `getBufferSize` hands them over.
+    fn sizes(min: i32, max: i32, preferred: i32, step: i32) -> BufferSize {
+        BufferSize {
+            min,
+            max,
+            preferred,
+            granularity: NonZeroI32::new(step).map(Granularity::from),
+        }
+    }
+
+    /// The size a host asked for is the size the hardware gets, subject
+    /// only to what the driver itself will take — which is the whole point
+    /// of asking. And it rounds *up* when the driver's set skips over it,
+    /// because a host asked for this much, not for the nearest neighbour.
+    #[test]
+    fn a_hosts_request_survives_the_drivers_own_set() {
+        // The Komplete Audio 6 shape: powers of two, 64..1024, 128 preferred.
+        let asio = sizes(64, 1024, 128, -1);
+        assert_eq!(fit_size(&asio, 64), 64, "the setting page's 64 stays 64");
+        assert_eq!(fit_size(&asio, 512), 512);
+        assert_eq!(fit_size(&asio, 96), 128, "up, never to the nearest");
+        assert_eq!(fit_size(&asio, 8), 64, "below its floor is its floor");
+        assert_eq!(
+            fit_size(&asio, 4096),
+            1024,
+            "above its ceiling is its ceiling"
+        );
+
+        // A driver whose sizes step linearly: 32 + n*32.
+        let stepped = sizes(32, 512, 128, 32);
+        assert_eq!(fit_size(&stepped, 100), 128);
+        assert_eq!(fit_size(&stepped, 33), 64);
+        assert_eq!(fit_size(&stepped, 500), 512);
+    }
+
+    /// A driver that answers zero for everything is not a driver this bus
+    /// can clock. `fit_size` deliberately does not paper over that with a
+    /// plausible number: what it hands out is in range for *that* answer,
+    /// and `HwOpen::arm` is the one that refuses it, by name, in the log.
+    #[test]
+    fn nonsense_stops_at_the_bus_instead_of_becoming_a_guess() {
+        let junk = sizes(0, 0, 0, 0);
+        let fitted = fit_size(&junk, 64);
+        assert!(
+            !(crate::proto::MIN_BLOCK..=crate::proto::MAX_BLOCK).contains(&(fitted as usize)),
+            "{fitted} would have to be refused by `arm`, not quietly accepted"
+        );
     }
 }

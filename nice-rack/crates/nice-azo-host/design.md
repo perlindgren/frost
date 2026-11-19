@@ -179,30 +179,45 @@ saturation of a cast; and the conversion belongs to the hardware channel,
 never to the bus, because what *our* hosts are handed is still
 `PCM_F32_LSB` (`abi.rs`) — the bus is float.
 
-### The clock, and its floor
+### The clock, and who names its size
 
 The hardware's block is the bus's clock, and it is independent of any
 client's: the publish gate is `f0 + block > committed`, not lockstep with
-the DAC, so a host at 512 and a host at 64 ride the same quantum. Three
-knobs, in order of permanence: `HwBlock` (DWORD under the same key, 0 = the
-driver's preferred), `NICEASIO_HW_BLOCK` for one run — it outranks the
-registry because a sandboxed probe cannot write HKCU, and an A/B of two
-clock sizes should be two command lines — and `niceroute-probe hwblock
-[FRAMES]` to read and write the registry value. All of them are clamped
-into the driver's advertised range and into `MIN_BLOCK..=MAX_BLOCK`.
+the DAC, so a host at 512 and a host at 64 ride the same quantum — the
+smaller one simply gets several `bufferSwitch`es per hardware tick. What
+names the clock, in order of authority: `HwBlock` (DWORD under the same key)
+or `NICEASIO_HW_BLOCK` for one run — it outranks the registry because a
+sandboxed probe cannot write HKCU, and an A/B of two clock sizes should be
+two command lines — then the block the **first host to start** published in
+its own `createBuffers`, and only if nobody ever starts, the driver's
+`preferred` floored at `CLOCK_FLOOR = 128`. `niceroute-probe hwblock
+[FRAMES]` reads and writes the registry value.
 
-When the driver picks, `CLOCK_FLOOR = 128` applies (an explicit `HwBlock`
-is honoured exactly — a default is not a veto, and the log says
-`master: driver prefers 64 frames, clocking at 128; HwBlock overrides`).
+The host's number beats the driver's preference because the host holds the
+deadlines: doubling the period a DAW told its graph to finish inside buys no
+extra time, adds latency, and moves the driver's own jitter onto every seat.
+`CLOCK_FLOOR` is insurance for the one case with no deadline attached.
+
+`createBuffers` is the only call in the vtable that names a size, so the
+question is answered at the first moment anybody has asked: the driver is
+initialized and read at election time, but its buffers are created and
+`start` called only after a seat goes active, up to 30 s later (5 ms polls,
+cancellable — `ASIOInit` never blocks on the wait, and nobody playing leaves
+the converters alone). A wanted size is fitted *upward* into the driver's
+own set (`fit_size`: clamp to `min..max`, then the next multiple of a linear
+step, else the next power of two), and a size outside `MIN_BLOCK..=MAX_BLOCK`
+— the rings' own span — is refused by name rather than accepted quietly. One
+retry at the driver's floored preference, then virtual-only with the refusal
+in the note. `header.quantum` is `0` until a clock exists.
+
 Measured here, on a driver whose preference is 64: at 64 (1.33 ms) 255 of
 1501 callbacks landed more than 1.5 periods apart, worst 2.08 ms, work max
 54 us; at 128 (2.67 ms), 4 of 751, worst 4.03 ms, work max 91 us; at 256
 (5.33 ms), 6 of 376, worst 8.05 ms, work max 59 us — nothing dropped,
 stalled or repeated at any size. The driver wakes on 1 ms USB frames and
 1.33 ms does not divide them, so at 64 the two halves of the DMA ring were
-the entire margin, and one and a third milliseconds of extra latency trades
-for an order of magnitude fewer late callbacks in a metric that had no
-margin to begin with.
+the entire margin; what following a host's 64 gives up is that margin, not a
+frame.
 
 The MMCSS claim is made by the thread that actually answers the callback —
 the real driver's own, which registers lazily on its first call, because
