@@ -160,6 +160,7 @@ pub(crate) struct Frost<P: Process> {
     /// The winit window (shared), kept so we can call `request_redraw` for
     /// continuous per-frame rendering.
     window: Option<Arc<Window>>,
+    window_occluded: bool,
     logical_size: (u32, u32),
     /// A corrected shape the aspect lock asked for, carried from
     /// the resize event to the frame loop: winit treats a request
@@ -185,6 +186,9 @@ pub(crate) struct Frost<P: Process> {
     /// 9,420 identical lines, which is an hour of log in an afternoon and
     /// buries the handful of lines that actually explain the pause.
     surface_gone: Option<(&'static str, u32)>,
+    /// Only an actual Lost result asks an embedded host to replace the surface.
+    /// Occlusion and timeouts must retain the surface and its pipelines.
+    surface_needs_recreation: bool,
     /// The swap-chain format a host chose when it built its surface, or
     /// `None` for frost's own window, where the engine picks.
     ///
@@ -850,12 +854,14 @@ impl<P: Process> Frost<P> {
             #[cfg(target_os = "linux")]
             wayland_drop: None,
             window: None,
+            window_occluded: false,
             logical_size: (0, 0),
             aspect_pending: None,
             last_resized_px: (0, 0),
             scale: 1.0,
             surface: None,
             surface_gone: None,
+            surface_needs_recreation: false,
             surface_format: None,
             // No surface exists yet, and nothing may ask one for a texture
             // until a configure says a swap chain is there.
@@ -977,6 +983,7 @@ impl<P: Process> Frost<P> {
         self.surface_unconfigured = true;
         // A fresh chain is a fresh chance; the gone spell, if any, ends.
         self.surface_gone = None;
+        self.surface_needs_recreation = false;
         log::info!(
             "host surface attached ({}x{} @ {:.2}x)",
             self.logical_size.0,
@@ -1038,11 +1045,10 @@ impl<P: Process> Frost<P> {
         self.resize();
     }
 
-    /// Whether the surface has stopped handing over frames — the spell
-    /// [`Self::acquire_frame`] counts. A host reads this to know a fresh
-    /// surface is wanted; [`Self::attach_surface`] ends the spell.
+    /// Whether acquisition reported an actual lost native surface. Temporary
+    /// occlusion/timeouts skip frames without asking the host to replace it.
     pub(crate) fn surface_lost(&self) -> bool {
-        self.surface_gone.is_some()
+        self.surface_needs_recreation
     }
 
     /// The scene the engine draws every frame, reachable between frames as
@@ -1189,6 +1195,14 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             }
         }
         self.process.native_about_to_wait(event_loop);
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.window_occluded && !self.process.render_when_occluded() {
+            // There is no present to pace a hidden window. Keep maintenance
+            // hooks alive without requesting frames or polling continuously.
+            let deadline =
+                hidden_wake_deadline(std::time::Instant::now(), event_loop.control_flow());
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(deadline));
+        }
         // Drain the gamepad events accumulated since the last poll, so the
         // state gilrs keeps for its connected gamepads is current before
         // the loop waits for new events. gilrs applies every input event
@@ -1319,13 +1333,26 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             }
             // Whether the window is on a screen at all. A window macOS has
             // parked on another Space keeps being driven by its own redraw
-            // source, so a run whose window went occluded measures something
+            // source under the default game policy; applications can opt out.
+            // A run whose window went occluded therefore measures something
             // other than what the display shows; a fullscreen number is only
             // worth what the log says about this.
             WindowEvent::Occluded(occluded) => {
                 log::info!("window occluded: {occluded}");
+                self.window_occluded = occluded;
+                if !occluded && !self.process.render_when_occluded() {
+                    self.last_millis = None;
+                    event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
             }
             WindowEvent::RedrawRequested => {
+                if self.window_occluded && !self.process.render_when_occluded() {
+                    // Discard a redraw queued just before occlusion as well.
+                    return;
+                }
                 self.step();
                 // A process that asked to leave has its last frame drawn
                 // and queued; the loop now ends, exactly as when the
@@ -1342,6 +1369,39 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             }
             _ => {}
         }
+    }
+}
+
+/// Recovery follows wgpu's acquisition contract. Temporary lack of a drawable
+/// is normal for hidden Metal windows, not evidence of a lost native surface.
+#[derive(Debug, PartialEq, Eq)]
+enum SurfaceRecovery {
+    Retry,
+    Reconfigure,
+    Recreate,
+}
+fn surface_failure(result: &CurrentSurfaceTexture) -> (&'static str, SurfaceRecovery) {
+    match result {
+        CurrentSurfaceTexture::Occluded => ("surface occluded", SurfaceRecovery::Retry),
+        CurrentSurfaceTexture::Timeout => ("surface timeout", SurfaceRecovery::Retry),
+        CurrentSurfaceTexture::Outdated => ("surface outdated", SurfaceRecovery::Reconfigure),
+        CurrentSurfaceTexture::Lost => ("surface lost", SurfaceRecovery::Recreate),
+        CurrentSurfaceTexture::Validation => ("surface validation error", SurfaceRecovery::Retry),
+        _ => unreachable!("successful acquisitions are handled before recovery"),
+    }
+}
+
+/// Keep hidden-window maintenance bounded without postponing an earlier wake
+/// requested by the application. Never reuse an expired WaitUntil deadline.
+#[cfg(not(target_arch = "wasm32"))]
+fn hidden_wake_deadline(
+    now: std::time::Instant,
+    flow: winit::event_loop::ControlFlow,
+) -> std::time::Instant {
+    let next = now + std::time::Duration::from_millis(20);
+    match flow {
+        winit::event_loop::ControlFlow::WaitUntil(deadline) if deadline > now => deadline.min(next),
+        _ => next,
     }
 }
 
@@ -3704,8 +3764,8 @@ impl<P: Process> Frost<P> {
             // Asking a chain that was never configured is a wgpu panic, and
             // a panic is not something a guest may hand the host's thread.
             // The frame is skipped and counted; `render` asks the surface to
-            // configure again, and `surface_lost` is how the host learns a
-            // new surface may be the answer.
+            // configure again. An unconfigured chain alone is not evidence
+            // that the native surface was lost.
             self.surface_gone("surface not configured");
             return (None, false);
         }
@@ -3722,13 +3782,11 @@ impl<P: Process> Frost<P> {
                 self.surface_back();
                 (Some(tex), true)
             }
-            CurrentSurfaceTexture::Timeout => {
-                self.surface_gone("surface timeout");
-                (None, false)
-            }
-            _ => {
-                self.surface_gone("no surface texture available");
-                (None, false)
+            failure => {
+                let (reason, recovery) = surface_failure(&failure);
+                self.surface_gone(reason);
+                self.surface_needs_recreation |= recovery == SurfaceRecovery::Recreate;
+                (None, recovery == SurfaceRecovery::Reconfigure)
             }
         }
     }
@@ -3750,6 +3808,7 @@ impl<P: Process> Frost<P> {
     /// And note the frame that did get one, which is where the spell's length
     /// is finally worth printing.
     fn surface_back(&mut self) {
+        self.surface_needs_recreation = false;
         if let Some((why, frames)) = self.surface_gone.take() {
             log::info!("surface back after {frames} skipped frames ({why})");
         }
@@ -3793,6 +3852,62 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_and_busy_surfaces_do_not_request_recreation() {
+        for result in [
+            CurrentSurfaceTexture::Occluded,
+            CurrentSurfaceTexture::Timeout,
+            CurrentSurfaceTexture::Validation,
+        ] {
+            assert_eq!(surface_failure(&result).1, SurfaceRecovery::Retry);
+        }
+        assert_eq!(
+            surface_failure(&CurrentSurfaceTexture::Outdated).1,
+            SurfaceRecovery::Reconfigure
+        );
+        assert_eq!(
+            surface_failure(&CurrentSurfaceTexture::Lost).1,
+            SurfaceRecovery::Recreate
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn hidden_maintenance_waits_and_preserves_earlier_future_deadlines() {
+        use std::time::{Duration, Instant};
+        use winit::event_loop::ControlFlow;
+        let now = Instant::now();
+        let next = now + Duration::from_millis(20);
+        for flow in [
+            ControlFlow::Poll,
+            ControlFlow::Wait,
+            ControlFlow::WaitUntil(now - Duration::from_millis(1)),
+            ControlFlow::WaitUntil(now),
+            ControlFlow::WaitUntil(next + Duration::from_secs(1)),
+        ] {
+            assert_eq!(hidden_wake_deadline(now, flow), next);
+        }
+        let earlier = now + Duration::from_millis(5);
+        assert_eq!(
+            hidden_wake_deadline(now, ControlFlow::WaitUntil(earlier)),
+            earlier
+        );
+        // An unrelated event before the deadline must not postpone maintenance.
+        assert_eq!(
+            hidden_wake_deadline(now + Duration::from_millis(1), ControlFlow::WaitUntil(next)),
+            next
+        );
+    }
+
+    #[test]
+    fn existing_processes_keep_rendering_while_occluded_by_default() {
+        struct Game;
+        impl Process for Game {
+            fn process(&mut self, _: &mut crate::Context, _: f32) {}
+        }
+        assert!(Game.render_when_occluded());
+    }
 
     /// A macOS fullscreen transition as it was measured on the notch Mac of
     /// `docs/benchmarking.md` §17: five sizes inside a second, one of them

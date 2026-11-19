@@ -674,6 +674,15 @@ impl std::ops::DerefMut for Context<'_> {
 /// `1.0`s to absorb stalls). Use it to advance animation state such as a
 /// [`Tween`].
 pub trait Process {
+    /// Whether native standalone frames continue while the OS reports the
+    /// main window occluded. Defaults to true, preserving game simulation and
+    /// rendering behavior. Returning false suspends `process()` and GPU draws
+    /// while hidden; the loop requests a maintenance wake every 20 ms so
+    /// `native_about_to_wait()` can still run. Embedded and web loops are unchanged.
+    fn render_when_occluded(&self) -> bool {
+        true
+    }
+
     /// Native standalone event-loop access for auxiliary windows. Embedded and
     /// web backends do not call this hook; no second event loop should be run.
     fn native_about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
