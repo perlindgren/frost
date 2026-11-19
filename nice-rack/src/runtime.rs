@@ -23,6 +23,11 @@ const BLOCK: usize = 1024;
 pub struct Card {
     pub id: NodeId,
     pub stage: u64,
+    /// Which branch of its stage this card chains along, keyed by the branch's
+    /// first card. `None` means the card stands on its own branch — the shape
+    /// every card had before chains existed, so a saved rack that never names
+    /// a branch still lays out and wires exactly as it did.
+    pub branch: Option<u64>,
     pub name: String,
     pub details: nice_clap_host::Descriptor,
     pub path: PathBuf,
@@ -47,6 +52,7 @@ impl Card {
         Ok(Self {
             id,
             stage: id.0,
+            branch: None,
             name,
             details,
             path,
@@ -56,41 +62,71 @@ impl Card {
         })
     }
 }
-pub fn stages(cards: &[Card]) -> Vec<Vec<&Card>> {
-    let mut groups: Vec<Vec<&Card>> = Vec::new();
+/// The rack's cards, grouped the way the wiring is built: a left-to-right
+/// series of stages, each stage a set of branches fed the same signal, each
+/// branch a serial chain of one or more cards.
+///
+/// Cards are grouped by consecutive equal `stage` values, exactly as stages
+/// have always grouped; within a stage, consecutive cards sharing a `branch`
+/// key chain into one branch, and a `None` key is always a branch of one.
+/// Removal rearranges nothing, so a lone card may keep a key whose head is
+/// gone — a key is an opaque label, and only the carrying-over of equal keys
+/// matters.
+pub fn branches(cards: &[Card]) -> Vec<Vec<Vec<&Card>>> {
+    let mut stages: Vec<Vec<Vec<&Card>>> = Vec::new();
     for card in cards {
-        if groups
-            .last()
-            .is_some_and(|group| group[0].stage == card.stage)
+        let Some(stage) = stages
+            .last_mut()
+            .filter(|stage| stage[0][0].stage == card.stage)
+        else {
+            stages.push(vec![vec![card]]);
+            continue;
+        };
+        if card.branch.is_some()
+            && stage
+                .last()
+                .is_some_and(|branch| branch[0].branch == card.branch)
         {
-            groups.last_mut().unwrap().push(card);
+            stage.last_mut().unwrap().push(card);
         } else {
-            groups.push(vec![card]);
+            stage.push(vec![card]);
         }
     }
-    groups
+    stages
 }
 pub fn arrange(
     cards: Vec<Card>,
     moving: NodeId,
     target: crate::layout::Target,
 ) -> Result<Vec<Card>, String> {
-    let layout = stages(&cards)
+    let layout = branches(&cards)
         .iter()
-        .map(|group| group.iter().map(|card| card.id).collect())
-        .collect::<Vec<_>>();
+        .map(|stage| {
+            stage
+                .iter()
+                .map(|branch| branch.iter().map(|card| card.id).collect())
+                .collect()
+        })
+        .collect::<Vec<Vec<Vec<_>>>>();
     let layout = crate::layout::place(&layout, moving, target)?;
     let mut cards = cards
         .into_iter()
         .map(|card| (card.id, card))
         .collect::<BTreeMap<_, _>>();
     let mut result = Vec::new();
-    for group in layout {
-        let key = group[0].0;
-        for id in group {
-            let mut card = cards.remove(&id).unwrap();
-            card.stage = key;
-            result.push(card);
+    for stage in layout {
+        let key = stage[0][0].0;
+        for branch in stage {
+            // A branch of one is just a card on its own: the key only needs
+            // to exist to hold a chain together, and `arrange` has the whole
+            // picture, so it writes the cleanest labels it can.
+            let branch_key = (branch.len() > 1).then_some(branch[0].0);
+            for id in branch {
+                let mut card = cards.remove(&id).unwrap();
+                card.stage = key;
+                card.branch = branch_key;
+                result.push(card);
+            }
         }
     }
     Ok(result)
@@ -106,57 +142,73 @@ pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
         auxiliary -= 1;
         id
     };
+    // `branches` hands out the cards the way the rack is read: stage by
+    // stage, top lane down, chain head to tail. Ranking every node at its
+    // creation step is therefore the layout's reading order, and
+    // `RackGraph::priority` makes the compile plan run lanes top-down —
+    // the bottom lane starts its block work where the lane above ended.
+    let mut born = 0u64;
     graph.nodes.insert(input, NodeKind::Input(Channels::Stereo));
+    graph.priority.insert(input, born);
+    born += 1;
     graph
         .nodes
         .insert(output, NodeKind::Output(Channels::Stereo));
     let mut previous = input;
-    for stage in stages(cards) {
+    for stage in branches(cards) {
         let mut ends = Vec::new();
-        for card in stage {
+        for branch_cards in stage {
             let mut branch = previous;
-            if card.inputs != Channels::Stereo {
-                let id = next();
+            for card in branch_cards {
+                if card.inputs != Channels::Stereo {
+                    let id = next();
+                    graph.priority.insert(id, born);
+                    born += 1;
+                    graph.nodes.insert(
+                        id,
+                        NodeKind::ChannelMap {
+                            inputs: Channels::Stereo,
+                            outputs: card.inputs,
+                        },
+                    );
+                    graph.connections.push(Connection {
+                        from: branch,
+                        to: id,
+                    });
+                    branch = id;
+                }
+                graph.priority.insert(card.id, born);
+                born += 1;
                 graph.nodes.insert(
-                    id,
-                    NodeKind::ChannelMap {
-                        inputs: Channels::Stereo,
-                        outputs: card.inputs,
+                    card.id,
+                    NodeKind::Plugin {
+                        inputs: card.inputs,
+                        outputs: card.outputs,
                     },
                 );
                 graph.connections.push(Connection {
                     from: branch,
-                    to: id,
+                    to: card.id,
                 });
-                branch = id;
-            }
-            graph.nodes.insert(
-                card.id,
-                NodeKind::Plugin {
-                    inputs: card.inputs,
-                    outputs: card.outputs,
-                },
-            );
-            graph.connections.push(Connection {
-                from: branch,
-                to: card.id,
-            });
-            bindings.insert(card.id, card.binding.clone());
-            branch = card.id;
-            if card.outputs != Channels::Stereo {
-                let id = next();
-                graph.nodes.insert(
-                    id,
-                    NodeKind::ChannelMap {
-                        inputs: card.outputs,
-                        outputs: Channels::Stereo,
-                    },
-                );
-                graph.connections.push(Connection {
-                    from: branch,
-                    to: id,
-                });
-                branch = id;
+                bindings.insert(card.id, card.binding.clone());
+                branch = card.id;
+                if card.outputs != Channels::Stereo {
+                    let id = next();
+                    graph.priority.insert(id, born);
+                    born += 1;
+                    graph.nodes.insert(
+                        id,
+                        NodeKind::ChannelMap {
+                            inputs: card.outputs,
+                            outputs: Channels::Stereo,
+                        },
+                    );
+                    graph.connections.push(Connection {
+                        from: branch,
+                        to: id,
+                    });
+                    branch = id;
+                }
             }
             ends.push(branch);
         }
@@ -164,6 +216,8 @@ pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
             ends[0]
         } else {
             let id = next();
+            graph.priority.insert(id, born);
+            born += 1;
             graph.nodes.insert(id, NodeKind::Mixer(Channels::Stereo));
             for end in ends {
                 graph.connections.push(Connection { from: end, to: id });
@@ -175,6 +229,10 @@ pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
         from: previous,
         to: output,
     });
+    // The output was in the graph from the start but is ranked last: the
+    // master trim and metering belong after the last card, as they do on
+    // the DSP timeline.
+    graph.priority.insert(output, born);
     (graph, bindings)
 }
 /// Master metering, published as f32 bits by the DSP thread and read by the
@@ -291,6 +349,13 @@ pub struct Runtime {
     /// same reason [`Runtime::saved_plugins`] exists: it is what tells
     /// `persist` a gate change is waiting.
     saved_meter_gate_db: f32,
+    /// The OUT jack's trim the file was last written with. The live copy is
+    /// not a field of its own: it rides in [`Runtime::trims`] under
+    /// `(u64::MAX, false)`, the same map a card's wire trims live in, so the
+    /// one place that clamps and remembers a trim serves the output stage
+    /// too. This is only what `persist` compares against to know the master
+    /// trim moved.
+    saved_output_gain_db: f32,
     worker: Option<JoinHandle<Endpoints>>,
     io: Option<DeviceStreams>,
     /// The rings of `io` while no worker owns them. `spawn_dsp` returns them
@@ -391,7 +456,25 @@ impl Runtime {
                 .filter_map(|p| p.editor.map(|g| (NodeId(p.id), g)))
                 .collect(),
             saved_plugins: settings.preferences.plugins.clone(),
-            trims: remembered_trims(&settings.preferences.plugins),
+            // The OUT jack's trim rides in the card trims' own map, under the
+            // id no card can ever have, so a resumed rack starts the output
+            // stage at the level it was left at. A file written before the
+            // stage existed says 0 dB, which is what such a rack was already
+            // running, and a hand-edited number is clamped and read the way
+            // `remembered_trims` reads a card's.
+            trims: {
+                let mut trims = remembered_trims(&settings.preferences.plugins);
+                if settings.preferences.output_gain_db.is_finite() {
+                    trims.insert(
+                        (u64::MAX, false),
+                        settings
+                            .preferences
+                            .output_gain_db
+                            .clamp(-crate::TRIM_DB, crate::TRIM_DB),
+                    );
+                }
+                trims
+            },
             open_circuits: remembered_opens(&settings.preferences.plugins),
             bypassed: settings
                 .preferences
@@ -411,6 +494,10 @@ impl Runtime {
             // The file's own number, sane or not, so a gate the rack had to
             // look past is one `persist` writes back proper.
             saved_meter_gate_db: settings.preferences.meter_gate_db,
+            // The file's own number again, so a trim the rack had to clamp
+            // (or a `NaN` it had to ignore) is one `persist` writes back
+            // proper, and once written the comparison rests.
+            saved_output_gain_db: settings.preferences.output_gain_db,
             last_save: Instant::now(),
             persistence_path: None,
             worker: None,
@@ -959,6 +1046,7 @@ impl Runtime {
             .map(|card| crate::SavedPlugin {
                 id: card.id.0,
                 stage: card.stage,
+                branch: card.branch,
                 path: card.path.clone(),
                 class: card.binding.class.clone(),
                 name: card.name.clone(),
@@ -978,14 +1066,21 @@ impl Runtime {
                 paused: self.paused(card.id.0),
             })
             .collect();
-        // One write covers both kinds of preference the rack keeps changing
-        // under the operator's hands: the cards with their trims and breaks, and
-        // the gate the stub boxes are coloured against. Either of them moving is
-        // enough to rewrite the file, because a settings file holds one snapshot
-        // of both and cannot be brought half up to date. A break needs no extra
-        // comparison of its own: it travels on the card it belongs to, so a wire
-        // thrown open makes the cards differ from the last thing written.
-        if plugins != self.saved_plugins || self.meter_gate_db != self.saved_meter_gate_db {
+        // One write covers every preference the rack keeps changing under the
+        // operator's hands: the cards with their trims and breaks, the gate
+        // the stub boxes are coloured against, and the OUT jack's trim. Any
+        // of them moving is enough to rewrite the file, because a settings
+        // file holds one snapshot of all and cannot be brought half up to
+        // date. A break needs no extra comparison of its own: it travels on
+        // the card it belongs to, so a wire thrown open makes the cards
+        // differ from the last thing written. The output trim needs none
+        // either beyond its own number: it is one value, read from the same
+        // map the cards' trims were just read out of.
+        let output_gain_db = self.trim(u64::MAX, false).unwrap_or_default();
+        if plugins != self.saved_plugins
+            || self.meter_gate_db != self.saved_meter_gate_db
+            || output_gain_db != self.saved_output_gain_db
+        {
             let (mut settings, warning) = Settings::load_from(&path);
             if let Some(warning) = warning {
                 self.message = warning;
@@ -993,12 +1088,15 @@ impl Runtime {
             }
             settings.preferences.plugins = plugins.clone();
             settings.preferences.meter_gate_db = self.meter_gate_db;
+            settings.preferences.output_gain_db = output_gain_db;
             match settings.save_to(&path) {
                 Ok(()) => {
                     self.applied.preferences.plugins = plugins.clone();
                     self.applied.preferences.meter_gate_db = self.meter_gate_db;
+                    self.applied.preferences.output_gain_db = output_gain_db;
                     self.saved_plugins = plugins;
                     self.saved_meter_gate_db = self.meter_gate_db;
+                    self.saved_output_gain_db = output_gain_db;
                 }
                 Err(error) => self.message = error,
             }
@@ -1126,9 +1224,10 @@ pub fn spawn_dsp(
                 energy += f64::from(samples[0]).powi(2);
             }
             let input_peak = block_peak(&mut meter_in, &left[..count], &right[..count]);
+            let mut group = [&mut out_left[..count], &mut out_right[..count]];
             let status = audio.process(
                 &[&left[..count], &right[..count]],
-                &mut [&mut out_left[..count], &mut out_right[..count]],
+                &mut [&mut group[..]],
                 count,
             );
             if status == Ok(LiveStatus::Stopped) {
@@ -1568,6 +1667,66 @@ mod tests {
             std::thread::yield_now();
         }
     }
+    /// The OUT jack's trim is remembered the way a card's wire trims are, and
+    /// needs no plugin to prove it: it rides in the same map, goes through the
+    /// same clamping door on the way in from a file, and is one of the numbers
+    /// [`Runtime::persist`] writes back out. The rack here has no cards and no
+    /// backend at all — what is on trial is the record, and a master trim
+    /// before the first plugin is a record like any other.
+    #[test]
+    fn the_output_trim_comes_back_with_the_rack() {
+        let file = frost::scratch::claim("rack-output-gain").join("nice-rack-settings.ron");
+        let _ = std::fs::remove_file(&file);
+
+        let mut runtime = Runtime::new(Settings::default());
+        settle(&mut runtime);
+        assert_eq!(
+            runtime.trim(u64::MAX, false),
+            Some(0.0),
+            "every file states an output gain, defaulted or not, so even a \
+             rack as new as this file holds its master record, at unity"
+        );
+        runtime.persistence_path = Some(file.clone());
+
+        // The ordinary debounce, as when somebody drags the white line on
+        // the OUT jack and walks away. Nothing else about the rack moved, so
+        // it is the master trim alone that makes the file worth rewriting.
+        runtime.set_trim(u64::MAX, false, -4.5);
+        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.tick();
+        let (saved, warning) = Settings::load_from(&file);
+        assert_eq!(warning, None);
+        assert!(saved.preferences.plugins.is_empty(), "no cards, still");
+        assert_eq!(saved.preferences.output_gain_db, -4.5);
+
+        // A resume: the number comes out of the file and into the same map a
+        // card's trim arrives in, which is what the GUI reads every frame.
+        let resumed = Runtime::new(saved);
+        assert_eq!(resumed.trim(u64::MAX, false), Some(-4.5));
+
+        // And the two rules a card's trims follow, one key over: a number
+        // past the end of the track is drawn at the end of it, and a number
+        // that is not a number is no record at all.
+        let wild = Settings {
+            preferences: crate::RackPreferences {
+                output_gain_db: 900.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            Runtime::new(wild).trim(u64::MAX, false),
+            Some(crate::TRIM_DB)
+        );
+        let wild = Settings {
+            preferences: crate::RackPreferences {
+                output_gain_db: f32::NAN,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(Runtime::new(wild).trim(u64::MAX, false), None);
+    }
     /// What a remembered break is made of, checked without a plugin: the file
     /// says which of a card's two cables it left broken, and the controller
     /// turns that into the set the GUI asks. The two sides are keyed apart the
@@ -1580,6 +1739,7 @@ mod tests {
         let saved = crate::SavedPlugin {
             id: 7,
             stage: 1,
+            branch: None,
             path: "/plugins/tuner.clap".into(),
             class: "same-class".into(),
             name: "Tuner".into(),
@@ -2017,6 +2177,7 @@ mod card_mode_tests {
         crate::SavedPlugin {
             id: 7,
             stage: 7,
+            branch: None,
             path: "/plugins/test.clap".into(),
             class: "test".into(),
             name: "Test".into(),

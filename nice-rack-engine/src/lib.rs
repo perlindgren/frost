@@ -59,6 +59,13 @@ pub struct Connection {
 pub struct RackGraph {
     pub nodes: BTreeMap<NodeId, NodeKind>,
     pub connections: Vec<Connection>,
+    /// The order the rack is *read* in, so the plan matches what the operator
+    /// sees: among nodes whose inputs are all done, the lowest priority runs
+    /// first. GUI racks rank nodes by layout reading order — stage by stage,
+    /// top lane down, chain head to tail — so a lower lane starts its block
+    /// work where the lane above it ended. A node with no entry is ranked by
+    /// its NodeId, which is the whole-rack behaviour before lanes existed.
+    pub priority: BTreeMap<NodeId, u64>,
 }
 
 /// A validated routing order, not an activated audio plan. Plugin instances,
@@ -89,7 +96,8 @@ impl std::error::Error for GraphError {}
 
 impl RackGraph {
     /// Validate outside the audio callback. Ordering is deterministic even when
-    /// independent branches or connection insertion order change.
+    /// independent branches or connection insertion order change: ready nodes
+    /// run in `priority` order, falling back to NodeId for unranked graphs.
     pub fn compile(&self) -> Result<RoutingPlan, GraphError> {
         let mut incoming: BTreeMap<_, usize> = self.nodes.keys().map(|&id| (id, 0)).collect();
         let mut outgoing: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
@@ -128,18 +136,19 @@ impl RackGraph {
                 _ => {}
             }
         }
-        let mut ready: BTreeSet<_> = incoming
+        let rank = |id: NodeId| self.priority.get(&id).copied().unwrap_or(id.0);
+        let mut ready: BTreeSet<(u64, NodeId)> = incoming
             .iter()
-            .filter_map(|(&id, &count)| (count == 0).then_some(id))
+            .filter_map(|(&id, &count)| (count == 0).then_some((rank(id), id)))
             .collect();
         let mut order = Vec::with_capacity(self.nodes.len());
-        while let Some(id) = ready.pop_first() {
+        while let Some((_, id)) = ready.pop_first() {
             order.push(id);
             for &destination in outgoing.get(&id).into_iter().flatten() {
                 let remaining = incoming.get_mut(&destination).unwrap();
                 *remaining -= 1;
                 if *remaining == 0 {
-                    ready.insert(destination);
+                    ready.insert((rank(destination), destination));
                 }
             }
         }
@@ -184,6 +193,7 @@ mod tests {
                     to: NodeId(to),
                 })
                 .into(),
+            ..RackGraph::default()
         }
     }
     #[test]
@@ -193,6 +203,61 @@ mod tests {
         assert_eq!(expected.order, [1, 2, 3, 4, 5].map(NodeId));
         graph.connections.reverse();
         assert_eq!(graph.compile().unwrap(), expected);
+    }
+    #[test]
+    fn a_lane_finishes_before_the_lane_below_it_starts() {
+        // The rack as laid out: Input feeds a top chain 1 -> 3 and a bottom
+        // card 2, both ending in a mixer before the output. The reading order
+        // ranks the bottom card after the whole top chain, so it runs last
+        // even though its NodeId sits between the chain's two ids; with no
+        // ranks at all the old NodeId tie-break interleaves the lanes instead.
+        let mut graph = RackGraph {
+            nodes: [
+                (NodeId(0), NodeKind::Input(Channels::Stereo)),
+                (
+                    NodeId(1),
+                    NodeKind::Plugin {
+                        inputs: Channels::Stereo,
+                        outputs: Channels::Stereo,
+                    },
+                ),
+                (
+                    NodeId(2),
+                    NodeKind::Plugin {
+                        inputs: Channels::Stereo,
+                        outputs: Channels::Stereo,
+                    },
+                ),
+                (
+                    NodeId(3),
+                    NodeKind::Plugin {
+                        inputs: Channels::Stereo,
+                        outputs: Channels::Stereo,
+                    },
+                ),
+                (NodeId(4), NodeKind::Mixer(Channels::Stereo)),
+                (NodeId(5), NodeKind::Output(Channels::Stereo)),
+            ]
+            .into(),
+            connections: [(0, 1), (1, 3), (0, 2), (3, 4), (2, 4), (4, 5)]
+                .map(|(from, to)| Connection {
+                    from: NodeId(from),
+                    to: NodeId(to),
+                })
+                .into(),
+            priority: [(0, 0), (1, 1), (3, 2), (2, 3), (4, 4), (5, 5)]
+                .map(|(id, rank)| (NodeId(id), rank))
+                .into(),
+        };
+        assert_eq!(
+            graph.compile().unwrap().order,
+            [0, 1, 3, 2, 4, 5].map(NodeId)
+        );
+        graph.priority.clear();
+        assert_eq!(
+            graph.compile().unwrap().order,
+            [0, 1, 2, 3, 4, 5].map(NodeId)
+        );
     }
     #[test]
     fn serial_chain_and_explicit_channel_map_are_supported() {

@@ -35,6 +35,7 @@ fn chain() -> RackGraph {
             },
         ]
         .into(),
+        ..RackGraph::default()
     }
 }
 
@@ -64,7 +65,7 @@ fn block(mut audio: LiveAudio) -> (LiveAudio, [f32; BLOCK], [f32; BLOCK]) {
         audio
             .process(
                 &[&[0.25; BLOCK], &[-0.5; BLOCK]],
-                &mut [&mut left, &mut right],
+                &mut [&mut [&mut left[..], &mut right[..]][..]],
                 BLOCK,
             )
             .unwrap();

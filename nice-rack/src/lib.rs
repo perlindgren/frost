@@ -27,6 +27,13 @@ pub struct RackPreferences {
     /// [`METER_GATE_DEFAULT_DB`] — the colour that rack was already showing,
     /// since every stub used to rest.
     pub meter_gate_db: f32,
+    /// The trim on the master output wire in dB — the gain the OUT jack applies
+    /// to whatever the mixers have summed before the signal leaves the rack.
+    /// A rack with parallel branches sums at unity, so this is the trim that
+    /// keeps a loud mix off the DAC. Stored the way a card's wire trims are,
+    /// and a file written before the output stage existed names none, which
+    /// is 0 dB — the gain such a rack was already running.
+    pub output_gain_db: f32,
 }
 
 /// Written by hand rather than derived, so the one preference that does not
@@ -39,6 +46,7 @@ impl Default for RackPreferences {
         Self {
             plugins: Vec::new(),
             meter_gate_db: METER_GATE_DEFAULT_DB,
+            output_gain_db: 0.0,
         }
     }
 }
@@ -46,6 +54,13 @@ impl Default for RackPreferences {
 pub struct SavedPlugin {
     pub id: u64,
     pub stage: u64,
+    /// Which branch of its stage this card chains onto, keyed by the branch's
+    /// first card; `None` is a branch of one. Like `stage`, it is a grouping
+    /// label, not an audio fact. `#[serde(default)]` on its own, so a file
+    /// written before chains existed still loads and every card lands in a
+    /// branch of its own — the wiring that file's racks have always had.
+    #[serde(default)]
+    pub branch: Option<u64>,
     pub path: std::path::PathBuf,
     pub class: String,
     pub name: String,
@@ -162,6 +177,9 @@ mod tests {
             settings.preferences.plugins.push(SavedPlugin {
                 id,
                 stage: 1,
+                // One card carries a chain key and one does not, so the file
+                // is read for both shapes and the key survives as written.
+                branch: (id == 1).then_some(1),
                 path: "/plugins/tuner.clap".into(),
                 class: "same-class".into(),
                 name: "Tuner".into(),
@@ -232,6 +250,10 @@ mod tests {
         let (loaded, warning) = Settings::load_from(&path);
         assert_eq!(warning, None, "a legacy file is not a damaged one");
         assert_eq!(loaded.preferences.meter_gate_db, METER_GATE_DEFAULT_DB);
+        // The same argument a feature later, for the OUT jack's trim: a file
+        // that predates the output stage says nothing, and nothing is 0 dB —
+        // the gain that rack was already running.
+        assert_eq!(loaded.preferences.output_gain_db, 0.0);
         // And the gate joins the file on the next save rather than replacing
         // the trims the file did write.
         assert_eq!(loaded.preferences.plugins[0].gain_in, -3.0);

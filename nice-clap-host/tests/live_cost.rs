@@ -105,7 +105,14 @@ fn chain(
         from: previous,
         to: NodeId(1_000),
     });
-    (RackGraph { nodes, connections }, classes)
+    (
+        RackGraph {
+            nodes,
+            connections,
+            ..RackGraph::default()
+        },
+        classes,
+    )
 }
 
 /// One block through the audio side, exactly as the rack's DSP worker hands it
@@ -116,7 +123,7 @@ fn block(audio: &mut LiveAudio, left: &[f32], right: &[f32]) {
     let input: [&[f32]; 2] = [left, right];
     let mut output: [&mut [f32]; 2] = [&mut out_left, &mut out_right];
     audio
-        .process(&input, &mut output, FRAMES)
+        .process(&input, &mut [&mut output[..]], FRAMES)
         .expect("the card should survive the block");
     black_box((out_left[0], out_right[0]));
 }

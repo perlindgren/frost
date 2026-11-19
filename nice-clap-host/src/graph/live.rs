@@ -55,13 +55,15 @@ impl LiveAudio {
     pub fn process(
         &mut self,
         input: &[&[f32]],
-        output: &mut [&mut [f32]],
+        outputs: &mut [&mut [&mut [f32]]],
         frames: usize,
     ) -> Result<LiveStatus, ProcessError> {
         if self.rack.is_none() || self.stop.load(Ordering::Acquire) {
-            for channel in output {
-                let n = frames.min(channel.len());
-                channel[..n].fill(0.0);
+            for group in outputs.iter_mut() {
+                for channel in group.iter_mut() {
+                    let n = frames.min(channel.len());
+                    channel[..n].fill(0.0);
+                }
             }
             if let Some(mut rack) = self.rack.take() {
                 rack.stop();
@@ -72,7 +74,7 @@ impl LiveAudio {
             }
             return Ok(LiveStatus::Stopped);
         }
-        let result = self.rack.as_mut().unwrap().process(input, output, frames);
+        let result = self.rack.as_mut().unwrap().process(input, outputs, frames);
         if matches!(result, Err(ProcessError::NodeFailed(_))) {
             self.stop.store(true, Ordering::Release);
         }
@@ -411,6 +413,7 @@ mod tests {
                 },
             ]
             .into(),
+            ..RackGraph::default()
         };
         let slots = [(
             NodeId(1),
@@ -431,18 +434,18 @@ mod tests {
         let mut output = [0.0; 16];
         let allocations = allocation_counter::measure(|| {
             assert_eq!(
-                audio.process(&[&[0.25; 16]], &mut [&mut output], 16),
+                audio.process(&[&[0.25; 16]], &mut [&mut [&mut output[..]][..]], 16),
                 Ok(LiveStatus::Running)
             );
             assert_eq!(output, [0.25; 16]);
             stop.store(true, Ordering::Release);
             assert_eq!(
-                audio.process(&[], &mut [&mut output], 16),
+                audio.process(&[], &mut [&mut [&mut output[..]][..]], 16),
                 Ok(LiveStatus::Stopped)
             );
             assert_eq!(output, [0.0; 16]);
             assert_eq!(
-                audio.process(&[], &mut [&mut output], 16),
+                audio.process(&[], &mut [&mut [&mut output[..]][..]], 16),
                 Ok(LiveStatus::Stopped)
             );
         });

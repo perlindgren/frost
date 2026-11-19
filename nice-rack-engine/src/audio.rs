@@ -75,7 +75,8 @@ pub enum ProcessError {
 pub enum PrepareError {
     Graph(GraphError),
     InvalidBlockSize,
-    SingleInputOutputRequired,
+    SingleInputRequired,
+    NoOutputs,
     DisconnectedNode(NodeId),
     MissingProcessor(NodeId),
     UnexpectedProcessor(NodeId),
@@ -221,6 +222,27 @@ struct WireSlot {
     /// Card bypass is held on its input slot and read once per block.
     bypassed: AtomicBool,
     paused: AtomicBool,
+}
+
+/// The wire key of the rack's master output trim.
+///
+/// The rack's primary `Output` node is addressed `NodeId(u64::MAX)`, and the
+/// output gain stage sits on the wire entering its jack, so the node's own
+/// address is the key the UI pushes the master trim to and samples the
+/// summed-signal meter from. [`card_wire_key`] refuses the card ids that
+/// could otherwise shift into it.
+pub const MASTER_WIRE_KEY: u64 = u64::MAX;
+
+/// The wire key of one card side — `id << 1 | side`, the input side at the
+/// even key — or `None` when the id sits too near [`MASTER_WIRE_KEY`] for
+/// that mapping to stay clear of it: id `u64::MAX >> 1` on the output side
+/// would land exactly on the master key, and larger ids shift outright.
+pub fn card_wire_key(id: u64, side: bool) -> Option<u64> {
+    if id < u64::MAX >> 1 {
+        Some((id << 1) | u64::from(side))
+    } else {
+        None
+    }
 }
 
 /// Lock-free wire observations shared between the audio thread and the UI.
@@ -517,7 +539,9 @@ struct Node {
     bypass: Delay,
     id: NodeId,
     /// Wire meter slots inside `PreparedRack::wires`, reserved by
-    /// `attach_wire_levels`; `None` until then and for every non-plugin node.
+    /// `attach_wire_levels`; `None` until then and for every node that is
+    /// neither a plugin nor the primary `Output` (which carries the master
+    /// trim and meter on `wire_in` alone).
     wire_in: Option<usize>,
     wire_out: Option<usize>,
     timing_slot: Option<usize>,
@@ -527,14 +551,24 @@ struct Node {
     tp_in: [TruePeak; 2],
     tp_out: [TruePeak; 2],
 }
+/// One output bus of a prepared plan: which `Output` node drives it, where
+/// its node lives in `nodes`, and how many channels it carries. External
+/// buffer groups are ordered by bus position, which follows ascending
+/// `NodeId` so callers can bind ports to buses deterministically.
+struct OutputBus {
+    id: NodeId,
+    index: usize,
+    channels: usize,
+}
 /// Owns all buffers and processor handles. Keep destruction and replacement on
 /// a control/main thread; block-boundary handover is not implemented yet.
 pub struct PreparedRack {
     nodes: Vec<Node>,
     input_channels: usize,
-    output_channels: usize,
-    output_index: usize,
+    output_buses: Vec<OutputBus>,
     max_frames: usize,
+    /// The largest latency over every output bus: the single number hosts
+    /// delay-compensate against, which stays honest when lanes differ.
     latency: usize,
     /// Wire observations shared with the UI. The table is empty until a
     /// control thread attaches one, so an unobserved plan pays nothing.
@@ -567,11 +601,16 @@ impl PreparedRack {
             .iter()
             .filter(|(_, node)| matches!(node, NodeKind::Output(_)))
             .collect();
-        if inputs.len() != 1 || outputs.len() != 1 {
-            return Err(PrepareError::SingleInputOutputRequired);
+        if inputs.len() != 1 {
+            return Err(PrepareError::SingleInputRequired);
         }
-        let output_id = *outputs[0].0;
-        let mut reachable = BTreeSet::from([output_id]);
+        if outputs.is_empty() {
+            return Err(PrepareError::NoOutputs);
+        }
+        // A node counts as connected if any output bus can still hear it, so
+        // a lane that ends at its own output instead of rejoining the trunk
+        // stays alive.
+        let mut reachable: BTreeSet<_> = outputs.iter().map(|&(&id, _)| id).collect();
         for &id in routing.order.iter().rev() {
             if reachable.contains(&id) {
                 for edge in routing.connections.iter().filter(|edge| edge.to == id) {
@@ -650,16 +689,44 @@ impl PreparedRack {
         if let Some((&id, _)) = processors.first_key_value() {
             return Err(PrepareError::UnexpectedProcessor(id));
         }
+        // `graph.nodes` iterates by ascending `NodeId`, so `outputs` is
+        // already in the bus order promised by `output_buses`.
+        let output_buses: Vec<_> = outputs
+            .iter()
+            .map(|&(&id, kind)| OutputBus {
+                id,
+                index: indices[&id],
+                channels: count(kind.inputs().unwrap()),
+            })
+            .collect();
         Ok(Self {
             nodes,
             input_channels: count(inputs[0].1.outputs().unwrap()),
-            output_channels: count(outputs[0].1.inputs().unwrap()),
-            output_index: indices[&output_id],
+            output_buses,
             max_frames,
-            latency: latencies[&output_id],
+            latency: outputs
+                .iter()
+                .map(|&(&id, _)| latencies[&id])
+                .max()
+                .unwrap_or(0),
             wires: Arc::new(WireLevels::default()),
             timings: None,
         })
+    }
+    /// The output buses of this plan in external buffer-group order: each
+    /// bus's `Output` node id and channel count, ascending by id.
+    pub fn output_buses(&self) -> impl Iterator<Item = (NodeId, usize)> + '_ {
+        self.output_buses.iter().map(|bus| (bus.id, bus.channels))
+    }
+    /// Where the primary `Output` node — the one addressed
+    /// [`MASTER_WIRE_KEY`] — lives in `nodes`, if this plan has one. Its
+    /// incoming wire carries the master output trim and the summed-signal
+    /// meter; auxiliary lane outputs pass through untouched.
+    fn master_output_index(&self) -> Option<usize> {
+        self.output_buses
+            .iter()
+            .find(|bus| bus.id.0 == MASTER_WIRE_KEY)
+            .map(|bus| bus.index)
     }
     /// Register every wire the UI should watch, then share `levels` with the
     /// plan. Call on the control thread before the plan crosses to the audio
@@ -668,31 +735,41 @@ impl PreparedRack {
     /// joins the previous audio worker first. Keys that survive keep their
     /// slot and the trim the UI had applied to it. Each plugin folds to two
     /// keys (`id << 1 | side`): the input side observes the node's summed
-    /// input buffer, the output side its processed output.
+    /// input buffer, the output side its processed output. The primary
+    /// `Output` node registers one more key, [`MASTER_WIRE_KEY`], whose
+    /// `wire_in` carries the rack's master output trim, a break switch, and
+    /// a meter reading the summed signal about to leave for the DAC.
     pub fn attach_wire_levels(&mut self, levels: Arc<WireLevels>) {
         // Control-thread allocation is fine here; `process` stays
         // allocation-free.
-        let keys: Vec<u64> = self
+        let mut keys: Vec<u64> = self
             .nodes
             .iter()
-            .filter(|node| {
-                matches!(node.kind, NodeKind::Plugin { .. }) && node.id.0 <= u64::MAX >> 1
-            })
-            .flat_map(|node| [node.id.0 << 1, (node.id.0 << 1) | 1])
+            .filter(|node| matches!(node.kind, NodeKind::Plugin { .. }))
+            .filter_map(|node| card_wire_key(node.id.0, false))
+            .flat_map(|base| [base, base | 1])
             .collect();
+        if self.master_output_index().is_some() {
+            keys.push(MASTER_WIRE_KEY);
+        }
         levels.reset(&keys);
         self.reset_metering();
-        for node in &mut self.nodes {
+        let master = self.master_output_index();
+        for (index, node) in self.nodes.iter_mut().enumerate() {
             // Card ids are validated small by the rack, so `id << 1` stays
-            // injective; the guard only refuses auxiliary ids near `u64::MAX`.
-            let metered =
-                matches!(node.kind, NodeKind::Plugin { .. }) && node.id.0 <= u64::MAX >> 1;
-            if metered {
-                node.wire_in = levels.attach(node.id.0 << 1);
-                node.wire_out = levels.attach((node.id.0 << 1) | 1);
-            } else {
-                node.wire_in = None;
-                node.wire_out = None;
+            // injective; `card_wire_key` refuses the ids near `u64::MAX` that
+            // would shift onto the master key, which belongs to the rack's
+            // own output trim on the primary `Output` node.
+            node.wire_in = None;
+            node.wire_out = None;
+            if let Some(base) = matches!(node.kind, NodeKind::Plugin { .. })
+                .then(|| card_wire_key(node.id.0, false))
+                .flatten()
+            {
+                node.wire_in = levels.attach(base);
+                node.wire_out = levels.attach(base | 1);
+            } else if master == Some(index) {
+                node.wire_in = levels.attach(MASTER_WIRE_KEY);
             }
         }
         self.wires = levels;
@@ -724,23 +801,29 @@ impl PreparedRack {
     /// Mixer inputs sum at unity gain. Mono->stereo duplicates; stereo->mono
     /// averages. No implicit clipping or limiting. On an error, external output
     /// is silenced; processor errors require reset/recovery by the owner.
+    /// `outputs` holds one buffer group per output bus, in
+    /// [`Self::output_buses`] order, each group the bus's channel buffers.
     pub fn process(
         &mut self,
         input: &[&[f32]],
-        output: &mut [&mut [f32]],
+        outputs: &mut [&mut [&mut [f32]]],
         frames: usize,
     ) -> Result<(), ProcessError> {
-        for channel in output.iter_mut() {
-            let n = frames.min(channel.len());
-            channel[..n].fill(0.0);
+        for group in outputs.iter_mut() {
+            for channel in group.iter_mut() {
+                let n = frames.min(channel.len());
+                channel[..n].fill(0.0);
+            }
         }
         if frames == 0 || frames > self.max_frames {
             return Err(ProcessError::InvalidBlockSize);
         }
         if input.len() != self.input_channels
-            || output.len() != self.output_channels
+            || outputs.len() != self.output_buses.len()
             || input.iter().any(|c| c.len() < frames)
-            || output.iter().any(|c| c.len() < frames)
+            || outputs.iter().zip(&self.output_buses).any(|(group, bus)| {
+                group.len() != bus.channels || group.iter().any(|c| c.len() < frames)
+            })
         {
             return Err(ProcessError::InvalidBuffers);
         }
@@ -841,6 +924,36 @@ impl PreparedRack {
                         wires.publish(slot, rms, peak);
                     }
                 }
+                NodeKind::Output(_) => {
+                    // The rack's master output trim: a gain stage on the
+                    // wire entering the jack, so what the meter shows is
+                    // what leaves to the DAC — the summed signal after the
+                    // unity mixer, scaled. Only the primary output carries
+                    // a slot; auxiliary lane outputs have none and copy
+                    // through untouched. The jack carries a switch like
+                    // any card's stub: it measures before it breaks, so
+                    // the meter keeps reading what arrives at the stub
+                    // while an open circuit holds the DAC silent. Only
+                    // the primary output carries a slot; auxiliary lane
+                    // outputs have none and copy through untouched.
+                    let wire_in = node.wire_in;
+                    if let Some(slot) = wire_in {
+                        apply_gain(&mut node.input, frames, wires.gain(slot));
+                    }
+                    for (source, destination) in node.input.0.iter().zip(&mut node.output.0) {
+                        destination[..frames].copy_from_slice(&source[..frames]);
+                    }
+                    if let Some(slot) = wire_in {
+                        let (rms, peak) = wire_level(&node.output, frames, &mut node.tp_out);
+                        wires.publish(slot, rms, peak);
+                        // Publish first, then break: the meter describes
+                        // the signal reaching the jack, the cleared
+                        // buffer keeps it out of the audio device.
+                        if wires.open_at(slot) {
+                            node.output.clear(frames);
+                        }
+                    }
+                }
                 NodeKind::ChannelMap { .. } if node.input.channels() != node.output.channels() => {
                     if node.output.channels() == 1 {
                         for frame in 0..frames {
@@ -873,8 +986,15 @@ impl PreparedRack {
                 );
             }
         }
-        for (source, destination) in self.nodes[self.output_index].output.0.iter().zip(output) {
-            destination[..frames].copy_from_slice(&source[..frames]);
+        let Self {
+            nodes,
+            output_buses,
+            ..
+        } = self;
+        for (bus, group) in output_buses.iter().zip(outputs.iter_mut()) {
+            for (source, destination) in nodes[bus.index].output.0.iter().zip(group.iter_mut()) {
+                destination[..frames].copy_from_slice(&source[..frames]);
+            }
         }
         Ok(())
     }
