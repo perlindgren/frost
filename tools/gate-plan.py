@@ -60,7 +60,7 @@ SUITES = {
     "pi_face": ["nice-pi-face"],
     "echo": ["nice-echo"],
     "ecomplex": ["nice-ecomplex"],
-    "clone": ["nice-clone"],
+    "clone": ["nice-clone", "nice-dist"],
     "rack": [
         "nice-rack",
         "nice-rack-engine",
@@ -91,7 +91,7 @@ LABEL = {
     "pi_face": "the Pi-Fase",
     "echo": "the Space Echo",
     "ecomplex": "the Echoplex",
-    "clone": "the Clone",
+    "clone": "the Clone and Nice Dist",
     "rack": "the rack and its host adapter",
     ENGINE_SUITE: "the engine and its games",
     GRAPH_SUITE: "the two graph claims",

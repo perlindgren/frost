@@ -25,3 +25,6 @@ name = "Nice Ecomplex"
 
 [nice-clone]
 name = "Nice Clone"
+
+[nice-dist]
+name = "Nice Dist"

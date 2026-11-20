@@ -304,8 +304,8 @@ cargo test -p nice-ecomplex || fail 'cargo test -p nice-ecomplex'
 # settings round trip, and `tests/no_alloc.rs` carrying no `cfg` so it runs
 # here on Windows too, where the editor's wgpu graph also compiles. None of it
 # opens a device.
-printf 'pre-push: running `cargo test -p nice-clone`...\n'
-cargo test -p nice-clone || fail 'cargo test -p nice-clone'
+printf 'pre-push: running `cargo test -p nice-clone -p nice-dist`...\n'
+cargo test -p nice-clone -p nice-dist || fail 'cargo test -p nice-clone -p nice-dist'
 
 # The rack, its host adapter and the two crates under it, named like every
 # plugin before it. Nothing above reaches them: `cargo test` follows

@@ -18,11 +18,13 @@ pub mod devices;
 #[cfg(feature = "ui")]
 pub mod ui;
 
+pub mod clone_drive;
 #[cfg(feature = "widgets")]
 pub mod fonts;
 #[cfg(feature = "widgets")]
 pub mod knob;
 pub mod meter;
+pub mod oversample;
 #[cfg(feature = "widgets")]
 pub mod tooltip;
 /// The peak a meter should publish: the crest of the reconstruction between the
