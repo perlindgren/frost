@@ -231,18 +231,16 @@ impl Plugin for DistPlugin {
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            ..AudioIOLayout::const_default()
-        },
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(1),
-            main_output_channels: NonZeroU32::new(1),
-            ..AudioIOLayout::const_default()
-        },
-    ];
+    /// Mono in, mono out, and nothing else: the box is mono — one signal
+    /// through one distortion circuit — and so is this model. The plugin
+    /// neither folds a stereo signal down nor widens a mono one; that width
+    /// work belongs to the host and the rack, which is exactly why this is
+    /// the only layout here.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: NonZeroU32::new(1),
+        main_output_channels: NonZeroU32::new(1),
+        ..AudioIOLayout::const_default()
+    }];
 
     type Editor = DistEditor;
     type SysExMessage = ();
@@ -325,12 +323,10 @@ impl Plugin for DistPlugin {
             input_peak = input_peak.max(peak);
             let mut output = [[0.0f32; BLOCK]; 2];
             for frame in 0..n {
-                let y = self.effect.process([
-                    input[0][frame],
-                    if channels == 2 { input[1][frame] } else { 0.0 },
-                ]);
-                output[0][frame] = y[0];
-                output[1][frame] = y[1];
+                // The first channel is the input: the layout guarantees one,
+                // and the plugin never folds channels together; width is the
+                // host's work, not the pedal's.
+                output[0][frame] = self.effect.process(input[0][frame]);
             }
             let (energy, peak) = block_stats(&output, channels, n, &mut self.tp_out);
             output_energy += energy;
@@ -343,10 +339,10 @@ impl Plugin for DistPlugin {
         if count > 0 {
             self.shared
                 .input_rms
-                .store((input_energy / (count * channels) as f64).sqrt() as f32);
+                .store((input_energy / count as f64).sqrt() as f32);
             self.shared
                 .output_rms
-                .store((output_energy / (count * channels) as f64).sqrt() as f32);
+                .store((output_energy / count as f64).sqrt() as f32);
             self.shared.input_peak.store(input_peak);
             self.shared.output_peak.store(output_peak);
             self.shared.meter_updated.store(now_ms(), Ordering::Relaxed);

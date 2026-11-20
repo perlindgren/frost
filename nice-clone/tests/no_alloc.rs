@@ -20,7 +20,7 @@ fn processing_and_control_updates_allocate_nothing_including_first_sample() {
                     output: x,
                 });
             }
-            std::hint::black_box(drive.process([0.3, -0.2]));
+            std::hint::black_box(drive.process(0.3));
         }
     });
     assert_eq!(allocations.count_total, 0);

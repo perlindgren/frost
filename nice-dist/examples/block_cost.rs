@@ -1,4 +1,4 @@
-//! 64-frame, stereo, 48 kHz, 8x DSP timing; stdout is CSV.
+//! 64-frame, mono, 48 kHz, 8x DSP timing; stdout is CSV.
 //! Includes the per-block control update and output stores, but not plugin
 //! metering, device callbacks, resampling between devices, or GUI rendering.
 use nice_common::oversample::Oversampling;
@@ -10,9 +10,9 @@ use std::hint::black_box;
 const FRAMES: usize = 64;
 const RATE: f32 = 48_000.0;
 const BLOCKS: usize = 8192;
-fn block(effect: &mut Dist, variant: Variant, controls: &Controls, input: &[[f32; 2]; FRAMES]) {
+fn block(effect: &mut Dist, variant: Variant, controls: &Controls, input: &[f32; FRAMES]) {
     effect.set_controls(black_box(controls), variant, Oversampling::X8);
-    let mut output = [[0.0; 2]; FRAMES];
+    let mut output = [0.0; FRAMES];
     for (out, sample) in output.iter_mut().zip(black_box(input)) {
         *out = effect.process(*sample);
     }
@@ -20,10 +20,9 @@ fn block(effect: &mut Dist, variant: Variant, controls: &Controls, input: &[[f32
 }
 fn main() {
     let controls = Controls::default();
-    // Exactly one cycle of 750 Hz per block; opposite-polarity stereo channels.
+    // Exactly one cycle of 750 Hz per block, on the box's one mono lane.
     let input = std::array::from_fn(|i| {
-        let x = (0.3 * (std::f64::consts::TAU * i as f64 / FRAMES as f64).sin()) as f32;
-        [x, -x]
+        (0.3 * (std::f64::consts::TAU * i as f64 / FRAMES as f64).sin()) as f32
     });
     let budget_us = FRAMES as f64 / f64::from(RATE) * 1e6;
     println!(

@@ -23,7 +23,7 @@ fn measure(variant: Variant, mode: Oversampling) -> [f64; 4] {
     let mut sums = [(0.0, 0.0); 4];
     // Settle for 0.683 s, then measure 0.683 s (6144 complete cycles).
     for i in 0..FRAMES * 2 {
-        let y = f64::from(effect.process([period[i % 16], 0.0])[0]);
+        let y = f64::from(effect.process(period[i % 16]));
         if i >= FRAMES {
             for (sum, frequency) in sums.iter_mut().zip(FREQUENCIES) {
                 let angle = std::f64::consts::TAU * frequency * (i % 16) as f64 / RATE;

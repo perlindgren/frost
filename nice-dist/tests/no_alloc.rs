@@ -27,7 +27,7 @@ fn processing_switching_and_reset_do_not_allocate_or_free() {
                     Oversampling::ALL[(i / 256) % 4],
                 );
             }
-            std::hint::black_box(effect.process([0.3, -0.2]));
+            std::hint::black_box(effect.process(0.3));
         }
         effect.reset();
     });

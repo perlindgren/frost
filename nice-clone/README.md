@@ -30,9 +30,13 @@ The model includes:
   interpolation/decimation filters use 65, 129, or 257 taps respectively.
   Reported latency is zero with oversampling Off and 32 host samples in each
   oversampled mode (0.67 ms at 48 kHz), excluding circuit phase response.
-- Independent left/right circuits, mono support, and 10 ms control smoothing.
-  Resistance matrices update every 16 host samples, independently of host block
-  boundaries; capacitor voltages and currents survive control changes.
+- One circuit for one signal, and 10 ms control smoothing. The box is mono —
+  one signal through one clone circuit — and so is this model: a single mono
+  input enters the circuit and a single mono output leaves; folding a stereo
+  signal down, or widening the answer back out, is the host's work, not the
+  pedal's. Resistance matrices update every 16 host samples, independently of
+  host block boundaries; capacitor voltages and currents survive control
+  changes.
 
 The diode fit uses Is = 200 nA and nVt = 41 mV, approximately 0.35 V at 1 mA.
 That is a nominal fit, not a measured Behringer or vintage diode pair. U1 signal
@@ -108,9 +112,13 @@ python3 nice-common/tests/reference/clone-drive/transient_reference.py
 
 Tests also check nonlinear equation residuals, gain-dependent distortion, treble
 and output response, oversampling delay and image rejection, folded distortion
-harmonics, stereo separation, reset, host block boundaries, unusual inputs, and
+harmonics, reset, host block boundaries, unusual inputs, and
 allocation-free processing while controls move or oversampling switches, all
-four factors, saved settings migration, and host latency notifications.
+four factors, saved settings migration, and host latency notifications. The box
+is mono: the DSP's only entry is one sample, the only audio layout the plugin
+offers is one mono in and one mono out, and the standalone host folds the
+captured stereo frame at its edge and duplicates the answer back onto the
+device — there is no second lane to disagree with, and width is the host's work.
 
 No hardware measurement or listening match is claimed. A captured calibration
 signal, swept tones, and guitar DI/reamped pairs at known knob settings would be
