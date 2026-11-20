@@ -1265,6 +1265,29 @@ fn target_at(
     })
 }
 
+/// When a left-edge drop would land ahead of the whole fork rather than in
+/// one lane — mirroring `place`: the hovered card heads a lane, and once the
+/// dragged card has left its own lane the stage is still split. Returns the
+/// surviving head card of every lane so the preview can span the fork with
+/// one tick instead of marking a single lane's wire.
+fn ahead_of_split(
+    stages: &[Vec<Vec<NodeId>>],
+    drag: Option<NodeId>,
+    target: &Target,
+) -> Option<Vec<NodeId>> {
+    if target.side != Side::Left {
+        return None;
+    }
+    let stage = stages
+        .iter()
+        .find(|stage| stage.iter().any(|lane| lane.contains(&target.card)))?;
+    let heads: Vec<NodeId> = stage
+        .iter()
+        .filter_map(|lane| lane.iter().copied().find(|id| Some(*id) != drag))
+        .collect();
+    (heads.len() > 1 && heads.contains(&target.card)).then_some(heads)
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3298,40 +3321,45 @@ impl Process for RackUi {
                 // Mirrors `place`: a left drop on a lane's leading card
                 // lands ahead of the whole fork once the dragged card has
                 // left its source lane.
-                let before_split = target.side == Side::Left
-                    && crate::runtime::branches(&self.runtime.cards)
-                        .iter()
-                        .find(|stage| {
-                            stage
-                                .iter()
-                                .any(|lane| lane.iter().any(|card| card.id == target.card))
-                        })
-                        .is_some_and(|stage| {
-                            stage
-                                .iter()
-                                .any(|lane| lane.first().is_some_and(|card| card.id == target.card))
-                                && stage
-                                    .iter()
-                                    .filter(|lane| {
-                                        lane.iter().any(|card| Some(card.id) != self.drag)
-                                    })
-                                    .count()
-                                    > 1
-                        });
+                let ahead_heads = ahead_of_split(&groups, self.drag, &target);
+                let before_split = ahead_heads.is_some();
                 match target.side {
-                    Side::Left | Side::Right => ctx.rectangle(
-                        slot.x
-                            + if target.side == Side::Left {
-                                -106.0
-                            } else {
-                                106.0
-                            },
-                        slot.y,
-                        2.0,
-                        70.0,
-                        rgb(103, 237, 175),
-                        0.5,
-                    ),
+                    Side::Left | Side::Right => {
+                        // A drop ahead of the split belongs to the whole
+                        // fork, so its tick spans every lane instead of
+                        // marking one lane's wire like a chain would.
+                        let ys: Vec<f32> = match ahead_heads.as_ref().map(|heads| {
+                            layout
+                                .slots
+                                .iter()
+                                .filter(|slot| heads.contains(&slot.id))
+                                .map(|slot| slot.y)
+                                .collect::<Vec<f32>>()
+                        }) {
+                            Some(ys) if ys.len() > 1 => ys,
+                            _ => Vec::new(),
+                        };
+                        let (y, height) = if ys.len() > 1 {
+                            let low = ys.iter().copied().fold(f32::INFINITY, f32::min);
+                            let high = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                            ((low + high) * 0.5, high - low + 70.0)
+                        } else {
+                            (slot.y, 70.0)
+                        };
+                        ctx.rectangle(
+                            slot.x
+                                + if target.side == Side::Left {
+                                    -106.0
+                                } else {
+                                    106.0
+                                },
+                            y,
+                            2.0,
+                            height,
+                            rgb(103, 237, 175),
+                            0.5,
+                        );
+                    }
                     Side::Above | Side::Below => ctx.rectangle(
                         slot.x,
                         slot.y
@@ -3831,6 +3859,37 @@ fn draw_details(ctx: &mut Context, font: &Arc<[u8]>, card: &Card) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_left_drop_on_a_lane_head_names_the_whole_fork() {
+        let stages = vec![
+            vec![vec![NodeId(1)]],
+            vec![vec![NodeId(3), NodeId(4)], vec![NodeId(5)]],
+            vec![vec![NodeId(7)]],
+        ];
+        let left = |card: u64| Target {
+            card: NodeId(card),
+            side: Side::Left,
+        };
+        // Hovering either lane's head claims the whole fork…
+        assert_eq!(
+            ahead_of_split(&stages, None, &left(3)),
+            Some(vec![NodeId(3), NodeId(5)])
+        );
+        // …while a lane's middle is just a chain, and dragging one lane
+        // away leaves a single chain to chain into.
+        assert_eq!(ahead_of_split(&stages, None, &left(4)), None);
+        assert_eq!(ahead_of_split(&stages, Some(NodeId(5)), &left(3)), None);
+        // A lane whose head is being dragged still counts its survivor:
+        // the fork stays split and the drop lands ahead of it.
+        let split = vec![vec![vec![NodeId(2), NodeId(4)], vec![NodeId(3)]]];
+        assert_eq!(
+            ahead_of_split(&split, Some(NodeId(2)), &left(4)),
+            Some(vec![NodeId(4), NodeId(3)])
+        );
+        // A lone lane is no fork to stand ahead of.
+        let chain = vec![vec![vec![NodeId(1), NodeId(3)]]];
+        assert_eq!(ahead_of_split(&chain, None, &left(1)), None);
+    }
     #[test]
     fn internal_and_external_drops_use_the_same_four_zones() {
         let slots = [
