@@ -182,13 +182,14 @@ fn cost_of_each_pass() {
     row(
         "rms fold (as wire_level)",
         timed(|| {
-            let mut energy = 0f64;
-            for (l, r) in black_box(&folded).0[0]
-                .iter()
-                .zip(&folded.0[1])
-                .take(FRAMES)
-            {
-                energy += (l * l).max(r * r) as f64;
+            let mut energy = [0f64; 2];
+            for (frame, l) in black_box(&folded).0[0][..FRAMES].iter().enumerate() {
+                energy[0] += (l * l) as f64;
+                let mut fold = 0.0f32;
+                for channel in folded.0[1..].iter() {
+                    fold = fold.max(channel[frame].abs());
+                }
+                energy[1] += (fold * fold) as f64;
             }
             black_box(energy);
         }),
@@ -206,9 +207,10 @@ fn cost_of_each_pass() {
         }),
     );
 
-    // One wire, as the graph pays for it: the fold and the estimator over the
-    // node's settled buffer, then the store. `wire_level` alone is the cheaper
-    // line; the publish is the two atomics that make the number visible.
+    // One wire, as the graph pays for it: the folds and the estimator over
+    // the node's settled buffer, then the store. `wire_level` alone is the
+    // cheaper line; the publish is the four atomics — two lanes of level and
+    // crest — that make the numbers visible.
     let buffer = stereo();
     let mut meters = [TruePeak::new(), TruePeak::new()];
     row(
@@ -224,16 +226,20 @@ fn cost_of_each_pass() {
     row(
         "wire_level + publish",
         timed(|| {
-            let (rms, peak) = wire_level(&buffer, FRAMES, &mut meters);
-            levels.publish(slot_in, rms, peak);
-            black_box((rms, peak));
+            let level = wire_level(&buffer, FRAMES, &mut meters);
+            levels.publish(slot_in, level);
+            black_box(level);
         }),
     );
     row(
         "publish, both wires",
         timed(|| {
-            levels.publish(slot_in, black_box(0.3), black_box(0.9));
-            levels.publish(slot_out, black_box(0.3), black_box(0.9));
+            let level = WireSample {
+                rms: [black_box(0.3), black_box(0.25)],
+                peak: [black_box(0.9), black_box(0.85)],
+            };
+            levels.publish(slot_in, level);
+            levels.publish(slot_out, level);
         }),
     );
 

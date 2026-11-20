@@ -9,10 +9,47 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NodeId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Channels {
-    Mono,
-    Stereo,
+/// How many channels a bus carries: 1 is mono, 2 is stereo, and a plugin
+/// carries its own input and output counts. The rack converts between counts
+/// only where two connected buses differ, with an explicit
+/// [`NodeKind::ChannelMap`] — never implicitly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Channels(u8);
+
+impl Channels {
+    // Named for the values they are, not shouty constants: a width on a
+    // card reads `Channels::Stereo`, the way the enum variants did.
+    #[allow(non_upper_case_globals)]
+    /// One channel.
+    pub const Mono: Self = Self(1);
+    #[allow(non_upper_case_globals)]
+    /// Two channels.
+    pub const Stereo: Self = Self(2);
+    /// The widest bus the engine carries.
+    pub const MAX: u8 = 8;
+
+    /// The channel count, always 1 through [`Self::MAX`].
+    pub const fn count(self) -> usize {
+        self.0 as usize
+    }
+
+    /// `None` for zero channels or a bus wider than [`Self::MAX`].
+    pub const fn new(count: u8) -> Option<Self> {
+        if count == 0 || count > Self::MAX {
+            None
+        } else {
+            Some(Self(count))
+        }
+    }
+}
+impl std::fmt::Display for Channels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            1 => f.write_str("mono"),
+            2 => f.write_str("stereo"),
+            count => write!(f, "{count} ch"),
+        }
+    }
 }
 
 /// Each node initially has one main bus per direction. Fan-out is expressed by
@@ -26,7 +63,9 @@ pub enum NodeKind {
         outputs: Channels,
     },
     Mixer(Channels),
-    /// Explicit mono/stereo conversion; never inserted implicitly.
+    /// Explicit channel-count conversion — a split duplicates the first
+    /// channel to every output, a join folds every input to their mean, and
+    /// equal counts copy. Never inserted implicitly.
     ChannelMap {
         inputs: Channels,
         outputs: Channels,

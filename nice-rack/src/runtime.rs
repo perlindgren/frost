@@ -131,9 +131,39 @@ pub fn arrange(
     }
     Ok(result)
 }
+/// One stage's worth of card shapes: branches top lane down, each branch a
+/// serial chain of `(id, inputs, outputs)`. `plan` works on these rather
+/// than on loaded plugins, so the width arithmetic stays witnessable.
+type StagePlan = Vec<Vec<(NodeId, Channels, Channels)>>;
+
 pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
-    let mut graph = RackGraph::default();
     let mut bindings = BTreeMap::new();
+    let stages = branches(cards)
+        .into_iter()
+        .map(|stage| {
+            stage
+                .into_iter()
+                .map(|branch| {
+                    branch
+                        .into_iter()
+                        .map(|card| {
+                            bindings.insert(card.id, card.binding.clone());
+                            (card.id, card.inputs, card.outputs)
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+        .collect::<Vec<StagePlan>>();
+    (plan(&stages), bindings)
+}
+/// The wiring itself, carried out on card shapes — id, input count, output
+/// count — rather than on loaded plugins, so the width arithmetic can be
+/// witnessed without a single CLAP file on disk. The shapes arrive grouped
+/// the way `branches` groups cards: stages left to right, branches top lane
+/// down, each branch a serial chain.
+fn plan(stages: &[StagePlan]) -> RackGraph {
+    let mut graph = RackGraph::default();
     let input = NodeId(0);
     let output = NodeId(u64::MAX);
     let mut auxiliary = u64::MAX - 1;
@@ -155,75 +185,103 @@ pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
         .nodes
         .insert(output, NodeKind::Output(Channels::Stereo));
     let mut previous = input;
-    for stage in branches(cards) {
+    // The trunk carries a width, not a convention. It starts stereo with
+    // the rack input, and a `ChannelMap` appears only where two adjacent
+    // counts actually differ: a mono card hanging off a stereo trunk gets a
+    // join in front, and two mono cards in a row chain with nothing between
+    // them. A stage whose branches disagree ends each branch at the widest
+    // count before the mixer, because the compile refuses unequal feeds.
+    let mut trunk = Channels::Stereo;
+    for stage in stages {
         let mut ends = Vec::new();
         for branch_cards in stage {
             let mut branch = previous;
-            for card in branch_cards {
-                if card.inputs != Channels::Stereo {
-                    let id = next();
-                    graph.priority.insert(id, born);
+            let mut width = trunk;
+            for &(id, inputs, outputs) in branch_cards {
+                if inputs != width {
+                    let map = next();
+                    graph.priority.insert(map, born);
                     born += 1;
                     graph.nodes.insert(
-                        id,
+                        map,
                         NodeKind::ChannelMap {
-                            inputs: Channels::Stereo,
-                            outputs: card.inputs,
+                            inputs: width,
+                            outputs: inputs,
                         },
                     );
                     graph.connections.push(Connection {
                         from: branch,
-                        to: id,
+                        to: map,
                     });
-                    branch = id;
+                    branch = map;
                 }
-                graph.priority.insert(card.id, born);
+                graph.priority.insert(id, born);
                 born += 1;
-                graph.nodes.insert(
-                    card.id,
-                    NodeKind::Plugin {
-                        inputs: card.inputs,
-                        outputs: card.outputs,
-                    },
-                );
+                graph.nodes.insert(id, NodeKind::Plugin { inputs, outputs });
                 graph.connections.push(Connection {
                     from: branch,
-                    to: card.id,
+                    to: id,
                 });
-                bindings.insert(card.id, card.binding.clone());
-                branch = card.id;
-                if card.outputs != Channels::Stereo {
-                    let id = next();
-                    graph.priority.insert(id, born);
-                    born += 1;
-                    graph.nodes.insert(
-                        id,
-                        NodeKind::ChannelMap {
-                            inputs: card.outputs,
-                            outputs: Channels::Stereo,
-                        },
-                    );
-                    graph.connections.push(Connection {
-                        from: branch,
-                        to: id,
-                    });
-                    branch = id;
-                }
+                branch = id;
+                width = outputs;
             }
-            ends.push(branch);
+            ends.push((branch, width));
         }
         previous = if ends.len() == 1 {
-            ends[0]
+            trunk = ends[0].1;
+            ends[0].0
         } else {
+            let join = ends.iter().map(|(_, width)| *width).max().unwrap_or(trunk);
+            // The risers are built before the mixer is ranked, so the plan
+            // still reads top-down: every feed is born before the node it
+            // feeds joins.
+            let feeds = ends
+                .into_iter()
+                .map(|(end, width)| {
+                    if width == join {
+                        return end;
+                    }
+                    let map = next();
+                    graph.priority.insert(map, born);
+                    born += 1;
+                    graph.nodes.insert(
+                        map,
+                        NodeKind::ChannelMap {
+                            inputs: width,
+                            outputs: join,
+                        },
+                    );
+                    graph.connections.push(Connection { from: end, to: map });
+                    map
+                })
+                .collect::<Vec<_>>();
             let id = next();
             graph.priority.insert(id, born);
             born += 1;
-            graph.nodes.insert(id, NodeKind::Mixer(Channels::Stereo));
-            for end in ends {
+            graph.nodes.insert(id, NodeKind::Mixer(join));
+            for end in feeds {
                 graph.connections.push(Connection { from: end, to: id });
             }
+            trunk = join;
             id
         };
+    }
+    if trunk != Channels::Stereo {
+        let map = next();
+        graph.priority.insert(map, born);
+        born += 1;
+        graph.nodes.insert(
+            map,
+            NodeKind::ChannelMap {
+                inputs: trunk,
+                outputs: Channels::Stereo,
+            },
+        );
+        graph.connections.push(Connection {
+            from: previous,
+            to: map,
+        });
+        previous = map;
     }
     graph.connections.push(Connection {
         from: previous,
@@ -233,7 +291,7 @@ pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
     // master trim and metering belong after the last card, as they do on
     // the DSP timeline.
     graph.priority.insert(output, born);
-    (graph, bindings)
+    graph
 }
 /// Master metering, published as f32 bits by the DSP thread and read by the
 /// window. `input`/`output` carry linear RMS; the peak fields carry linear
@@ -1284,6 +1342,140 @@ mod tests {
         let (capture, input) = rtrb::RingBuffer::new(64);
         let (output, consumer) = rtrb::RingBuffer::new(64);
         (Endpoints { input, output }, capture, consumer)
+    }
+    /// The plan's width arithmetic, witnessed without any plugin: a map is
+    /// born only where two adjacent counts actually meet. A pair of mono
+    /// cards on the stereo trunk is one join at the head and one split at
+    /// the tail — the two cards themselves chain with nothing between them.
+    #[test]
+    fn a_plan_carries_its_trunk_width_and_maps_only_the_transitions() {
+        let mono = Channels::Mono;
+        let graph = plan(&[vec![vec![(NodeId(2), mono, mono), (NodeId(3), mono, mono)]]]);
+        let head = NodeId(u64::MAX - 1);
+        let tail = NodeId(u64::MAX - 2);
+        assert_eq!(
+            graph
+                .connections
+                .iter()
+                .map(|c| (c.from, c.to))
+                .collect::<Vec<_>>(),
+            vec![
+                (NodeId(0), head),
+                (head, NodeId(2)),
+                (NodeId(2), NodeId(3)),
+                (NodeId(3), tail),
+                (tail, NodeId(u64::MAX)),
+            ]
+        );
+        assert_eq!(
+            graph.nodes[&head],
+            NodeKind::ChannelMap {
+                inputs: Channels::Stereo,
+                outputs: mono,
+            }
+        );
+        assert_eq!(
+            graph.nodes[&tail],
+            NodeKind::ChannelMap {
+                inputs: mono,
+                outputs: Channels::Stereo,
+            }
+        );
+        graph.compile().expect("the mono chain is a legal graph");
+    }
+    /// Branches that disagree on width meet at the widest tail: the mono
+    /// lane climbs back to stereo on a riser of its own, the stereo lane
+    /// joins the mixer bare-handed, and the mixer itself is stereo so the
+    /// trunk needs nothing on the way to the output.
+    #[test]
+    fn a_plan_lifts_each_branch_to_the_widest_tail_before_the_mixer() {
+        let mono = Channels::Mono;
+        let graph = plan(&[vec![
+            vec![(NodeId(2), mono, mono)],
+            vec![(NodeId(3), Channels::Stereo, Channels::Stereo)],
+        ]]);
+        let riser = graph
+            .nodes
+            .iter()
+            .find(|(_, kind)| {
+                matches!(
+                    kind,
+                    NodeKind::ChannelMap {
+                        inputs,
+                        outputs,
+                    } if *inputs == mono && *outputs == Channels::Stereo
+                )
+            })
+            .map(|(id, _)| *id)
+            .expect("the mono branch carries a riser");
+        let mixer = graph
+            .nodes
+            .iter()
+            .find(|(_, kind)| matches!(kind, NodeKind::Mixer(_)))
+            .map(|(id, _)| *id)
+            .expect("the stage mixes");
+        assert_eq!(graph.nodes[&mixer], NodeKind::Mixer(Channels::Stereo));
+        let feeds = graph
+            .connections
+            .iter()
+            .filter(|c| c.to == mixer)
+            .map(|c| c.from)
+            .collect::<Vec<_>>();
+        assert_eq!(feeds, vec![riser, NodeId(3)]);
+        graph.compile().expect("the mixed stage is a legal graph");
+    }
+    /// Where every branch agrees on mono there is nothing to lift: the
+    /// mixer is mono too, and the single map back to stereo waits at the
+    /// output, wherever the branches happened to meet.
+    #[test]
+    fn a_plan_holds_a_unanimous_branch_width_all_the_way_to_the_output() {
+        let mono = Channels::Mono;
+        let graph = plan(&[vec![
+            vec![(NodeId(2), mono, mono)],
+            vec![(NodeId(3), mono, mono)],
+        ]]);
+        let maps = graph
+            .nodes
+            .values()
+            .filter(|kind| matches!(kind, NodeKind::ChannelMap { .. }))
+            .count();
+        assert_eq!(maps, 3, "two head joins and one tail split");
+        let mixer = graph
+            .nodes
+            .iter()
+            .find(|(_, kind)| matches!(kind, NodeKind::Mixer(_)))
+            .map(|(id, _)| *id)
+            .expect("the stage mixes");
+        assert_eq!(graph.nodes[&mixer], NodeKind::Mixer(mono));
+        let last_map = graph
+            .connections
+            .iter()
+            .find(|c| c.to == NodeId(u64::MAX))
+            .unwrap()
+            .from;
+        assert_eq!(
+            graph.nodes[&last_map],
+            NodeKind::ChannelMap {
+                inputs: mono,
+                outputs: Channels::Stereo,
+            }
+        );
+        graph.compile().expect("the mono stage is a legal graph");
+    }
+    /// A rack of stereo cards still carries no maps at all — the counts
+    /// only ever meet as equals.
+    #[test]
+    fn a_plan_needs_no_crook_when_the_counts_already_agree() {
+        let stereo = Channels::Stereo;
+        let graph = plan(&[vec![vec![(NodeId(2), stereo, stereo)]]]);
+        assert_eq!(graph.connections.len(), 2);
+        assert!(
+            graph
+                .nodes
+                .values()
+                .all(|kind| !matches!(kind, NodeKind::ChannelMap { .. }))
+        );
+        graph.compile().expect("the stereo chain is a legal graph");
     }
     #[test]
     fn dsp_stops_and_returns_its_graph_when_no_device_callback_ever_arrives() {

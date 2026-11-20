@@ -205,6 +205,147 @@ fn serial_processing_and_explicit_channel_conversions_preserve_the_signal() {
     assert_eq!(left, right);
 }
 #[test]
+fn wide_buses_join_to_their_mean_and_split_by_duplicating_the_first_channel() {
+    let quad = Channels::new(4).unwrap();
+    let graph = RackGraph {
+        nodes: [
+            (NodeId(0), NodeKind::Input(quad)),
+            (
+                NodeId(1),
+                NodeKind::ChannelMap {
+                    inputs: quad,
+                    outputs: Channels::Mono,
+                },
+            ),
+            (
+                NodeId(2),
+                NodeKind::ChannelMap {
+                    inputs: Channels::Mono,
+                    outputs: quad,
+                },
+            ),
+            (NodeId(3), NodeKind::Output(quad)),
+        ]
+        .into(),
+        connections: [(0, 1), (1, 2), (2, 3)]
+            .map(|(a, b)| Connection {
+                from: NodeId(a),
+                to: NodeId(b),
+            })
+            .into(),
+        ..RackGraph::default()
+    };
+    let mut rack = PreparedRack::prepare(&graph, BTreeMap::new(), 2).unwrap();
+    let mut first = [0.0; 2];
+    let mut second = [0.0; 2];
+    let mut third = [0.0; 2];
+    let mut fourth = [0.0; 2];
+    rack.process(
+        &[&[1.0, 1.0], &[2.0, 2.0], &[3.0, 3.0], &[4.0, 4.0]],
+        &mut [&mut [
+            &mut first[..],
+            &mut second[..],
+            &mut third[..],
+            &mut fourth[..],
+        ][..]],
+        2,
+    )
+    .unwrap();
+    // The join folds all four inputs to their mean, and the split hands the
+    // single lane to each of the four on its way out.
+    for lane in [&first, &second, &third, &fourth] {
+        assert_eq!(lane, &[2.5; 2]);
+    }
+}
+#[test]
+fn stereo_wires_meter_their_lanes_side_by_side() {
+    struct Split {
+        left: f32,
+        right: f32,
+    }
+    impl Processor for Split {
+        fn process(
+            &mut self,
+            input: &AudioBuffer,
+            output: &mut AudioBuffer,
+            frames: usize,
+        ) -> Result<(), ProcessError> {
+            for frame in 0..frames {
+                output.channel_mut(0, frames)[frame] = input.channel(0, frames)[frame] * self.left;
+                output.channel_mut(1, frames)[frame] = input.channel(1, frames)[frame] * self.right;
+            }
+            Ok(())
+        }
+    }
+    let graph = RackGraph {
+        nodes: [
+            (NodeId(0), NodeKind::Input(Channels::Stereo)),
+            (
+                NodeId(1),
+                NodeKind::Plugin {
+                    inputs: Channels::Stereo,
+                    outputs: Channels::Stereo,
+                },
+            ),
+            (NodeId(2), NodeKind::Output(Channels::Stereo)),
+        ]
+        .into(),
+        connections: [(0, 1), (1, 2)]
+            .map(|(a, b)| Connection {
+                from: NodeId(a),
+                to: NodeId(b),
+            })
+            .into(),
+        ..RackGraph::default()
+    };
+    let mut rack = PreparedRack::prepare(
+        &graph,
+        [(
+            NodeId(1),
+            ProcessorSlot {
+                processor: Box::new(Split {
+                    left: 2.0,
+                    right: 0.5,
+                }),
+                bypassed: false,
+            },
+        )]
+        .into(),
+        4,
+    )
+    .unwrap();
+    let levels = Arc::new(WireLevels::new(4));
+    rack.attach_wire_levels(Arc::clone(&levels));
+    let (left, right) = ([1.0; 4], [0.5; 4]);
+    let mut out_left = [0.0; 4];
+    let mut out_right = [0.0; 4];
+    // Three blocks: the estimators start with empty history, so the step
+    // onset stays inside their 8-tap window for the first two blocks of 4
+    // samples and each `take()` reports the 1.0976 onset crest. The third
+    // block filters a fully settled window and reads the constant exactly.
+    for _ in 0..3 {
+        rack.process(
+            &[&left, &right],
+            &mut [&mut [&mut out_left[..], &mut out_right[..]][..]],
+            4,
+        )
+        .unwrap();
+    }
+    let arrival = levels.sample_lanes(NodeId(1).0 << 1).unwrap();
+    assert_eq!(arrival.rms, [1.0, 0.5]);
+    assert_eq!(arrival.peak, [1.0, 0.5]);
+    let departure = levels.sample_lanes(NodeId(1).0 << 1 | 1).unwrap();
+    assert_eq!(departure.rms, [2.0, 0.25]);
+    assert_eq!(departure.peak, [2.0, 0.25]);
+    // The corner readout's aggregate is the louder lane of each kind, so a
+    // quiet right channel cannot hide behind its own lane or the meter.
+    assert_eq!(levels.sample(NodeId(1).0 << 1), Some((1.0, 1.0)));
+    assert_eq!(levels.sample(NodeId(1).0 << 1 | 1), Some((2.0, 2.0)));
+    // The card's wet difference reaches the lanes: 2.0 left, 0.25 right.
+    assert_eq!(out_left, [2.0; 4]);
+    assert_eq!(out_right, [0.25; 4]);
+}
+#[test]
 fn invalid_calls_and_failed_nodes_silence_the_external_output() {
     let mut effects = BTreeMap::from([
         (NodeId(1), slot(1.0, false, false)),
@@ -341,6 +482,15 @@ fn attached_wires_publish_each_plugins_input_and_output() {
     assert_eq!(levels.sample(NodeId(2).0 << 1 | 1), Some((0.375, 0.5)));
     // The mixer is not a plugin, so its small id gets no meter.
     assert_eq!(levels.sample(NodeId(3).0 << 1), None);
+    // A mono wire publishes a silent second lane: its aggregate is exactly
+    // its one metered lane, with nothing folded away beside it.
+    assert_eq!(
+        levels.sample_lanes(NodeId(1).0 << 1),
+        Some(WireSample {
+            rms: [input_rms, 0.0],
+            peak: [1.0, 0.0],
+        })
+    );
     // Without a fresh process call the keys still report the last block.
     assert_eq!(levels.sample(NodeId(1).0 << 1), Some((input_rms, 1.0)));
 }

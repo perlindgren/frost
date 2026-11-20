@@ -282,7 +282,7 @@ impl Entry {
             .nodes
             .values()
             .find_map(|kind| match kind {
-                NodeKind::Input(channels) => Some(channel_count(*channels)),
+                NodeKind::Input(channels) => Some(channels.count()),
                 _ => None,
             })
             .ok_or("Graph has no input")?;
@@ -298,7 +298,7 @@ impl Entry {
             .nodes
             .values()
             .filter_map(|kind| match kind {
-                NodeKind::Output(channels) => Some(channel_count(*channels)),
+                NodeKind::Output(channels) => Some(channels.count()),
                 _ => None,
             })
             .collect();
@@ -332,8 +332,8 @@ impl Entry {
                     class,
                     sample_rate,
                     max_frames,
-                    channel_count(inputs),
-                    channel_count(outputs),
+                    inputs.count(),
+                    outputs.count(),
                     None,
                 )?;
                 owners.insert(id, owner);
@@ -536,11 +536,5 @@ impl Entry {
                 restart: signals,
             },
         ))
-    }
-}
-fn channel_count(channels: nice_rack_engine::Channels) -> usize {
-    match channels {
-        nice_rack_engine::Channels::Mono => 1,
-        nice_rack_engine::Channels::Stereo => 2,
     }
 }

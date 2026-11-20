@@ -41,7 +41,12 @@ struct Dropped {
 /// is often not the one the operator is looking at. The engine keeps its
 /// own linear copy so the trim survives a closed meter and rack rebuilds.
 struct WireMeter {
-    peak: PeakMeter,
+    /// One peak-hold per drawn lane. A stereo wire — and the engine folds
+    /// any wider wire into its second lane — shows lane 0 and lane 1 side
+    /// by side; a mono wire has only lane 0 and its second lane stays
+    /// silent, so every folded reading below, which the stub colour and
+    /// the corner digits take, is exactly what a single meter used to say.
+    peaks: [PeakMeter; 2],
     gain_db: f32,
     /// Whether the track is expanded. The rack's word for an opened meter.
     open: bool,
@@ -51,6 +56,33 @@ struct WireMeter {
     /// and the two have nothing to do with each other: a collapsed track can
     /// be carrying nothing and an expanded one can be broken.
     open_circuit: bool,
+}
+impl WireMeter {
+    /// The meter's level across its lanes: whatever is loudest. The rack
+    /// reads this where it draws or reports one value per wire — the stub
+    /// colour, the corner digits — and reads the lanes separately only
+    /// where it draws the track.
+    fn level_db(&self) -> f32 {
+        self.peaks[0].level_db().max(self.peaks[1].level_db())
+    }
+    /// A clip on either lane clips the wire: the operator has to
+    /// acknowledge the peak the wire caught, not the lane that caught it.
+    fn clipping(&self) -> bool {
+        self.peaks.iter().any(PeakMeter::clipping)
+    }
+    /// Acknowledging clears the latch on both lanes, so one click on the
+    /// wire is enough however many channels it carries.
+    fn clear_clip(&mut self) {
+        for lane in &mut self.peaks {
+            lane.clear_clip();
+        }
+    }
+    /// Start both lanes fresh at `time`, as a latching meter is born.
+    fn restart(&mut self, time: u64) {
+        for lane in self.peaks.iter_mut() {
+            *lane = PeakMeter::latching(time);
+        }
+    }
 }
 /// Track presses independently of the text editor: its first click opens the
 /// editor, so the second press must still be able to reset that same value.
@@ -291,10 +323,47 @@ fn wire_end(to: f32, box_x: f32, open: bool) -> f32 {
         to
     }
 }
+/// The spacing between the parallel strokes that draw the channels of a
+/// stereo wire. Deliberately small: two lines close together read as one
+/// stereo wire, not as two wires somebody forgot to join, and at this gap
+/// every click tolerance in the rack (`BREAK_HALF`, the stub boxes) still
+/// covers both lanes, so a click opens the whole wire as it always did.
+const WIRE_LANE_GAP: f32 = 4.0;
+/// How far off the centre line lane `lane` of a `lanes`-wide wire sits.
+/// The lanes straddle the wire's own line symmetrically, so a mono wire —
+/// every wire before channel counts existed — sits exactly where it always
+/// sat. Widths beyond two fold into the second lane the way the engine's
+/// metering folds them, and the rack never draws more than two.
+fn lane_offset(lane: usize, lanes: usize) -> f32 {
+    (lane as f32 - (lanes.min(2) - 1) as f32 * 0.5) * WIRE_LANE_GAP
+}
 /// A stretch of wire, if there is one left to draw after the cut above.
-fn wire_segment(ctx: &mut Context, from: f32, to: f32, y: f32, color: Color) {
+/// A stereo wire is two parallel strokes a [`WIRE_LANE_GAP`] apart, the
+/// pair centred on the line its mono self would have been drawn on; the
+/// click targets in this file are still one per wire, lanes being a way
+/// of seeing a wire and not a way of holding it.
+fn wire_segment(ctx: &mut Context, from: f32, to: f32, y: f32, color: Color, lanes: usize) {
     if from <= to {
-        ctx.line(from, y, to, y, color, 2.0, 0.1);
+        for lane in 0..lanes.clamp(1, 2) {
+            let y = y + lane_offset(lane, lanes);
+            ctx.line(from, y, to, y, color, 2.0, 0.1);
+        }
+    }
+}
+/// A riser: a vertical stretch of wire at `x` between two heights, spread
+/// into lanes the way [`wire_segment`] spreads a horizontal run. This is
+/// what a stage's split and merge columns are: a stereo signal dropping
+/// from the flow line onto a branch, or climbing back up to it, carries
+/// its second channel with it as a second riser beside the first.
+fn wire_riser(ctx: &mut Context, x: f32, from_y: f32, to_y: f32, color: Color, lanes: usize) {
+    let (lo, hi) = if from_y <= to_y {
+        (from_y, to_y)
+    } else {
+        (to_y, from_y)
+    };
+    for lane in 0..lanes.clamp(1, 2) {
+        let x = x + lane_offset(lane, lanes);
+        ctx.line(x, lo, x, hi, color, 2.0, 0.1);
     }
 }
 /// Whether a pointer is on a wire: anywhere along the stretch it owns within
@@ -390,7 +459,7 @@ fn engine_gain_db(linear: Option<f32>) -> f32 {
 /// the same number as an expanded one.
 fn corner_reading(wire: Option<&WireMeter>, engine_linear: Option<f32>) -> (f32, bool) {
     match wire {
-        Some(meter) => (meter.gain_db, meter.peak.clipping()),
+        Some(meter) => (meter.gain_db, meter.clipping()),
         None => (engine_gain_db(engine_linear), false),
     }
 }
@@ -430,7 +499,7 @@ fn remembered_trim(remembered: Option<f32>, engine_linear: Option<f32>) -> f32 {
 /// away, which is the point of a meter nobody is watching.
 fn new_wire_meter(gain_db: f32, time: u64) -> WireMeter {
     WireMeter {
-        peak: PeakMeter::latching(time),
+        peaks: [PeakMeter::latching(time); 2],
         gain_db,
         open: false,
         open_circuit: false,
@@ -472,11 +541,11 @@ fn new_wire_meter(gain_db: f32, time: u64) -> WireMeter {
 /// is the one that cannot be allowed to disappear under a colour the operator
 /// chose themselves.
 fn stub_color(stub: Option<&WireMeter>, gate_db: f32, wire: Color) -> Color {
-    if stub.is_some_and(|meter| meter.peak.clipping()) {
+    if stub.is_some_and(|meter| meter.clipping()) {
         nice_common::knob::RED
     } else if stub.is_some_and(|meter| meter.open_circuit) {
         nice_common::knob::AMBER
-    } else if stub.is_some_and(|meter| meter.open || meter.peak.level_db() >= gate_db) {
+    } else if stub.is_some_and(|meter| meter.open || meter.level_db() >= gate_db) {
         LEVEL
     } else {
         wire
@@ -1021,7 +1090,7 @@ impl RackUi {
             && !self.runtime.bypassed(id)
             && let Some(meter) = self.wire_meters.get_mut(&(id, true))
         {
-            meter.peak = PeakMeter::latching(now());
+            meter.restart(now());
         }
         self.runtime.message = if paused {
             if self.runtime.bypassed(id) {
@@ -1102,7 +1171,7 @@ impl RackUi {
             MeterPos::Wire(id, side) => self
                 .wire_meters
                 .get(&(id, side))
-                .is_some_and(|wire| wire.peak.clipping()),
+                .is_some_and(|wire| wire.clipping()),
         }
     }
     /// Acknowledge a clip: the meter clicked goes back to its resting colour
@@ -1125,13 +1194,34 @@ impl RackUi {
                 MeterPos::MasterOut => self.output.clear_clip(),
                 MeterPos::Wire(id, side) => {
                     if let Some(wire) = self.wire_meters.get_mut(&(id, side)) {
-                        wire.peak.clear_clip();
+                        wire.clear_clip();
                     }
                 }
             }
         }
     }
 
+    /// How many channels a wire carries, as the GUI draws them: the
+    /// card's own count on the stub's side — inputs for the lead into a
+    /// card, outputs for the lead out of it — clamped to the two lanes
+    /// the rack draws and the engine's metering folds into. Anything the
+    /// rack has no card for — a meter outliving its card — reads as
+    /// stereo, the width the rack's own jacks carry, which only ever
+    /// keeps a gone meter's last lanes decaying in the right shape.
+    fn wire_lanes(&self, id: u64, side: bool) -> usize {
+        if id == MASTER_WIRE_KEY {
+            return 2;
+        }
+        self.runtime
+            .cards
+            .iter()
+            .find(|card| card.id.0 == id)
+            .map_or(2, |card| {
+                if side { card.outputs } else { card.inputs }
+                    .count()
+                    .clamp(1, 2)
+            })
+    }
     /// The corner readout and the vertical meter of one wire slot, drawn at
     /// pre-computed geometry: `track` is the meter column's centre and
     /// `corner` the dB readout's centre. A card's pair hangs off its face;
@@ -1167,10 +1257,23 @@ impl RackUi {
             corner_reading(wire, key.and_then(|key| self.runtime.wires.gain_of(key)));
         let open = wire.is_some_and(|meter| meter.open);
         // Only an open meter draws a track, and an open meter always
-        // has an entry, so the default below is never read; −120 dB is
-        // what `db` calls silence anyway.
-        let level_db = wire.map_or(-120.0, |meter| meter.peak.level_db());
-        let peak_db = wire.map_or(-120.0, |meter| meter.peak.peak_db());
+        // has an entry, so the defaults below are never read; −120 dB is
+        // what `db` calls silence anyway. The track draws its lanes
+        // separately — a stereo wire shows one bar and one peak line per
+        // channel, the way its wiring draws two lines — so what is
+        // carried down is the pair of lane readings, not one folded
+        // number.
+        let lanes = self.wire_lanes(id, side);
+        let lane_readings: [(f32, f32, bool); 2] =
+            wire.map_or([(-120.0, -120.0, false); 2], |meter| {
+                std::array::from_fn(|lane: usize| {
+                    (
+                        meter.peaks[lane].level_db(),
+                        meter.peaks[lane].peak_db(),
+                        meter.peaks[lane].clipping(),
+                    )
+                })
+            });
         let dragging = self
             .gain_drag
             .is_some_and(|(drag_id, grabbed, _)| drag_id == id && grabbed == side);
@@ -1364,10 +1467,21 @@ impl RackUi {
         // scales over the last 48 dB, screen y pointing up. The
         // track brightens while grabbed or hovered, saying "this
         // is the slider" before the first drag even starts.
+        //
+        // A wire wider than mono draws its lanes as parallel columns
+        // close together, centred on the same line the wiring puts its
+        // parallel strokes on: the background and the scale marks stay
+        // one object — the clip and the hover colour the whole meter,
+        // and the operator acknowledges the wire, not a channel of it —
+        // while the level bars and the peak lines belong to a lane.
+        // Mono keeps the exact column it always drew; stereo just
+        // splits it.
+        let lane_half = if lanes > 1 { 1.2 } else { 3.0 };
+        let bg_half = if lanes > 1 { 2.75 } else { 3.0 };
         ctx.rectangle(
             track[0],
             track[1],
-            3.0,
+            bg_half,
             56.0,
             if clip {
                 if hovered {
@@ -1382,16 +1496,23 @@ impl RackUi {
             },
             0.3,
         );
-        let t = ((level_db.max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
-        if t > 0.0 {
-            ctx.rectangle(
-                track[0],
-                track[1] - 56.0 + 56.0 * t,
-                3.0,
-                56.0 * t,
-                if clip { nice_common::knob::RED } else { LEVEL },
-                0.3,
-            );
+        let lane_x = |lane: usize| track[0] + lane_offset(lane, lanes);
+        for (lane, &(lane_level, _, lane_clip)) in lane_readings.iter().enumerate().take(lanes) {
+            let t = ((lane_level.max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
+            if t > 0.0 {
+                ctx.rectangle(
+                    lane_x(lane),
+                    track[1] - 56.0 + 56.0 * t,
+                    lane_half,
+                    56.0 * t,
+                    if lane_clip {
+                        nice_common::knob::RED
+                    } else {
+                        LEVEL
+                    },
+                    0.3,
+                );
+            }
         }
         // Gray marks every 6 dB: the meter's own scale runs −48 to
         // 0 over the 112 px track, so a mark lands every 14 px.
@@ -1399,7 +1520,7 @@ impl RackUi {
             ctx.rectangle(
                 track[0],
                 track[1] - 56.0 + 14.0 * step as f32,
-                3.0,
+                bg_half,
                 0.5,
                 if clip {
                     rgb(188, 62, 56)
@@ -1409,21 +1530,25 @@ impl RackUi {
                 0.3,
             );
         }
-        let p = ((peak_db.max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
-        // Dimmed to slate so the white gain line stays the one
-        // bright mark on the track.
-        ctx.rectangle(
-            track[0],
-            track[1] - 56.0 + 112.0 * p,
-            4.5,
-            1.0,
-            if clip {
-                nice_common::knob::RED
-            } else {
-                rgb(148, 163, 184)
-            },
-            0.3,
-        );
+        for (lane, &(_, lane_peak, lane_clip)) in lane_readings.iter().enumerate().take(lanes) {
+            let p = ((lane_peak.max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
+            // Dimmed to slate so the white gain line stays the one
+            // bright mark on the track. A stereo meter puts one peak
+            // line on each lane; the trim rides the wire, so its white
+            // line below spans both.
+            ctx.rectangle(
+                lane_x(lane),
+                track[1] - 56.0 + 112.0 * p,
+                if lanes > 1 { 1.45 } else { 4.5 },
+                1.0,
+                if lane_clip {
+                    nice_common::knob::RED
+                } else {
+                    rgb(148, 163, 184)
+                },
+                0.3,
+            );
+        }
         if !paused {
             ctx.rectangle(
                 track[0],
@@ -1930,6 +2055,14 @@ impl Process for RackUi {
         // wire or its stub mutes the output, meter still reading what
         // arrives.
         let mut previous_x = layout.left + 25.0;
+        // How wide the trunk is on the flow line as it arrives at each
+        // stage. The rack's `IN` jack is the host's output, so it is
+        // stereo, and past each stage the mixer — when there is one —
+        // has folded the branches down to the widest of their tails, so
+        // the trunk runs on at that width. This is the same arithmetic
+        // the rack applies to the graph itself when it builds one, for
+        // the same reason: nothing else changes a wire's channel count.
+        let mut incoming = 2;
         for (index, group) in groups.iter().enumerate() {
             let stage_slots = layout
                 .slots
@@ -1965,16 +2098,6 @@ impl Process for RackUi {
                     .unwrap_or(x),
                 true,
             );
-            let low = stage_slots
-                .iter()
-                .map(|slot| slot.y)
-                .fold(layout.flow, f32::min)
-                .max(layout.bottom);
-            let high = stage_slots
-                .iter()
-                .map(|slot| slot.y)
-                .fold(layout.flow, f32::max)
-                .min(layout.top);
             // The trunk, up to the column this stage splits at, at the height
             // signals flow at. A stage on its own sits on that very line, so its
             // trunk is the connector an operator sees running between two meters,
@@ -1994,10 +2117,38 @@ impl Process for RackUi {
                 wire_end(split, wire_box_x(x, false), feed_open),
                 layout.flow,
                 wire,
+                incoming,
             );
             if shared {
-                ctx.line(split, low, split, high, wire, 2.0, 0.1);
-                ctx.line(merge, low, merge, high, wire, 2.0, 0.1);
+                // The risers, branch by branch: each one drops from the
+                // flow line into its head card carrying the width that
+                // head takes, and climbs into the merge column carrying
+                // the width its tail puts out. A branch that joins a
+                // stereo trunk down to a mono head therefore draws one
+                // riser, not two — its second conductor stays at the
+                // split column, because the join happens at that
+                // column's mixer and nowhere on the way down.
+                let row = |y: f32| y.max(layout.bottom).min(layout.top);
+                for branch in &stage {
+                    if let (Some(head), Some(tail)) = (branch.first(), branch.last()) {
+                        wire_riser(
+                            ctx,
+                            split,
+                            layout.flow,
+                            row(head.y),
+                            wire,
+                            self.wire_lanes(head.id.0, false),
+                        );
+                        wire_riser(
+                            ctx,
+                            merge,
+                            row(tail.y),
+                            layout.flow,
+                            wire,
+                            self.wire_lanes(tail.id.0, true),
+                        );
+                    }
+                }
                 // A ring at the merge, in the wires' own colour: the trunk
                 // and the risers cross right here, so without a collar the
                 // join read as just another stroke on the wire. The disc
@@ -2143,7 +2294,14 @@ impl Process for RackUi {
                         } else {
                             wire_end(outer, bx, open)
                         };
-                        wire_segment(ctx, inner, outer, slot.y, wire);
+                        wire_segment(
+                            ctx,
+                            inner,
+                            outer,
+                            slot.y,
+                            wire,
+                            self.wire_lanes(slot.id.0, side),
+                        );
                         // The stub box is the whole of a minimised meter's
                         // face, so it carries everything the rack knows about
                         // the wire: red for a clip nobody has acknowledged, amber
@@ -2156,6 +2314,17 @@ impl Process for RackUi {
                     }
                 }
             }
+            // Out of this stage the trunk carries whatever the join hands
+            // on: a single chain keeps its tail's width, and a parallel
+            // stage leaves on the mixer, which folds the branches to the
+            // widest of their tails — the same width the rack builds its
+            // graph at.
+            incoming = stage
+                .iter()
+                .filter_map(|branch| branch.last())
+                .map(|tail| self.wire_lanes(tail.id.0, true))
+                .max()
+                .unwrap_or(2);
             previous_x = merge;
         }
         // The master wire, drawn past the loop so it keeps running when
@@ -2190,6 +2359,9 @@ impl Process for RackUi {
             ),
             layout.flow,
             wire,
+            // The rack's own output is the host's jack: stereo, always,
+            // whatever the last card happened to put out.
+            2,
         );
         // The `OUT` card's face: nothing is ever dropped on it, dragged
         // off it or deleted from it — the face is where the trim corner
@@ -2360,7 +2532,7 @@ impl Process for RackUi {
                 if paused {
                     "PAUSED".into()
                 } else {
-                    format!("{:?} → {:?}", card.inputs, card.outputs)
+                    format!("{} → {}", card.inputs, card.outputs)
                 },
                 12.0,
                 500.0,
@@ -2638,13 +2810,19 @@ impl Process for RackUi {
                 // open the audio side has to keep seeing it.
                 self.runtime.wires.set_open(key, wire.open_circuit);
             }
-            let (rms, peak) = key
-                .and_then(|key| self.runtime.wires.sample(key))
-                .unwrap_or((0.0, 0.0));
+            // The engine publishes both meter lanes for every wire; a
+            // mono wire simply publishes silence on its second, and a
+            // wider one has already been folded into two lanes by the
+            // engine, so two ticks per wire is all the rack ever does.
+            let lanes = key
+                .and_then(|key| self.runtime.wires.sample_lanes(key))
+                .unwrap_or_default();
             if *side && self.runtime.paused(*id) && !self.runtime.bypassed(*id) {
-                wire.peak = PeakMeter::latching(time);
+                wire.restart(time);
             } else {
-                wire.peak.tick(db(rms), db(peak), time);
+                for (lane, meter) in wire.peaks.iter_mut().enumerate() {
+                    meter.tick(db(lanes.rms[lane]), db(lanes.peak[lane]), time);
+                }
             }
         }
         for slot in &layout.slots {
@@ -2930,7 +3108,7 @@ fn draw_details(ctx: &mut Context, font: &Arc<[u8]>, card: &Card) {
     let rows = [
         format!("{}  {}", card.name, card.details.version),
         format!("Vendor: {}", card.details.vendor),
-        format!("{:?} → {:?}", card.inputs, card.outputs),
+        format!("{} → {}", card.inputs, card.outputs),
         card.details.description.clone(),
         card.path.display().to_string(),
     ];
@@ -3126,13 +3304,13 @@ mod tests {
         // trim before its stub was ever clicked and while its track is
         // collapsed, and the number does not move when the track opens.
         let expanded = WireMeter {
-            peak: PeakMeter::new(0),
+            peaks: [PeakMeter::new(0); 2],
             gain_db: -6.5,
             open: true,
             open_circuit: false,
         };
         let collapsed = WireMeter {
-            peak: PeakMeter::new(0),
+            peaks: [PeakMeter::new(0); 2],
             gain_db: -6.5,
             open: false,
             open_circuit: false,
@@ -3379,7 +3557,7 @@ mod tests {
         }
         assert!(peak.peak_db() < 0.0, "the marker is back in the scale");
         let collapsed = WireMeter {
-            peak,
+            peaks: [peak, PeakMeter::new(0)],
             gain_db: 0.0,
             open: false,
             open_circuit: false,
@@ -3389,7 +3567,7 @@ mod tests {
             "the clip is still on record"
         );
         let mut cleared = collapsed;
-        cleared.peak.clear_clip();
+        cleared.clear_clip();
         assert!(
             !corner_reading(Some(&cleared), None).1,
             "and clicking the meter body is what takes it off"
@@ -3409,7 +3587,7 @@ mod tests {
         assert_eq!(keys, vec![(1, false), (1, true), (3, false), (3, true)]);
         for wire in meters.values() {
             assert!(!wire.open, "metered, not on screen");
-            assert!(!wire.peak.clipping());
+            assert!(!wire.clipping());
         }
     }
     #[test]
@@ -3522,7 +3700,7 @@ mod tests {
         let wire = meters.get_mut(&(2, true)).unwrap();
         wire.open = true;
         wire.gain_db = -12.0;
-        wire.peak.tick(-18.0, 1.4, 16);
+        wire.peaks[0].tick(-18.0, 1.4, 16);
         watch_wires(
             &mut meters,
             [2],
@@ -3534,7 +3712,7 @@ mod tests {
         let wire = &meters[&(2, true)];
         assert!(wire.open, "still expanded");
         assert_eq!(wire.gain_db, -12.0, "still the operator's trim");
-        assert!(wire.peak.clipping(), "still reporting the clip");
+        assert!(wire.clipping(), "still reporting the clip");
         assert_eq!(meters.len(), 2, "and nothing new was invented");
     }
     #[test]
@@ -3546,19 +3724,16 @@ mod tests {
         let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
         watch_wires(&mut meters, [6], |_, _| None, |_| None, |_, _| false, 0);
         let wire = meters.get_mut(&(6, false)).unwrap();
-        wire.peak.tick(-18.0, 1.4, 16);
+        wire.peaks[0].tick(-18.0, 1.4, 16);
         for t in (16..4_000).step_by(16) {
-            wire.peak.tick(-60.0, -60.0, t);
+            wire.peaks[0].tick(-60.0, -60.0, t);
         }
         assert!(
-            wire.peak.clipping() && !wire.open,
+            wire.clipping() && !wire.open,
             "red on a meter nobody opened"
         );
-        wire.peak.clear_clip();
-        assert!(
-            !wire.peak.clipping(),
-            "and one click of that stub clears it"
-        );
+        wire.clear_clip();
+        assert!(!wire.clipping(), "and one click of that stub clears it");
     }
     #[test]
     fn a_minimised_meter_colours_itself_against_the_gate() {
@@ -3577,10 +3752,10 @@ mod tests {
         // Something is coming through the input wire now.
         let meter = meters.get_mut(&(5, false)).unwrap();
         for t in (16..=160).step_by(16) {
-            meter.peak.tick(-20.0, -20.0, t);
+            meter.peaks[0].tick(-20.0, -20.0, t);
         }
         let loud = meters.get(&(5, false)).unwrap();
-        assert!(loud.peak.level_db() > -21.0, "the bar got there");
+        assert!(loud.level_db() > -21.0, "the bar got there");
         assert_eq!(
             stub_color(Some(loud), -60.0, wire),
             LEVEL,
@@ -3610,18 +3785,18 @@ mod tests {
         // it — that fall is exactly the interval in which a plain level rule
         // would have quietly painted the stub grey again.
         let meter = meters.get_mut(&(5, false)).unwrap();
-        meter.peak.tick(-20.0, 1.4, 200);
+        meter.peaks[0].tick(-20.0, 1.4, 200);
         for t in (216..4_000).step_by(16) {
-            meter.peak.tick(-120.0, -120.0, t);
+            meter.peaks[0].tick(-120.0, -120.0, t);
         }
         let burnt = meters.get_mut(&(5, false)).unwrap();
-        assert!(burnt.peak.clipping() && burnt.peak.level_db() < -60.0);
+        assert!(burnt.clipping() && burnt.level_db() < -60.0);
         assert_eq!(
             stub_color(Some(burnt), -60.0, wire),
             nice_common::knob::RED,
             "red while the bar is well under the gate"
         );
-        burnt.peak.clear_clip();
+        burnt.clear_clip();
         assert_eq!(
             stub_color(Some(burnt), -60.0, wire),
             LEVEL,
@@ -3709,14 +3884,14 @@ mod tests {
         // can look up again in a second; the peak nobody has acknowledged yet is
         // the one that must not disappear underneath it.
         let meter = meters.get_mut(&(5, false)).unwrap();
-        meter.peak.tick(-20.0, 1.4, 200);
+        meter.peaks[0].tick(-20.0, 1.4, 200);
         for t in (216..4_000).step_by(16) {
-            meter.peak.tick(-120.0, -120.0, t);
+            meter.peaks[0].tick(-120.0, -120.0, t);
         }
         let burnt = meters.get_mut(&(5, false)).unwrap();
-        assert!(burnt.open_circuit && burnt.peak.clipping());
+        assert!(burnt.open_circuit && burnt.clipping());
         assert_eq!(stub_color(Some(burnt), -60.0, wire), nice_common::knob::RED);
-        burnt.peak.clear_clip();
+        burnt.clear_clip();
         assert_eq!(
             stub_color(Some(burnt), -60.0, wire),
             nice_common::knob::AMBER,
