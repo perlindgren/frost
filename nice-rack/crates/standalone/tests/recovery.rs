@@ -2,8 +2,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 use nice_clap_host::{Entry, LiveSession, LiveStatus};
 use nice_rack::{
-    routing::NodeId,
-    runtime::{Card, Runtime, chain, spawn_dsp},
+    routing::{Channels, NodeId},
+    runtime::{Card, Route, Runtime, chain, spawn_dsp},
 };
 use std::{
     collections::BTreeMap,
@@ -40,7 +40,13 @@ fn native_rack_edits_and_device_independent_shutdown() {
         },
     )
     .unwrap();
-    let (parallel_graph, parallel_bindings) = chain(&parallel);
+    let route = Route {
+        input: Channels::Stereo,
+        input_rate: None,
+        output: Channels::Stereo,
+        output_rate: None,
+    };
+    let (parallel_graph, parallel_bindings) = chain(&parallel, route).unwrap();
     let classes = parallel_bindings
         .iter()
         .map(|(&id, binding)| (id, binding.class.clone()))
@@ -60,7 +66,7 @@ fn native_rack_edits_and_device_independent_shutdown() {
         },
     )
     .unwrap();
-    let (serial_graph, _) = chain(&serial);
+    let (serial_graph, _) = chain(&serial, route).unwrap();
     let rendered = entry
         .render_graph(&serial_graph, &classes, &samples, 48000.0, 16)
         .unwrap();
@@ -70,14 +76,15 @@ fn native_rack_edits_and_device_independent_shutdown() {
         .filter(|card| card.id != NodeId(1))
         .collect::<Vec<_>>();
     assert!(
-        !chain(&reduced)
+        !chain(&reduced, route)
+            .unwrap()
             .0
             .nodes
             .values()
             .any(|node| matches!(node, nice_rack::routing::NodeKind::Mixer(_)))
     );
 
-    let (graph, bindings) = chain(&cards);
+    let (graph, bindings) = chain(&cards, route).unwrap();
     let (mut session, audio) =
         LiveSession::prepare(&graph, &bindings, 48000.0, 1024, &BTreeMap::new()).unwrap();
     let (mut capture, input) = rtrb::RingBuffer::new(64);
@@ -89,6 +96,7 @@ fn native_rack_edits_and_device_independent_shutdown() {
         audio,
         nice_common::audio_io::Endpoints { input, output },
         Arc::default(),
+        route,
     );
     let deadline = Instant::now() + Duration::from_secs(2);
     while monitor.slots() < 16 {

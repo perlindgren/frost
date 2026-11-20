@@ -5,6 +5,7 @@ use crate::{
 };
 use crossbeam::channel::{Receiver, Sender, bounded};
 use nice_clap_host::{Binding, Entry, LiveAudio, LiveSession, LiveStatus};
+use nice_common::OutputChannels;
 use nice_common::audio_io::{DeviceStreams, Endpoints};
 use nice_common::true_peak::TruePeak;
 use std::{
@@ -136,7 +137,178 @@ pub fn arrange(
 /// than on loaded plugins, so the width arithmetic stays witnessable.
 type StagePlan = Vec<Vec<(NodeId, Channels, Channels)>>;
 
-pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
+/// The rack's two ends, as the device settings describe them.
+///
+/// The rack used to carry a convention at its ends — stereo in, stereo out —
+/// whatever the sound card had been told to do. These are those same two
+/// numbers read off the settings instead, so the canvas can show what the
+/// device actually delivers: a rack fed by one capture channel is one channel
+/// wide at the `IN` jack, and a rack whose playback side names a single
+/// destination is one channel wide at the `OUT` jack.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Route {
+    /// Width the device hands the rack.
+    pub input: Channels,
+    /// Rate the capture runs at, once the settings carry one.
+    pub input_rate: Option<f32>,
+    /// Width the rack has to hand the device.
+    pub output: Channels,
+    /// Rate the playback side runs at, which may differ from the capture's.
+    pub output_rate: Option<f32>,
+}
+
+impl Default for Route {
+    /// A rack with no device settled yet: one channel coming, stereo going,
+    /// no rate answered on either side. A live rack replaces it from settings.
+    fn default() -> Self {
+        Self {
+            input: Channels::Mono,
+            input_rate: None,
+            output: Channels::Stereo,
+            output_rate: None,
+        }
+    }
+}
+
+impl Route {
+    /// The rack's ends as `settings` spells them. A rate stays `None` until
+    /// the settings answer it, which is what the canvas prints as no route.
+    pub fn of(settings: &Settings) -> Self {
+        // A jack client names its playback destinations one at a time, so a
+        // named right-hand destination is the only thing that makes its rack
+        // output two channels wide. Every other backend picks a device and a
+        // channel route, and a route naming two channels is a stereo output.
+        let output = if settings.backend.as_deref() == Some("jack") {
+            if settings.jack_output_right.is_some() {
+                Channels::Stereo
+            } else {
+                Channels::Mono
+            }
+        } else {
+            match settings.output_channels {
+                Some(OutputChannels::Stereo(_)) => Channels::Stereo,
+                Some(OutputChannels::Mono(_)) => Channels::Mono,
+                // Nothing chosen yet: the transport still carries a stereo
+                // frame to wherever the device ends up.
+                None => Channels::Stereo,
+            }
+        };
+        Self {
+            // One capture channel is selected, whatever the device can send:
+            // a second one would be a different choice, not a wider wire.
+            input: Channels::Mono,
+            input_rate: settings.sample_rate,
+            output,
+            output_rate: settings.output_sample_rate,
+        }
+    }
+}
+
+/// A card that cannot sit where the rack has put it: the wire that would feed
+/// it is another width, and the rack converts only at its own two ends and
+/// where a stage splits into parallel lanes. Anywhere else a wire is a single
+/// conductor the operator can see, so the disagreement is refused rather than
+/// quietly folded away — the engine has never converted implicitly, and a
+/// card dropped into a chain is no reason to start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidthConflict {
+    /// The card that cannot take the wire it is handed.
+    pub card: NodeId,
+    /// Width of the wire that would feed it.
+    pub wire: Channels,
+    /// Width the card needs.
+    pub wants: Channels,
+}
+
+impl WidthConflict {
+    /// The disagreement in one line, for whoever is holding the card. `name`
+    /// is the card's plugin name when the caller has one.
+    pub fn message(&self, name: Option<&str>) -> String {
+        format!(
+            "{} needs a {} input — the wire feeding it is {}",
+            name.unwrap_or("This card"),
+            self.wants,
+            self.wire
+        )
+    }
+}
+
+/// A width conversion the rack had to make, which the canvas draws as a
+/// circle with as many pins as it has channels on each side. Junctions are
+/// read back out of a compiled graph rather than recomputed from the cards,
+/// so the canvas can never draw a box the engine did not wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Junction {
+    /// The conversion node itself.
+    pub id: NodeId,
+    pub inputs: Channels,
+    pub outputs: Channels,
+    /// What feeds it, or `None` when it feeds off the rack's `IN` jack.
+    pub from: Option<NodeId>,
+    /// What it feeds, or `None` when it hands to the rack's `OUT` jack.
+    pub to: Option<NodeId>,
+}
+
+/// The rack's own `IN` jack and `OUT` jack, as `plan` names them.
+const IN: NodeId = NodeId(0);
+const OUT: NodeId = NodeId(u64::MAX);
+
+/// Every width conversion in `graph`, in the order the rack is read.
+pub fn junctions(graph: &RackGraph) -> Vec<Junction> {
+    let mut found = graph
+        .nodes
+        .iter()
+        .filter_map(|(id, kind)| match *kind {
+            NodeKind::ChannelMap { inputs, outputs } => Some(Junction {
+                id: *id,
+                inputs,
+                outputs,
+                from: graph
+                    .connections
+                    .iter()
+                    .find(|edge| edge.to == *id)
+                    .map(|edge| edge.from)
+                    .filter(|from| *from != IN),
+                to: graph
+                    .connections
+                    .iter()
+                    .find(|edge| edge.from == *id)
+                    .map(|edge| edge.to)
+                    .filter(|to| *to != OUT),
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    found.sort_by_key(|junction| {
+        graph
+            .priority
+            .get(&junction.id)
+            .copied()
+            .unwrap_or_default()
+    });
+    found
+}
+
+/// Turn a refused arrangement into the line the rack answers with. The card
+/// that cannot take its wire is named, so a refused drop says which card it
+/// was rather than reporting an anonymous routing failure.
+fn refuse(
+    built: Result<(RackGraph, BTreeMap<NodeId, Binding>), WidthConflict>,
+    cards: &[Card],
+) -> Result<(RackGraph, BTreeMap<NodeId, Binding>), String> {
+    built.map_err(|conflict| {
+        let name = cards
+            .iter()
+            .find(|card| card.id == conflict.card)
+            .map(|card| card.name.as_str());
+        conflict.message(name)
+    })
+}
+
+pub fn chain(
+    cards: &[Card],
+    route: Route,
+) -> Result<(RackGraph, BTreeMap<NodeId, Binding>), WidthConflict> {
     let mut bindings = BTreeMap::new();
     let stages = branches(cards)
         .into_iter()
@@ -155,17 +327,17 @@ pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
                 .collect()
         })
         .collect::<Vec<StagePlan>>();
-    (plan(&stages), bindings)
+    plan(&stages, route).map(|graph| (graph, bindings))
 }
 /// The wiring itself, carried out on card shapes — id, input count, output
 /// count — rather than on loaded plugins, so the width arithmetic can be
 /// witnessed without a single CLAP file on disk. The shapes arrive grouped
 /// the way `branches` groups cards: stages left to right, branches top lane
 /// down, each branch a serial chain.
-fn plan(stages: &[StagePlan]) -> RackGraph {
+fn plan(stages: &[StagePlan], route: Route) -> Result<RackGraph, WidthConflict> {
     let mut graph = RackGraph::default();
-    let input = NodeId(0);
-    let output = NodeId(u64::MAX);
+    let input = IN;
+    let output = OUT;
     let mut auxiliary = u64::MAX - 1;
     let mut next = || {
         let id = NodeId(auxiliary);
@@ -178,27 +350,39 @@ fn plan(stages: &[StagePlan]) -> RackGraph {
     // `RackGraph::priority` makes the compile plan run lanes top-down —
     // the bottom lane starts its block work where the lane above ended.
     let mut born = 0u64;
-    graph.nodes.insert(input, NodeKind::Input(Channels::Stereo));
+    graph.nodes.insert(input, NodeKind::Input(route.input));
     graph.priority.insert(input, born);
     born += 1;
-    graph
-        .nodes
-        .insert(output, NodeKind::Output(Channels::Stereo));
+    graph.nodes.insert(output, NodeKind::Output(route.output));
     let mut previous = input;
-    // The trunk carries a width, not a convention. It starts stereo with
-    // the rack input, and a `ChannelMap` appears only where two adjacent
-    // counts actually differ: a mono card hanging off a stereo trunk gets a
-    // join in front, and two mono cards in a row chain with nothing between
-    // them. A stage whose branches disagree ends each branch at the widest
-    // count before the mixer, because the compile refuses unequal feeds.
-    let mut trunk = Channels::Stereo;
-    for stage in stages {
+    // The trunk carries the width of whatever the rack has read so far. It
+    // starts at the device's own width, and a `ChannelMap` appears only where
+    // the rack is allowed to convert: at the `IN` jack, at the head of each
+    // branch of a split — where one wire becomes several, so a circle belongs
+    // there anyway — and at the `OUT` jack. Between two adjacent cards the
+    // wire is one conductor with nothing in the middle of it, so a card that
+    // wants another width there is refused. A stage whose branches disagree
+    // ends each branch at the widest count before the mixer, because the
+    // compile refuses unequal feeds.
+    let mut trunk = route.input;
+    for (index, stage) in stages.iter().enumerate() {
         let mut ends = Vec::new();
+        // A branch may start on a wire of its own width only where the rack
+        // converts: the device's own input, and a stage that splits the trunk
+        // into parallel lanes.
+        let converts = index == 0 || stage.len() > 1;
         for branch_cards in stage {
             let mut branch = previous;
             let mut width = trunk;
-            for &(id, inputs, outputs) in branch_cards {
+            for (position, &(id, inputs, outputs)) in branch_cards.iter().enumerate() {
                 if inputs != width {
+                    if !converts || position > 0 {
+                        return Err(WidthConflict {
+                            card: id,
+                            wire: width,
+                            wants: inputs,
+                        });
+                    }
                     let map = next();
                     graph.priority.insert(map, born);
                     born += 1;
@@ -266,7 +450,7 @@ fn plan(stages: &[StagePlan]) -> RackGraph {
             id
         };
     }
-    if trunk != Channels::Stereo {
+    if trunk != route.output {
         let map = next();
         graph.priority.insert(map, born);
         born += 1;
@@ -274,7 +458,7 @@ fn plan(stages: &[StagePlan]) -> RackGraph {
             map,
             NodeKind::ChannelMap {
                 inputs: trunk,
-                outputs: Channels::Stereo,
+                outputs: route.output,
             },
         );
         graph.connections.push(Connection {
@@ -288,10 +472,10 @@ fn plan(stages: &[StagePlan]) -> RackGraph {
         to: output,
     });
     // The output was in the graph from the start but is ranked last: the
-    // master trim and metering belong after the last card, as they do on
-    // the DSP timeline.
+    // master trim and metering belong after the last card, as they do on the
+    // DSP timeline.
     graph.priority.insert(output, born);
-    graph
+    Ok(graph)
 }
 /// Master metering, published as f32 bits by the DSP thread and read by the
 /// window. `input`/`output` carry linear RMS; the peak fields carry linear
@@ -894,7 +1078,9 @@ impl Runtime {
             let prepared = result.and_then(|opened| {
                 let Some((io, endpoints, resolved)) = opened else {
                     // Retain inactive instances for controls even with audio off.
-                    let (graph, bindings) = chain(&opening.action.cards);
+                    let route = Route::of(&opening.action.settings);
+                    let (graph, bindings) =
+                        refuse(chain(&opening.action.cards, route), &opening.action.cards)?;
                     let (mut session, mut audio) = LiveSession::reusing(
                         self.retired.take(),
                         &graph,
@@ -914,7 +1100,9 @@ impl Runtime {
                     return Ok(());
                 };
                 let rate = resolved.sample_rate.unwrap() as f64;
-                let (graph, bindings) = chain(&opening.action.cards);
+                let route = Route::of(&resolved);
+                let (graph, bindings) =
+                    refuse(chain(&opening.action.cards, route), &opening.action.cards)?;
                 let (session, mut audio) = match LiveSession::reusing(
                     self.retired.take(),
                     &graph,
@@ -945,7 +1133,7 @@ impl Runtime {
                     self.wires.set_paused(card.id, self.paused(card.id.0));
                 }
                 audio.attach_processing_times(self.timings.clone(), rate);
-                self.worker = Some(spawn_dsp(audio, endpoints, self.levels.clone()));
+                self.worker = Some(spawn_dsp(audio, endpoints, self.levels.clone(), route));
                 self.session = Some(session);
                 self.io = Some(io);
                 self.live_settings = Some(resolved);
@@ -1262,8 +1450,16 @@ pub fn spawn_dsp(
     mut audio: LiveAudio,
     mut io: Endpoints,
     levels: Arc<Levels>,
+    route: Route,
 ) -> JoinHandle<Endpoints> {
     std::thread::spawn(move || {
+        // The transport carries a two-channel frame each way, which is as
+        // wide as any route the settings can describe gets. Feeding the rack
+        // fewer channels than that, and reading back only what it has to
+        // hand on, is what makes the canvas's `IN`/`OUT` widths the widths
+        // the device really moves.
+        let feeds = route.input.count().clamp(1, 2);
+        let drains = route.output.count().clamp(1, 2);
         let mut left = [0.0; BLOCK];
         let mut right = [0.0; BLOCK];
         let mut out_left = [0.0; BLOCK];
@@ -1281,13 +1477,19 @@ pub fn spawn_dsp(
                 right[frame] = samples[1];
                 energy += f64::from(samples[0]).powi(2);
             }
-            let input_peak = block_peak(&mut meter_in, &left[..count], &right[..count]);
+            // A one-channel route has one channel to measure, and the second
+            // half of the transport's frame is that same channel duplicated —
+            // reading it twice keeps the RMS of the signal rather than
+            // averaging it down against silence.
+            let (in_left, in_right) = if feeds == 2 {
+                (&left[..count], &right[..count])
+            } else {
+                (&left[..count], &left[..count])
+            };
+            let input_peak = block_peak(&mut meter_in, in_left, in_right);
+            let feed = [&left[..count], &right[..count]];
             let mut group = [&mut out_left[..count], &mut out_right[..count]];
-            let status = audio.process(
-                &[&left[..count], &right[..count]],
-                &mut [&mut group[..]],
-                count,
-            );
+            let status = audio.process(&feed[..feeds], &mut [&mut group[..drains]], count);
             if status == Ok(LiveStatus::Stopped) {
                 break;
             }
@@ -1303,12 +1505,25 @@ pub fn spawn_dsp(
                 output_energy += f64::from(out_left[frame])
                     .powi(2)
                     .max(f64::from(out_right[frame]).powi(2));
-                let _ = io.output.push(nice_common::resample::StereoFrame([
-                    out_left[frame],
-                    out_right[frame],
-                ]));
+                // A mono rack output hands the same value to both hands of
+                // the frame: a mono device route takes the first, and the
+                // transport's own fold of a two-channel route back to one is
+                // `(l + r) * 0.5`, which returns that value untouched.
+                let right = if drains == 2 {
+                    out_right[frame]
+                } else {
+                    out_left[frame]
+                };
+                let _ = io
+                    .output
+                    .push(nice_common::resample::StereoFrame([out_left[frame], right]));
             }
-            let output_peak = block_peak(&mut meter_out, &out_left[..count], &out_right[..count]);
+            let (out_left_meter, out_right_meter) = if drains == 2 {
+                (&out_left[..count], &out_right[..count])
+            } else {
+                (&out_left[..count], &out_left[..count])
+            };
+            let output_peak = block_peak(&mut meter_out, out_left_meter, out_right_meter);
             levels
                 .input_peak
                 .store(input_peak.to_bits(), Ordering::Relaxed);
@@ -1343,16 +1558,29 @@ mod tests {
         let (output, consumer) = rtrb::RingBuffer::new(64);
         (Endpoints { input, output }, capture, consumer)
     }
+    /// A route wide at both ends: the convention the rack carried before the
+    /// device was ever asked, and the shape the DSP tests feed it.
+    fn wide() -> Route {
+        Route {
+            input: Channels::Stereo,
+            input_rate: None,
+            output: Channels::Stereo,
+            output_rate: None,
+        }
+    }
     /// The plan's width arithmetic, witnessed without any plugin: a map is
-    /// born only where two adjacent counts actually meet. A pair of mono
-    /// cards on the stereo trunk is one join at the head and one split at
-    /// the tail — the two cards themselves chain with nothing between them.
+    /// born only where the rack is allowed to convert — its own two jacks and
+    /// the head of a branch — so a pair of mono cards on a mono input costs
+    /// exactly one box, the join on the way out to a stereo playback side.
     #[test]
-    fn a_plan_carries_its_trunk_width_and_maps_only_the_transitions() {
+    fn a_plan_carries_its_route_and_maps_only_the_devices_own_ends() {
         let mono = Channels::Mono;
-        let graph = plan(&[vec![vec![(NodeId(2), mono, mono), (NodeId(3), mono, mono)]]]);
-        let head = NodeId(u64::MAX - 1);
-        let tail = NodeId(u64::MAX - 2);
+        let graph = plan(
+            &[vec![vec![(NodeId(2), mono, mono), (NodeId(3), mono, mono)]]],
+            Route::default(),
+        )
+        .expect("mono cards on a mono input");
+        let tail = NodeId(u64::MAX - 1);
         assert_eq!(
             graph
                 .connections
@@ -1360,19 +1588,17 @@ mod tests {
                 .map(|c| (c.from, c.to))
                 .collect::<Vec<_>>(),
             vec![
-                (NodeId(0), head),
-                (head, NodeId(2)),
+                (NodeId(0), NodeId(2)),
                 (NodeId(2), NodeId(3)),
                 (NodeId(3), tail),
                 (tail, NodeId(u64::MAX)),
-            ]
+            ],
+            "the two cards share one bare wire and the head needs no box"
         );
+        assert_eq!(graph.nodes[&NodeId(0)], NodeKind::Input(mono));
         assert_eq!(
-            graph.nodes[&head],
-            NodeKind::ChannelMap {
-                inputs: Channels::Stereo,
-                outputs: mono,
-            }
+            graph.nodes[&NodeId(u64::MAX)],
+            NodeKind::Output(Channels::Stereo)
         );
         assert_eq!(
             graph.nodes[&tail],
@@ -1383,17 +1609,64 @@ mod tests {
         );
         graph.compile().expect("the mono chain is a legal graph");
     }
+    /// The picture on the canvas with nothing in the middle of it: one
+    /// capture channel, a stereo playback side, so one circle doing 1 in /
+    /// 2 out between the two cards.
+    #[test]
+    fn an_empty_rack_still_meets_the_playback_width() {
+        let (graph, _) = chain(&[], Route::default()).expect("an empty rack still wires");
+        let split = NodeId(u64::MAX - 1);
+        assert_eq!(
+            graph
+                .connections
+                .iter()
+                .map(|c| (c.from, c.to))
+                .collect::<Vec<_>>(),
+            vec![(NodeId(0), split), (split, NodeId(u64::MAX))]
+        );
+        assert_eq!(
+            junctions(&graph),
+            vec![Junction {
+                id: split,
+                inputs: Channels::Mono,
+                outputs: Channels::Stereo,
+                from: None,
+                to: None,
+            }]
+        );
+        graph.compile().expect("the split is a legal graph");
+    }
+    /// Both ends narrow: the rack has nothing to say about width at all, and
+    /// the input card hands its one channel straight to the output card.
+    #[test]
+    fn a_narrow_device_needs_no_box_at_all() {
+        let route = Route {
+            output: Channels::Mono,
+            ..Route::default()
+        };
+        let (graph, _) = chain(&[], route).expect("a mono rack wires itself");
+        assert_eq!(graph.connections.len(), 1);
+        assert!(junctions(&graph).is_empty(), "no transition, no circle");
+        graph
+            .compile()
+            .expect("the mono pass-through is a legal graph");
+    }
     /// Branches that disagree on width meet at the widest tail: the mono
-    /// lane climbs back to stereo on a riser of its own, the stereo lane
-    /// joins the mixer bare-handed, and the mixer itself is stereo so the
-    /// trunk needs nothing on the way to the output.
+    /// lane climbs back to stereo on a riser of its own, the stereo lane —
+    /// which split off the mono trunk at its own head — joins the mixer
+    /// bare-handed, and the mixer is stereo so the trunk needs nothing more
+    /// on the way to a stereo output.
     #[test]
     fn a_plan_lifts_each_branch_to_the_widest_tail_before_the_mixer() {
         let mono = Channels::Mono;
-        let graph = plan(&[vec![
-            vec![(NodeId(2), mono, mono)],
-            vec![(NodeId(3), Channels::Stereo, Channels::Stereo)],
-        ]]);
+        let graph = plan(
+            &[vec![
+                vec![(NodeId(2), mono, mono)],
+                vec![(NodeId(3), Channels::Stereo, Channels::Stereo)],
+            ]],
+            Route::default(),
+        )
+        .expect("a split stage converts at each branch head");
         let riser = graph
             .nodes
             .iter()
@@ -1422,24 +1695,35 @@ mod tests {
             .map(|c| c.from)
             .collect::<Vec<_>>();
         assert_eq!(feeds, vec![riser, NodeId(3)]);
+        let tail = graph
+            .connections
+            .iter()
+            .find(|c| c.to == NodeId(u64::MAX))
+            .unwrap()
+            .from;
+        assert_eq!(tail, mixer, "a stereo trunk to a stereo output is bare");
         graph.compile().expect("the mixed stage is a legal graph");
     }
-    /// Where every branch agrees on mono there is nothing to lift: the
-    /// mixer is mono too, and the single map back to stereo waits at the
-    /// output, wherever the branches happened to meet.
+    /// Where every branch agrees on mono there is nothing to lift: the mixer
+    /// is mono too, and the single map back to stereo waits at the output,
+    /// wherever the branches happened to meet.
     #[test]
     fn a_plan_holds_a_unanimous_branch_width_all_the_way_to_the_output() {
         let mono = Channels::Mono;
-        let graph = plan(&[vec![
-            vec![(NodeId(2), mono, mono)],
-            vec![(NodeId(3), mono, mono)],
-        ]]);
+        let graph = plan(
+            &[vec![
+                vec![(NodeId(2), mono, mono)],
+                vec![(NodeId(3), mono, mono)],
+            ]],
+            Route::default(),
+        )
+        .expect("two mono branches on a mono input");
         let maps = graph
             .nodes
             .values()
             .filter(|kind| matches!(kind, NodeKind::ChannelMap { .. }))
             .count();
-        assert_eq!(maps, 3, "two head joins and one tail split");
+        assert_eq!(maps, 1, "only the rack's own output jack converts");
         let mixer = graph
             .nodes
             .iter()
@@ -1462,12 +1746,12 @@ mod tests {
         );
         graph.compile().expect("the mono stage is a legal graph");
     }
-    /// A rack of stereo cards still carries no maps at all — the counts
-    /// only ever meet as equals.
+    /// A rack of stereo cards on a stereo device still carries no maps at
+    /// all — the counts only ever meet as equals.
     #[test]
     fn a_plan_needs_no_crook_when_the_counts_already_agree() {
         let stereo = Channels::Stereo;
-        let graph = plan(&[vec![vec![(NodeId(2), stereo, stereo)]]]);
+        let graph = plan(&[vec![vec![(NodeId(2), stereo, stereo)]]], wide()).unwrap();
         assert_eq!(graph.connections.len(), 2);
         assert!(
             graph
@@ -1477,13 +1761,115 @@ mod tests {
         );
         graph.compile().expect("the stereo chain is a legal graph");
     }
+    /// Between two cards the wire is one conductor with nothing in the middle
+    /// of it, so a card that wants another width there is refused and named
+    /// rather than quietly fed through a map. This is the drop the canvas has
+    /// to answer with a reason: a mono card to the right of a stereo one, and
+    /// a stereo card to the right of a mono one.
+    #[test]
+    fn a_card_on_the_wrong_wire_is_refused_not_mapped() {
+        let mono = Channels::Mono;
+        let stereo = Channels::Stereo;
+        let refused = plan(
+            &[vec![vec![
+                (NodeId(2), stereo, stereo),
+                (NodeId(3), mono, stereo),
+            ]]],
+            wide(),
+        )
+        .expect_err("a mono card cannot sit on the stereo wire");
+        assert_eq!(
+            refused,
+            WidthConflict {
+                card: NodeId(3),
+                wire: stereo,
+                wants: mono,
+            }
+        );
+        assert_eq!(
+            refused.message(Some("Nice NAM")),
+            "Nice NAM needs a mono input — the wire feeding it is stereo"
+        );
+        assert_eq!(
+            refused.message(None),
+            "This card needs a mono input — the wire feeding it is stereo"
+        );
+        let refused = plan(
+            &[vec![vec![
+                (NodeId(2), mono, mono),
+                (NodeId(3), stereo, stereo),
+            ]]],
+            wide(),
+        )
+        .expect_err("nor a stereo card on the wire a mono card leaves");
+        assert_eq!(
+            refused,
+            WidthConflict {
+                card: NodeId(3),
+                wire: mono,
+                wants: stereo,
+            }
+        );
+    }
+    /// The canvas draws its circles off the compiled graph, so a split and a
+    /// join read back with their widths and their two ends — and nothing at
+    /// all where the counts already agreed.
+    #[test]
+    fn junctions_are_read_back_off_the_compiled_graph() {
+        let mono = Channels::Mono;
+        let stereo = Channels::Stereo;
+        let (graph, _) = chain(&[], Route::default()).unwrap();
+        let split = NodeId(u64::MAX - 1);
+        assert_eq!(
+            junctions(&graph),
+            vec![Junction {
+                id: split,
+                inputs: mono,
+                outputs: stereo,
+                from: None,
+                to: None,
+            }],
+            "both of a bare rack's ends are the rack's own jacks"
+        );
+        // A stereo card on a mono playback side is the other way round, and
+        // now both circles exist: the split names the card it feeds, the join
+        // names the card it reads and no drain.
+        let graph = plan(
+            &[vec![vec![(NodeId(2), stereo, stereo)]]],
+            Route {
+                output: mono,
+                ..Route::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            junctions(&graph),
+            vec![
+                Junction {
+                    id: split,
+                    inputs: mono,
+                    outputs: stereo,
+                    from: None,
+                    to: Some(NodeId(2)),
+                },
+                Junction {
+                    id: NodeId(u64::MAX - 2),
+                    inputs: stereo,
+                    outputs: mono,
+                    from: Some(NodeId(2)),
+                    to: None,
+                },
+            ],
+            "the circles come back in the order the rack is read"
+        );
+    }
     #[test]
     fn dsp_stops_and_returns_its_graph_when_no_device_callback_ever_arrives() {
-        let (graph, bindings) = chain(&[]);
+        let (graph, bindings) = chain(&[], wide()).unwrap();
         let (mut session, audio) =
             LiveSession::prepare(&graph, &bindings, 48000.0, BLOCK, &BTreeMap::new()).unwrap();
         let (io, _capture, _output) = endpoints();
-        let worker = spawn_dsp(audio, io, Arc::default());
+        let worker = spawn_dsp(audio, io, Arc::default(), wide());
         session.request_stop();
         let deadline = Instant::now() + Duration::from_secs(2);
         while !worker.is_finished() {
@@ -1499,14 +1885,14 @@ mod tests {
     }
     #[test]
     fn dsp_preserves_stereo_and_retires_after_capture_stops() {
-        let (graph, bindings) = chain(&[]);
+        let (graph, bindings) = chain(&[], wide()).unwrap();
         let (mut session, audio) =
             LiveSession::prepare(&graph, &bindings, 48000.0, BLOCK, &BTreeMap::new()).unwrap();
         let (io, mut capture, mut output) = endpoints();
         for sample in [[0.25, -0.5], [0.75, -1.0]] {
             capture.push(sample).unwrap();
         }
-        let worker = spawn_dsp(audio, io, Arc::default());
+        let worker = spawn_dsp(audio, io, Arc::default(), wide());
         let deadline = Instant::now() + Duration::from_secs(2);
         while output.slots() < 2 {
             assert!(Instant::now() < deadline);
@@ -1518,13 +1904,73 @@ mod tests {
         assert_eq!(output.pop().unwrap().0, [0.25, -0.5]);
         assert_eq!(output.pop().unwrap().0, [0.75, -1.0]);
     }
+    /// One capture channel is one channel: the second hand of the transport's
+    /// frame is dropped before the rack sees it, and the split the plan put at
+    /// the `OUT` end is what fills both hands on the way back. The right-hand
+    /// values the test pushed never reach the rack.
+    #[test]
+    fn dsp_feeds_the_rack_only_what_the_route_carries() {
+        let route = Route::default();
+        let (graph, bindings) = chain(&[], route).unwrap();
+        let (session, audio) =
+            LiveSession::prepare(&graph, &bindings, 48000.0, BLOCK, &BTreeMap::new()).unwrap();
+        let (io, mut capture, mut output) = endpoints();
+        for sample in [[0.25, -0.5], [0.75, -1.0]] {
+            capture.push(sample).unwrap();
+        }
+        let worker = spawn_dsp(audio, io, Arc::default(), route);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while output.slots() < 2 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        session.request_stop();
+        let _ = worker.join().unwrap();
+        assert_eq!(output.pop().unwrap().0, [0.25, 0.25]);
+        assert_eq!(output.pop().unwrap().0, [0.75, 0.75]);
+    }
+    /// The other way round: a stereo rack onto a playback side that names one
+    /// destination. The join inside the rack does the arithmetic — the mean of
+    /// the two lanes, which is not the left lane the transport would have
+    /// handed out had the rack stayed two-wide.
+    #[test]
+    fn dsp_joins_a_wide_rack_onto_a_narrow_route() {
+        let route = Route {
+            input: Channels::Stereo,
+            input_rate: None,
+            output: Channels::Mono,
+            output_rate: None,
+        };
+        let (graph, bindings) = chain(&[], route).unwrap();
+        assert_eq!(
+            junctions(&graph).len(),
+            1,
+            "the join sits at the rack's own output jack"
+        );
+        let (session, audio) =
+            LiveSession::prepare(&graph, &bindings, 48000.0, BLOCK, &BTreeMap::new()).unwrap();
+        let (io, mut capture, mut output) = endpoints();
+        for sample in [[0.25, -0.5], [0.75, -1.0]] {
+            capture.push(sample).unwrap();
+        }
+        let worker = spawn_dsp(audio, io, Arc::default(), route);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while output.slots() < 2 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        session.request_stop();
+        let _ = worker.join().unwrap();
+        assert_eq!(output.pop().unwrap().0, [-0.125, -0.125]);
+        assert_eq!(output.pop().unwrap().0, [-0.125, -0.125]);
+    }
 
     /// A quarter-rate sine whose every sample sits a quarter period away from
     /// a crest: the loudest sample is 0.707 while the signal itself reaches
     /// 1.0 between them. The meter has to report the signal, not the samples.
     #[test]
     fn published_peaks_are_true_peaks_not_loudest_samples() {
-        let (graph, bindings) = chain(&[]);
+        let (graph, bindings) = chain(&[], wide()).unwrap();
         let (session, audio) =
             LiveSession::prepare(&graph, &bindings, 48000.0, BLOCK, &BTreeMap::new()).unwrap();
         let (io, mut capture, mut output) = endpoints();
@@ -1540,7 +1986,7 @@ mod tests {
             capture.push(*sample).unwrap();
         }
         let levels = Arc::new(Levels::default());
-        let worker = spawn_dsp(audio, io, Arc::clone(&levels));
+        let worker = spawn_dsp(audio, io, Arc::clone(&levels), wide());
         let deadline = Instant::now() + Duration::from_secs(2);
         while levels.updated.load(Ordering::Acquire) == 0 {
             assert!(Instant::now() < deadline, "DSP never published levels");
