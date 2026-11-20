@@ -770,6 +770,15 @@ impl Runtime {
     pub fn audio_running(&self) -> bool {
         self.io.is_some() && self.worker.is_some()
     }
+    /// The route the rack is wired against, which is what the two endpoint
+    /// cards are for: while streams run it is the settings they were opened
+    /// from, and otherwise the configuration this process last opened — which
+    /// at startup is the saved one, since asking the devices for it is the
+    /// first thing a runtime does. A rack that has opened nothing yet reports
+    /// the default route, because that is what it is wired against.
+    pub fn route(&self) -> Route {
+        Route::of(self.live_settings.as_ref().unwrap_or(&self.applied))
+    }
     pub fn busy(&self) -> bool {
         self.action.is_some() || self.opening.is_some() || self.closing
     }
@@ -1809,6 +1818,47 @@ mod tests {
                 wire: mono,
                 wants: stereo,
             }
+        );
+    }
+    /// The two endpoint cards read one thing: the route the audio side was
+    /// actually opened with. A playback with no right port is a mono card
+    /// whatever the file's channel list says, and while streams run it is
+    /// what they run on that the cards report.
+    #[test]
+    fn the_cards_read_the_route_the_engine_was_opened_with() {
+        let mut runtime = Runtime::new(Settings::default());
+        assert_eq!(
+            runtime.route(),
+            Route::default(),
+            "a rack that has opened nothing is wired against the default"
+        );
+        let jack = Settings {
+            backend: Some("jack".into()),
+            sample_rate: Some(48000.0),
+            output_sample_rate: Some(48000.0),
+            ..Settings::default()
+        };
+        runtime.applied = jack.clone();
+        assert_eq!(
+            runtime.route(),
+            Route {
+                input: Channels::Mono,
+                input_rate: Some(48000.0),
+                output: Channels::Mono,
+                output_rate: Some(48000.0),
+            },
+            "a jack playback naming no right port carries one channel"
+        );
+        runtime.live_settings = Some(Settings {
+            jack_output_right: Some("M Series Pro:playback_AUX1".into()),
+            ..jack
+        });
+        assert_eq!(runtime.route().output, Channels::Stereo);
+        runtime.applied = Settings::default();
+        assert_eq!(
+            runtime.route().output,
+            Channels::Stereo,
+            "the running streams outrank the last apply"
         );
     }
     /// The canvas draws its circles off the compiled graph, so a split and a

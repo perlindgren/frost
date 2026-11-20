@@ -10,7 +10,7 @@ use frost::{Color, Context, Process, Scene, SceneNode, Shape};
 use nice_clap_host::{Descriptor, Entry};
 use nice_common::{
     meter::PeakMeter,
-    ui::{AudioPanel, Event},
+    ui::{AudioPanel, Event, PageScope},
 };
 use std::{
     collections::VecDeque,
@@ -118,6 +118,9 @@ struct RackUi {
     icons: Arc<[u8]>,
     settings: Option<AudioPanel<crate::RackPreferences>>,
     settings_page: bool,
+    /// Which half of the device the open settings page is about: the two
+    /// endpoint cards each open their own side, the cog opens the whole of it.
+    settings_scope: PageScope,
     pressed: bool,
     /// Last frame's right button, so a break toggles on the press and not on
     /// every frame the button is held.
@@ -680,6 +683,28 @@ fn layout_text_y(y: f32) -> f32 {
     y + (NAME_TEXT_Y - GAIN_CORNER_Y) / 2.0
 }
 const COLUMN_STEP: f32 = 224.0;
+/// The capture jack the engine wires the rack's head against. The engine
+/// names its own two jacks `NodeId(0)` and `NodeId(u64::MAX)`; the second is
+/// the master wire the canvas already keys by [`MASTER_WIRE_KEY`], and this
+/// is the first — which the canvas now draws as a card, so it needs the id
+/// in its own terms. Nothing on the rack side is measured at it, so it has no
+/// meter, no trim and no switch.
+const INPUT_JACK: NodeId = NodeId(0);
+/// How an endpoint card says the rate it was opened at: kilohertz, the way
+/// the device page spells it, and a dash where the rack has never opened a
+/// stream at all — a rack that has applied nothing yet has no rate to show,
+/// and inventing 48 kHz for it would be the card lying about the device.
+fn rate_text(hz: Option<f32>) -> String {
+    let Some(hz) = hz else {
+        return "—".to_string();
+    };
+    let khz = hz / 1000.0;
+    if (khz - khz.round()).abs() < 0.05 {
+        format!("{} kHz", khz.round() as i64)
+    } else {
+        format!("{khz:.1} kHz")
+    }
+}
 #[derive(Clone, Copy)]
 struct Slot {
     id: NodeId,
@@ -688,6 +713,11 @@ struct Slot {
 }
 struct Geometry {
     slots: Vec<Slot>,
+    /// The rack's own `IN` card, standing in the first column. Like `output`
+    /// it is a slot as far as the canvas is concerned, and like it nothing
+    /// places, deletes or drags it — but it carries no meter and no trim
+    /// either, because nothing on the rack's side of it is measured.
+    input: Slot,
     /// The rack's own `OUT` card: a slot like any other as far as the
     /// canvas is concerned — its own column, its own stub, its own
     /// corner readout — except that nothing ever places, deletes or
@@ -697,7 +727,6 @@ struct Geometry {
     top: f32,
     bottom: f32,
     flow: f32,
-    left: f32,
     max_vertical: f32,
 }
 fn groups(cards: &[Card]) -> Vec<Vec<Vec<NodeId>>> {
@@ -810,6 +839,11 @@ fn geometry(groups: &[Vec<Vec<NodeId>>], w: f32, h: f32, scroll: f32, vertical: 
     };
     let max_vertical = ((rows.saturating_sub(1)) as f32 * row_step + 112.0 - available).max(0.0);
     let left = -w / 2.0 + 90.0 - scroll;
+    // The `IN` card owns the first column, so a chain starts one step right
+    // of it; every card, and the `OUT` card after them all, stand one column
+    // further along than they did when the rack's jack was a bare label.
+    let in_x = left + 90.0 + CARD_WIDTH / 2.0;
+    let first_column = in_x + COLUMN_STEP;
     let mut slots = Vec::new();
     let mut column = 0.0;
     for stage in groups {
@@ -825,7 +859,7 @@ fn geometry(groups: &[Vec<Vec<NodeId>>], w: f32, h: f32, scroll: f32, vertical: 
             for (index, &id) in branch.iter().enumerate() {
                 slots.push(Slot {
                     id,
-                    x: left + 90.0 + CARD_WIDTH / 2.0 + (column + index as f32) * COLUMN_STEP,
+                    x: first_column + (column + index as f32) * COLUMN_STEP,
                     y: first - row as f32 * row_step,
                 });
             }
@@ -834,13 +868,19 @@ fn geometry(groups: &[Vec<Vec<NodeId>>], w: f32, h: f32, scroll: f32, vertical: 
     }
     // The `OUT` card owns the next column whole: one step right of
     // whichever column reaches furthest, and on the flow line, since
-    // nothing ever moves it. An empty rack stands it in the first column.
+    // nothing ever moves it. An empty rack stands it in the first column
+    // after `IN`.
     let out_x = slots
         .iter()
         .map(|slot| slot.x)
         .reduce(f32::max)
-        .map_or(left + 90.0 + CARD_WIDTH / 2.0, |x| x + COLUMN_STEP);
+        .map_or(first_column, |x| x + COLUMN_STEP);
     Geometry {
+        input: Slot {
+            id: INPUT_JACK,
+            x: in_x,
+            y: flow,
+        },
         output: Slot {
             id: NodeId(MASTER_WIRE_KEY),
             x: out_x,
@@ -850,7 +890,6 @@ fn geometry(groups: &[Vec<Vec<NodeId>>], w: f32, h: f32, scroll: f32, vertical: 
         top,
         bottom,
         flow,
-        left,
         max_vertical,
     }
 }
@@ -951,6 +990,7 @@ pub fn run(
         icons,
         settings: None,
         settings_page: false,
+        settings_scope: PageScope::All,
         pressed: false,
         pressed_right: false,
         drag: None,
@@ -1204,23 +1244,32 @@ impl RackUi {
     /// How many channels a wire carries, as the GUI draws them: the
     /// card's own count on the stub's side — inputs for the lead into a
     /// card, outputs for the lead out of it — clamped to the two lanes
-    /// the rack draws and the engine's metering folds into. Anything the
-    /// rack has no card for — a meter outliving its card — reads as
-    /// stereo, the width the rack's own jacks carry, which only ever
-    /// keeps a gone meter's last lanes decaying in the right shape.
+    /// the rack draws and the engine's metering folds into. The rack's own
+    /// output jack is the route's far end, and anything the rack has no
+    /// card for — a meter outliving its card — reads as whichever end that
+    /// stub hangs off, which only ever keeps a gone meter's last lanes
+    /// decaying in the right shape.
     fn wire_lanes(&self, id: u64, side: bool) -> usize {
+        let route = self.runtime.route();
         if id == MASTER_WIRE_KEY {
-            return 2;
+            return route.output.count().clamp(1, 2);
         }
         self.runtime
             .cards
             .iter()
             .find(|card| card.id.0 == id)
-            .map_or(2, |card| {
-                if side { card.outputs } else { card.inputs }
-                    .count()
-                    .clamp(1, 2)
-            })
+            .map_or_else(
+                || {
+                    if side { route.output } else { route.input }
+                        .count()
+                        .clamp(1, 2)
+                },
+                |card| {
+                    if side { card.outputs } else { card.inputs }
+                        .count()
+                        .clamp(1, 2)
+                },
+            )
     }
     /// The corner readout and the vertical meter of one wire slot, drawn at
     /// pre-computed geometry: `track` is the meter column's centre and
@@ -1723,6 +1772,7 @@ impl Process for RackUi {
             let panel = self.settings.get_or_insert_with(|| {
                 let mut panel =
                     AudioPanel::new(saved.clone(), self.runtime.applied.clone(), saved, false);
+                panel.scope = self.settings_scope;
                 panel.refresh();
                 panel
             });
@@ -1884,6 +1934,7 @@ impl Process for RackUi {
         );
         if clicked && cog && self.choosing.is_none() {
             self.settings_page = true;
+            self.settings_scope = PageScope::All;
             self.settings = None;
             self.drag = None;
             // The settings page takes the whole window; an open dB
@@ -1893,7 +1944,9 @@ impl Process for RackUi {
             return;
         }
         let groups = groups(&self.runtime.cards);
-        let max_scroll = ((groups.len() + 1) as f32 * COLUMN_STEP + 320.0 - w).max(0.0);
+        // One column for every stage, plus one for the `IN` card and one for
+        // the `OUT` card, which now stand on the canvas as cards themselves.
+        let max_scroll = ((groups.len() + 2) as f32 * COLUMN_STEP + 320.0 - w).max(0.0);
         let previous = geometry(&groups, w, h, self.scroll, self.vertical);
         if self.drag.is_none() && self.overlay.is_none() {
             if previous.max_vertical > 0.0
@@ -1931,6 +1984,12 @@ impl Process for RackUi {
         }
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         let layout = geometry(&groups, w, h, self.scroll, self.vertical);
+        // The route the rack is wired against, read once a frame like the
+        // meter gate: it is what the two endpoint cards say, and it is how
+        // wide the wire into the first card and out of the last one is
+        // drawn. Everything between the two cards keeps the width the card
+        // beside it has, which is the engine's own rule for the graph.
+        let route = self.runtime.route();
         let bypass_target = if broke && self.drag.is_none() && self.gain_drag.is_none() {
             layout
                 .slots
@@ -2024,16 +2083,66 @@ impl Process for RackUi {
             self.gain_edit = None;
             self.gain_input.set_focus(false);
         }
-        ctx.text(
-            layout.left,
-            layout.flow,
-            &self.font,
-            "IN",
-            18.0,
-            650.0,
-            rgb(103, 237, 175),
-            0.2,
-        );
+        // The rack's own `IN` card, standing in the first column and read
+        // exactly like the `OUT` card: what the device actually delivers
+        // here, rate and channel count, nothing invented. It is not a card
+        // in the rack's sense — nothing is dropped on it, nothing drags off
+        // it, and nothing on the rack's side of it is measured, so it has no
+        // stub, no trim and no meter. The face is where the input half of
+        // the device page is opened, because the capture is the one thing
+        // about it an operator can change.
+        let input = layout.input;
+        let in_visible = visible(&input, layout.top, layout.bottom, w);
+        let in_hover = in_visible
+            && self.choosing.is_none()
+            && hit(mouse, input.x, layout.flow, CARD_WIDTH / 2.0, TRACK_HALF);
+        if in_visible {
+            ctx.rectangle(
+                input.x,
+                layout.flow,
+                CARD_WIDTH / 2.0,
+                56.0,
+                if in_hover {
+                    rgb(58, 51, 79)
+                } else {
+                    rgb(42, 36, 61)
+                },
+                0.2,
+            );
+            ctx.text(
+                input.x,
+                layout.flow + NAME_TEXT_Y,
+                &self.font,
+                "IN",
+                18.0,
+                650.0,
+                rgb(103, 237, 175),
+                0.2,
+            );
+            ctx.text(
+                input.x,
+                layout_text_y(layout.flow),
+                &self.font,
+                format!(
+                    "{} · {} ch",
+                    rate_text(route.input_rate),
+                    route.input.count()
+                ),
+                12.0,
+                500.0,
+                rgb(150, 145, 164),
+                0.21,
+            );
+        }
+        if clicked && in_hover && self.drag.is_none() {
+            self.settings_page = true;
+            self.settings_scope = PageScope::Input;
+            self.settings = None;
+            // As with the cog: the page takes the whole window, so an open
+            // dB editor would have no card corner left to draw in.
+            self.gain_edit = None;
+            self.gain_input.set_focus(false);
+        }
         ctx.text(
             0.0,
             h / 2.0 - 72.0,
@@ -2048,21 +2157,21 @@ impl Process for RackUi {
         // One gate for the whole rack, read once a frame: every stub box on
         // every wire is measured against the same number.
         let gate = self.runtime.meter_gate();
-        // The wire arrives from the rack's `IN` jack, which carries no
-        // switch of its own. The run into the `OUT` card is the master
-        // wire, whoever it last passed through: its switch sits on the
-        // card's own stub, and a right-click anywhere on the card, its
-        // wire or its stub mutes the output, meter still reading what
-        // arrives.
-        let mut previous_x = layout.left + 25.0;
+        // The wire arrives from the rack's `IN` card, which carries no
+        // switch of its own, so it starts at that card's own edge. The run
+        // into the `OUT` card is the master wire, whoever it last passed
+        // through: its switch sits on the card's own stub, and a right-click
+        // anywhere on the card, its wire or its stub mutes the output, meter
+        // still reading what arrives.
+        let mut previous_x = wire_box_x(layout.input.x, true);
         // How wide the trunk is on the flow line as it arrives at each
-        // stage. The rack's `IN` jack is the host's output, so it is
-        // stereo, and past each stage the mixer — when there is one —
-        // has folded the branches down to the widest of their tails, so
-        // the trunk runs on at that width. This is the same arithmetic
-        // the rack applies to the graph itself when it builds one, for
-        // the same reason: nothing else changes a wire's channel count.
-        let mut incoming = 2;
+        // stage. The trunk begins as wide as the device's capture, and past
+        // each stage the mixer — when there is one — has folded the branches
+        // down to the widest of their tails, so the trunk runs on at that
+        // width. This is the same arithmetic the rack applies to the graph
+        // itself when it builds one, for the same reason: nothing else
+        // changes a wire's channel count.
+        let mut incoming = route.input.count().clamp(1, 2);
         for (index, group) in groups.iter().enumerate() {
             let stage_slots = layout
                 .slots
@@ -2324,7 +2433,7 @@ impl Process for RackUi {
                 .filter_map(|branch| branch.last())
                 .map(|tail| self.wire_lanes(tail.id.0, true))
                 .max()
-                .unwrap_or(2);
+                .unwrap_or_else(|| route.output.count().clamp(1, 2));
             previous_x = merge;
         }
         // The master wire, drawn past the loop so it keeps running when
@@ -2359,10 +2468,32 @@ impl Process for RackUi {
             ),
             layout.flow,
             wire,
-            // The rack's own output is the host's jack: stereo, always,
-            // whatever the last card happened to put out.
-            2,
+            // The master wire is what the rack hands the device, so it runs
+            // as wide as the playback side is: the engine refuses a graph
+            // whose tail is any other width, map aside.
+            route.output.count().clamp(1, 2),
         );
+        // The `OUT` card's face is also its way into the device page: a
+        // left-click opens the playback half of it, exactly as the `IN`
+        // card opens the capture half. The two corners of the face keep
+        // their own clicks — the trim at its input corner and the budget
+        // bar along its top — and the stub beside it is a switch, so the
+        // face answers only where nothing else on it reaches.
+        let [out_gain_x, out_gain_y] = gain_center(out.x, layout.flow, false);
+        if clicked
+            && out_visible
+            && out_hover
+            && self.drag.is_none()
+            && self.choosing.is_none()
+            && !hit(mouse, out_gain_x, out_gain_y, GAIN_HALF_W, GAIN_HALF_H)
+            && !hit(mouse, out.x, layout.flow - 54.0, CARD_WIDTH / 2.0, 5.0)
+        {
+            self.settings_page = true;
+            self.settings_scope = PageScope::Output;
+            self.settings = None;
+            self.gain_edit = None;
+            self.gain_input.set_focus(false);
+        }
         // The `OUT` card's face: nothing is ever dropped on it, dragged
         // off it or deleted from it — the face is where the trim corner
         // lives and where a right-click finds the mute switch.
@@ -2398,8 +2529,17 @@ impl Process for RackUi {
                     .get(&NodeId(MASTER_WIRE_KEY))
                     .and_then(TimingMeter::reading)
                 {
-                    Some(total) => format!("stereo → DAC · {:.1}%", total * 100.0),
-                    None => "stereo → DAC".into(),
+                    Some(total) => format!(
+                        "{} · {} ch · {:.1}%",
+                        rate_text(route.output_rate),
+                        route.output.count(),
+                        total * 100.0
+                    ),
+                    None => format!(
+                        "{} · {} ch",
+                        rate_text(route.output_rate),
+                        route.output.count()
+                    ),
                 },
                 12.0,
                 500.0,
@@ -3367,10 +3507,15 @@ mod tests {
     fn covers(from: MeterPos) -> Vec<MeterPos> {
         acknowledged(from, &rack())
     }
-    /// Where a stage's card stands, in the same units as [`wire_targets`]: the
-    /// rack's own inset from `left`, plus 224 px for every column to its left.
+    /// Where the rack's own `IN` card stands, in the same units as
+    /// [`wire_targets`]: the rack's inset from `left`, plus half a card.
+    fn in_x() -> f32 {
+        -158.0 + 183.0
+    }
+    /// Where a stage's card stands, in the same units as [`wire_targets`]: one
+    /// column right of the `IN` card, plus 224 px for every column to its left.
     fn card_x(index: usize) -> f32 {
-        -158.0 + 183.0 + index as f32 * 224.0
+        in_x() + 224.0 + index as f32 * 224.0
     }
     /// One side of one card's wiring, as the operator can aim at it.
     struct Click {
@@ -3395,7 +3540,7 @@ mod tests {
         let row_step = 128.0;
         let widest = |stage: &[usize]| stage.iter().max().copied().unwrap_or(1);
         let mut targets = Vec::new();
-        let mut previous_x = -158.0 + 25.0;
+        let mut previous_x = wire_box_x(in_x(), true);
         let mut card = 0;
         let mut column = 0;
         for (index, stage) in shape.iter().enumerate() {
