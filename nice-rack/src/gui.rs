@@ -262,6 +262,10 @@ const MARK_HOVER: Color = rgb(163, 169, 182);
 /// Radius of the mixer's ring, which the canvas draws wherever several
 /// branches are joined into one wire.
 const MIXER_RING: f32 = 8.5;
+/// How near the ring a drop must land to count as aimed at it: the ring
+/// itself plus enough air that a steady hand never has to thread the needle
+/// between it and the lane tails standing in the same column.
+const JOIN_HIT: f32 = MIXER_RING + 22.0;
 fn wire_box_x(x: f32, side: bool) -> f32 {
     // Stub box centres for one card: `STUB_GAP` out from each vertical card
     // edge, on the input wire for `side == false` and the output wire
@@ -1220,10 +1224,54 @@ fn visible(slot: &Slot, top: f32, bottom: f32, w: f32) -> bool {
         && slot.x + CARD_WIDTH / 2.0 >= -w / 2.0
         && slot.x - CARD_WIDTH / 2.0 <= w / 2.0
 }
+/// The ring a fork merges through, seen as a drop target: its drawn point on
+/// the trunk, plus one card of its stage to anchor the placement. Any card
+/// will do — the ring belongs to the fork and not to a lane — so long as it
+/// is not the dragged card, which `place` removes before it looks for the
+/// anchor again.
+#[derive(Clone, Copy)]
+struct JoinMark {
+    anchor: NodeId,
+    x: f32,
+    y: f32,
+}
+
+/// The rings the canvas draws today, worked out from the same arithmetic:
+/// one per parallel stage, standing where the stage's longest lane ends.
+fn join_marks(
+    groups: &[Vec<Vec<NodeId>>],
+    slots: &[Slot],
+    flow: f32,
+    drag: Option<NodeId>,
+) -> Vec<JoinMark> {
+    groups
+        .iter()
+        .filter(|stage| stage.len() > 1)
+        .filter_map(|stage| {
+            let anchor = stage
+                .iter()
+                .flatten()
+                .copied()
+                .find(|id| Some(*id) != drag)?;
+            let tail = stage
+                .iter()
+                .flatten()
+                .filter_map(|id| slots.iter().find(|slot| slot.id == *id))
+                .map(|slot| slot.x)
+                .reduce(f32::max)?;
+            Some(JoinMark {
+                anchor,
+                x: junction_x(tail, true),
+                y: flow,
+            })
+        })
+        .collect()
+}
 fn target_at(
     mouse: Option<[f32; 2]>,
     slots: &[Slot],
     moving: Option<NodeId>,
+    joins: &[JoinMark],
     top: f32,
     bottom: f32,
     w: f32,
@@ -1231,6 +1279,23 @@ fn target_at(
     let [x, y] = mouse?;
     if y > top || y < bottom {
         return None;
+    }
+    // The ring is the fork's own exit, and its column is exactly where the
+    // lane tails' right edges reach, so it wins its small ground before any
+    // card is consulted.
+    if let Some(mark) = joins
+        .iter()
+        .filter(|mark| mark.x + JOIN_HIT >= -w / 2.0 && mark.x - JOIN_HIT <= w / 2.0)
+        .min_by(|a, b| {
+            ((x - a.x).powi(2) + (y - a.y).powi(2))
+                .total_cmp(&((x - b.x).powi(2) + (y - b.y).powi(2)))
+        })
+        .filter(|mark| (x - mark.x).powi(2) + (y - mark.y).powi(2) <= JOIN_HIT * JOIN_HIT)
+    {
+        return Some(Target {
+            card: mark.anchor,
+            side: Side::Join,
+        });
     }
     let slot = slots
         .iter()
@@ -1286,6 +1351,27 @@ fn ahead_of_split(
         .filter_map(|lane| lane.iter().copied().find(|id| Some(*id) != drag))
         .collect();
     (heads.len() > 1 && heads.contains(&target.card)).then_some(heads)
+}
+
+/// The same mirror for a drop on the join ring: the ring belongs to the
+/// whole fork, so its preview spans the fork too — one surviving card per
+/// lane, which is every lane while the ring itself is being drawn.
+fn behind_merge(
+    stages: &[Vec<Vec<NodeId>>],
+    drag: Option<NodeId>,
+    target: &Target,
+) -> Option<Vec<NodeId>> {
+    if target.side != Side::Join {
+        return None;
+    }
+    let stage = stages
+        .iter()
+        .find(|stage| stage.iter().any(|lane| lane.contains(&target.card)))?;
+    let heads: Vec<NodeId> = stage
+        .iter()
+        .filter_map(|lane| lane.iter().copied().find(|id| Some(*id) != drag))
+        .collect();
+    (heads.len() > 1).then_some(heads)
 }
 
 fn now() -> u64 {
@@ -2229,6 +2315,7 @@ impl Process for RackUi {
                 point.or(mouse),
                 &geometry.slots,
                 None,
+                &join_marks(&groups, &geometry.slots, geometry.flow, None),
                 geometry.top,
                 geometry.bottom,
                 w,
@@ -3303,10 +3390,12 @@ impl Process for RackUi {
             mouse
         };
         if (self.drag.is_some() && self.moved) || self.external_drag {
+            let joins = join_marks(&groups, &layout.slots, layout.flow, self.drag);
             let target = target_at(
                 preview_mouse,
                 &layout.slots,
                 self.drag,
+                &joins,
                 layout.top,
                 layout.bottom,
                 w,
@@ -3324,7 +3413,40 @@ impl Process for RackUi {
                 // hovered lane — either lane of a split stays extendable.
                 let ahead_heads = ahead_of_split(&groups, self.drag, &target);
                 let before_split = ahead_heads.is_some();
+                let merge_heads = behind_merge(&groups, self.drag, &target);
                 match target.side {
+                    Side::Join => {
+                        // The ring is the fork's back door, so its tick
+                        // spans the fork just behind where it closes; the
+                        // card itself will stand a column further on.
+                        let ys: Vec<f32> = match merge_heads.as_ref().map(|heads| {
+                            layout
+                                .slots
+                                .iter()
+                                .filter(|slot| heads.contains(&slot.id))
+                                .map(|slot| slot.y)
+                                .collect::<Vec<f32>>()
+                        }) {
+                            Some(ys) if ys.len() > 1 => ys,
+                            _ => Vec::new(),
+                        };
+                        let (y, height) = if ys.len() > 1 {
+                            let low = ys.iter().copied().fold(f32::INFINITY, f32::min);
+                            let high = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                            ((low + high) * 0.5, high - low + 70.0)
+                        } else {
+                            (slot.y, 70.0)
+                        };
+                        let x = joins.iter().find(|mark| mark.anchor == target.card);
+                        ctx.rectangle(
+                            x.map_or(slot.x + 106.0, |mark| mark.x + 25.0),
+                            y,
+                            2.0,
+                            height,
+                            rgb(103, 237, 175),
+                            0.5,
+                        );
+                    }
                     Side::Left | Side::Right => {
                         // A drop ahead of the split belongs to the whole
                         // fork, so its tick spans every lane instead of
@@ -3380,7 +3502,9 @@ impl Process for RackUi {
                         x,
                         y + 30.0,
                         &self.font,
-                        if before_split {
+                        if target.side == Side::Join {
+                            "After the merge"
+                        } else if before_split {
                             "Ahead of the split"
                         } else if parallel {
                             "Parallel branch"
@@ -3921,21 +4045,116 @@ mod tests {
             ([-110.0, -40.0], Side::Left),
         ] {
             assert_eq!(
-                target_at(Some(point), &slots, None, 200.0, -150.0, 1000.0),
+                target_at(Some(point), &slots, None, &[], 200.0, -150.0, 1000.0),
                 Some(Target {
                     card: NodeId(1),
                     side
                 })
             );
             assert_eq!(
-                target_at(Some(point), &slots, Some(NodeId(3)), 200.0, -150.0, 1000.0),
+                target_at(
+                    Some(point),
+                    &slots,
+                    Some(NodeId(3)),
+                    &[],
+                    200.0,
+                    -150.0,
+                    1000.0
+                ),
                 Some(Target {
                     card: NodeId(1),
                     side
                 })
             );
         }
-        assert!(target_at(Some([0.0, 250.0]), &slots, None, 200.0, -150.0, 1000.0).is_none());
+        assert!(target_at(Some([0.0, 250.0]), &slots, None, &[], 200.0, -150.0, 1000.0).is_none());
+    }
+    #[test]
+    fn a_drop_on_the_join_ring_aims_at_the_fork_and_not_its_lanes() {
+        // A two-lane stage with a card each, its trunk on the middle line:
+        // the ring stands a gap right of the longer lane, on the trunk.
+        let groups = vec![vec![vec![NodeId(3)], vec![NodeId(5)]]];
+        let slots = [
+            Slot {
+                id: NodeId(3),
+                x: 224.0,
+                y: 70.0,
+            },
+            Slot {
+                id: NodeId(5),
+                x: 224.0,
+                y: -70.0,
+            },
+        ];
+        let marks = join_marks(&groups, &slots, 0.0, None);
+        assert_eq!(marks.len(), 1);
+        let ring = junction_x(224.0, true);
+        assert_eq!(
+            (marks[0].anchor, marks[0].x, marks[0].y),
+            (NodeId(3), ring, 0.0)
+        );
+        // On the ring the fork wins, though the nearest card sits in a lane.
+        assert_eq!(
+            target_at(
+                Some([ring, 0.0]),
+                &slots,
+                None,
+                &marks,
+                200.0,
+                -150.0,
+                1000.0
+            ),
+            Some(Target {
+                card: NodeId(3),
+                side: Side::Join
+            })
+        );
+        // Just off the ring it is a card again: well right of the ring, level
+        // with the top lane, the drop chains into that lane as ever.
+        assert_eq!(
+            target_at(
+                Some([ring + 40.0, 70.0]),
+                &slots,
+                None,
+                &marks,
+                200.0,
+                -150.0,
+                1000.0
+            ),
+            Some(Target {
+                card: NodeId(3),
+                side: Side::Right
+            })
+        );
+        // A dragged card never anchors its own fork, and a single-lane stage
+        // draws no ring at all.
+        let marks = join_marks(&groups, &slots, 0.0, Some(NodeId(3)));
+        assert_eq!(marks[0].anchor, NodeId(5));
+        assert!(join_marks(&[vec![vec![NodeId(3)]]], &slots, 0.0, None).is_empty());
+        // The preview spans the fork behind the merge, one lane per tick,
+        // exactly as the drop leaves the stage.
+        assert_eq!(
+            behind_merge(
+                &groups,
+                None,
+                &Target {
+                    card: NodeId(3),
+                    side: Side::Join
+                }
+            ),
+            Some(vec![NodeId(3), NodeId(5)])
+        );
+        assert_eq!(
+            behind_merge(
+                &[vec![vec![NodeId(3), NodeId(4)], vec![NodeId(5)]]],
+                Some(NodeId(5)),
+                &Target {
+                    card: NodeId(3),
+                    side: Side::Join
+                }
+            ),
+            None
+        );
     }
     #[test]
     fn parallel_cards_are_stacked_and_stages_remain_left_to_right() {
