@@ -94,6 +94,26 @@ fn chain(
         let id = NodeId(1 + index as u64 * 2);
         nodes.insert(id, NodeKind::Plugin { inputs, outputs });
         classes.insert(id, class.to_string());
+        // A card narrower at the front than the card ahead of it at the back
+        // gets the join the rack gives it: the engine never folds a bus on its
+        // own, so a chain of Nice NAM cards — two out, one in — only builds
+        // with an explicit fold between each pair. Cards sit on odd ids, so a
+        // join takes the even id between its neighbours.
+        if index > 0 && outputs != inputs {
+            let join = NodeId(id.0 - 1);
+            nodes.insert(
+                join,
+                NodeKind::ChannelMap {
+                    inputs: outputs,
+                    outputs: inputs,
+                },
+            );
+            connections.push(Connection {
+                from: previous,
+                to: join,
+            });
+            previous = join;
+        }
         connections.push(Connection {
             from: previous,
             to: id,
@@ -117,13 +137,19 @@ fn chain(
 
 /// One block through the audio side, exactly as the rack's DSP worker hands it
 /// over: planar input borrowed from the jack, planar output to the device.
-fn block(audio: &mut LiveAudio, left: &[f32], right: &[f32]) {
+///
+/// The jack and the device hand over the widths the graph declared, which is
+/// what [`LiveAudio::process`] asks for: a card like Nice NAM, which declares
+/// one input and two outputs, gets one lane in and two out — the pair the
+/// engine folds down to that one lane, and the pair it writes back. Handing it
+/// a stereo pair it never asked for is a caller error, and the engine says so.
+fn block(audio: &mut LiveAudio, left: &[f32], right: &[f32], inputs: usize, outputs: usize) {
     let mut out_left = [0f32; FRAMES];
     let mut out_right = [0f32; FRAMES];
     let input: [&[f32]; 2] = [left, right];
     let mut output: [&mut [f32]; 2] = [&mut out_left, &mut out_right];
     audio
-        .process(&input, &mut [&mut output[..]], FRAMES)
+        .process(&input[..inputs], &mut [&mut output[..outputs]], FRAMES)
         .expect("the card should survive the block");
     black_box((out_left[0], out_right[0]));
 }
@@ -142,18 +168,20 @@ fn timed(
     session: &mut LiveSession,
     left: &[f32],
     right: &[f32],
+    inputs: usize,
+    outputs: usize,
 ) -> ((f64, f64), LiveAudio) {
     std::thread::scope(|scope| {
         let worker = scope.spawn(move || {
             let mut audio = audio;
             for _ in 0..CHUNK / 4 {
-                block(&mut audio, left, right);
+                block(&mut audio, left, right, inputs, outputs);
             }
             let mut samples = Vec::with_capacity(CHUNKS);
             for _ in 0..CHUNKS {
                 let start = Instant::now();
                 for _ in 0..CHUNK {
-                    block(&mut audio, left, right);
+                    block(&mut audio, left, right, inputs, outputs);
                 }
                 let elapsed = start.elapsed().as_nanos() as f64;
                 samples.push(elapsed / CHUNK as f64);
@@ -221,6 +249,7 @@ fn row(label: &str, (min, median): (f64, f64)) {
 #[ignore = "loads a real CLAP and prints a cost table; see the module docs"]
 fn metering_cost_in_front_of_a_card() {
     let (entry, class, inputs, outputs) = card();
+    let (ins, outs) = (inputs.count(), outputs.count());
     let (left, right) = signal();
     println!(
         "{:<28} {:>10} {:>10} {:>9}",
@@ -233,7 +262,7 @@ fn metering_cost_in_front_of_a_card() {
             .prepare_live(&graph, &classes, 48_000.0, FRAMES)
             .expect("the chain should prepare");
         audio.attach_wire_levels(Arc::new(WireLevels::new(0)));
-        let (dark, audio) = timed(audio, &mut session, &left, &right);
+        let (dark, audio) = timed(audio, &mut session, &left, &right, ins, outs);
         drop(audio);
         drop(session);
 
@@ -241,7 +270,7 @@ fn metering_cost_in_front_of_a_card() {
             .prepare_live(&graph, &classes, 48_000.0, FRAMES)
             .expect("the chain should prepare again");
         audio.attach_wire_levels(Arc::new(WireLevels::new(cards * 2 + 2)));
-        let (lit, audio) = timed(audio, &mut session, &left, &right);
+        let (lit, audio) = timed(audio, &mut session, &left, &right, ins, outs);
         drop(audio);
         drop(session);
 
