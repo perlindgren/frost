@@ -809,17 +809,32 @@ impl Runtime {
         });
         Ok(receiver)
     }
+    /// Adopt a new arrangement, or refuse it where it stands. The engine
+    /// never inserts a conversion between two neighbouring cards — a wire
+    /// with no node on it has one width — so an arrangement the wiring
+    /// cannot honour, a mono card dropped onto a stereo wire for one, is
+    /// answered here at the drop instead of at the next device open: the
+    /// name and the wire go into `message` for the canvas to show, the
+    /// rack keeps the last arrangement that did wire, and whatever it was
+    /// making keeps making. Device open refuses the same shapes for the
+    /// settings route, so the check below is the same complaint heard one
+    /// step earlier rather than a second rule.
     pub fn edit(&mut self, cards: Vec<Card>) {
-        if !self.busy() {
-            self.halted = false;
-            self.retries = 0;
-            self.begin(Action {
-                settings: self.applied.clone(),
-                cards,
-                reply: None,
-                rollback: false,
-            });
+        if self.busy() {
+            return;
         }
+        if let Err(error) = refuse(chain(&cards, self.route()), &cards) {
+            self.message = error;
+            return;
+        }
+        self.halted = false;
+        self.retries = 0;
+        self.begin(Action {
+            settings: self.applied.clone(),
+            cards,
+            reply: None,
+            rollback: false,
+        });
     }
     fn begin(&mut self, action: Action) {
         // The editors stay where they are. A roster edit used to shut every one
@@ -2276,6 +2291,131 @@ mod tests {
             std::thread::yield_now();
         }
     }
+    /// What refusing a wrong-width drop actually gives the operator: the
+    /// rack answers at the drop, names the card, says which width it wanted
+    /// and which wire it was handed, and the arrangement that was already
+    /// playing is untouched — no sound stops to discover a wiring mistake
+    /// the canvas could have pointed at. Then the same card dropped at the
+    /// head, where the rack still carries the device's own mono, is taken
+    /// as the mono plugin it is, and the rack's own split goes away.
+    ///
+    /// The two exports have to disagree about width, which is what
+    /// `NICE_RACK_TEST_CLAP_NARROW` is for: in this repository that is
+    /// `Nice NAM.clap`, the one bundle with a single input. Unset, there is
+    /// nothing to refuse and the test declines rather than assert nothing.
+    /// The accepted half builds one NAM instance, so the unload race
+    /// documented on [`a_dropped_plugin_is_saved_before_audio_has_ever_run`]
+    /// can kill the process after every assertion here has passed.
+    #[test]
+    #[ignore = "requires NICE_RACK_TEST_CLAP, and NICE_RACK_TEST_CLAP_NARROW to witness the refusal"]
+    #[allow(unsafe_code)]
+    fn a_mono_card_dropped_on_a_stereo_wire_is_refused_where_it_stands() {
+        let path = PathBuf::from(
+            std::env::var_os("NICE_RACK_TEST_CLAP").expect("Set NICE_RACK_TEST_CLAP"),
+        );
+        let Some(narrow_path) = std::env::var_os("NICE_RACK_TEST_CLAP_NARROW").map(PathBuf::from)
+        else {
+            return;
+        };
+        // SAFETY: explicit test opt-in to this repository's own plugin export.
+        let wide_entry = unsafe { nice_clap_host::Entry::load(&path).unwrap() };
+        let wide_class = wide_entry
+            .descriptors()
+            .unwrap()
+            .first()
+            .expect("the test export contains at least one plugin")
+            .id
+            .clone();
+        let wide = Card::new(
+            NodeId(2),
+            path,
+            wide_entry,
+            wide_class,
+            "Stereo card".into(),
+        )
+        .unwrap();
+        // SAFETY: explicit test opt-in to this repository's own plugin export.
+        let narrow_entry = unsafe { nice_clap_host::Entry::load(&narrow_path).unwrap() };
+        let narrow_class = narrow_entry
+            .descriptors()
+            .unwrap()
+            .first()
+            .expect("the narrow test export contains at least one plugin")
+            .id
+            .clone();
+        let narrow = Card::new(
+            NodeId(3),
+            narrow_path,
+            narrow_entry,
+            narrow_class,
+            "Mono card".into(),
+        )
+        .unwrap();
+        // Both halves of the test are statements about these bundles'
+        // widths, so they are pinned rather than assumed: a harness that
+        // pointed either variable at the wrong export would otherwise watch
+        // a legal rack sail through the refusal assertion, or a refused one
+        // fail the accepted one, with the rack nowhere in the complaint.
+        assert_eq!(
+            (wide.inputs, wide.outputs),
+            (Channels::Stereo, Channels::Stereo),
+            "NICE_RACK_TEST_CLAP should name a stereo-in, stereo-out export"
+        );
+        assert_eq!(
+            (narrow.inputs, narrow.outputs),
+            (Channels::Mono, Channels::Stereo),
+            "NICE_RACK_TEST_CLAP_NARROW should name the mono-in export, Nice NAM"
+        );
+
+        let mut runtime = Runtime::new(Settings::default());
+        settle(&mut runtime);
+        // The rack the drop lands on is the default route: one channel in,
+        // stereo out, so even with no cards at all it is already splitting
+        // its wire — the place a drop can land "right of the split".
+        assert_eq!(
+            runtime.junctions(),
+            Some(vec![Junction {
+                id: NodeId(u64::MAX - 1),
+                inputs: Channels::Mono,
+                outputs: Channels::Stereo,
+                from: None,
+                to: None,
+            }]),
+            "the empty rack on the default route shows its split"
+        );
+
+        // Dropped last, the mono card sits on the stereo wire leaving the
+        // stereo card. The rack refuses: nothing arrives, and the reason
+        // names the card and both widths.
+        runtime.edit(vec![wide.clone(), narrow.clone()]);
+        assert!(
+            runtime.cards.is_empty(),
+            "a refused arrangement never arrives"
+        );
+        assert_eq!(
+            runtime.message,
+            format!(
+                "{} needs a mono input — the wire feeding it is stereo",
+                narrow.name
+            )
+        );
+
+        // Dropped first, the same card takes the device's own mono before
+        // anything has been split; its stereo pair is what the rack runs on
+        // anyway, so the rack needs no conversion of its own at all.
+        runtime.edit(vec![narrow, wide]);
+        settle(&mut runtime);
+        assert_eq!(runtime.cards.len(), 2);
+        assert_eq!(runtime.junctions(), Some(vec![]));
+        runtime.close();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !runtime.stopped() {
+            runtime.tick();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
     /// The gain staging belongs to the arrangement, so a rack whose output
     /// wire was pulled down 6 dB comes back with that wire at −6 dB, and the
     /// operator does not rediscover their levels by ear after every launch.
