@@ -2,7 +2,11 @@
 
 A model of the **Binson Echoplex T.E.C. 1** as a CLAP/VST3 plugin: one
 motor turning one drum, one playback head on it, and a tube front end in
-front of the whole thing. The Delay Time knob changes the *speed of the
+front of the whole thing. The machine is mono — one source on the tape, one
+output — and so is this model: a single mono input enters the front end at
+unity and a single mono output leaves; folding a stereo signal to mono, or
+widening the answer back out, is the host's work, not the tape's. The Delay
+Time knob changes the *speed of the
 tape* — a longer delay is literally slower tape, and slower tape wobbles
 more, so delay and wow are one control, not two. Recount feeds the echo
 back toward the record head, Timbre shapes the repeats, and Echo Volume
@@ -14,12 +18,13 @@ repository rule is that brand names never become our product names.
 
 **Current state: the sound is in, the panel is drawn, and the division
 between the known and the chosen is in the open.** `dsp.rs` runs the whole
-path — input trims, the saturating tube-style front end, the drum with its
-speed-coupled wow, the single head, the tone stage in the feedback loop,
-and the wet/dry mix — with a test for each claim it makes and an allocation
-witness over the block and over a sweep of every control. Every number that
-is not a quoted fact about the machine carries a label, **A-1** through
-**A-8**, in the source and in this file, so a reader can tell the known
+path — the saturating tube-style front end the input enters at unity, the
+drum with its speed-coupled wow, the single head, the tone stage in the
+feedback loop, and the wet/dry mix — with a test for each claim it makes and
+an allocation witness over the block and over a sweep of every control.
+Every number that is not a quoted fact about the machine carries a label,
+**A-1** through
+**A-7**, in the source and in this file, so a reader can tell the known
 shape ("slower tape, longer delay, deeper wow") from this model's tape
 range (A-1) at a glance. `TODO.md` keeps the list of what a machine on a
 bench would settle; until then those labels are the crate's honest debts.
@@ -52,7 +57,7 @@ does not have. Where the common description stops — the exact delay range,
 the drum's rotation rate, the flutter depth, the crossover of Recount, the
 tone stage's real topology, the front end's exact curve — the model needed
 a number anyway, and those numbers are named assumptions, **A-1** through
-**A-8**, carried in `dsp.rs` beside the constants themselves:
+**A-7**, carried in `dsp.rs` beside the constants themselves:
 
 | Label | The assumption | Why it is needed |
 |-------|----------------|------------------|
@@ -61,31 +66,30 @@ a number anyway, and those numbers are named assumptions, **A-1** through
 | **A-3** | Flutter depth 0.8 ms at the fastest setting, growing toward ≈ 3.17 ms at the slowest | A constant physical wobble is a bigger share of a longer delay window as the tape slows; the magnitude is chosen. |
 | **A-4** | The loop reaches unity gain at ≈ 0.75 of Recount and the model stops at 1.15×, with a feedback-path soft limiter standing in for the machine's clipping | Self-oscillation at high Recount is common description; the threshold is this model's. |
 | **A-5** | The repeat band is one low-pass (300 Hz–12 kHz, exponential, under Timbre) over one fixed 90 Hz high-pass, both in the feedback path | The machine's tone stage is a real circuit; one-pole filters are this model's shorthand for it. |
-| **A-6** | The front-end curve `x·(1+g)/(1+g·\|x\|)` with `g = Color² × 6`; mic trim up to ×2, guitar trim up to ×1 | The tube stage softening and soft-clipping when driven is the reputation; the curve and the trim spans are chosen. |
-| **A-7** | One plugin input bus feeding both trims, as one source run into both jacks would | The machine has two jacks that mix inside it; a plugin has one bus. The trims therefore set *drive*, which is what they do on the panel. |
-| **A-8** | The wet taper `Echo Volume² × 1.2` | A perceptually even knob with a little more level at the top. The dry beside it is machine behaviour, not an assumption: it never fades out. |
+| **A-6** | The front-end curve `x·(1+g)/(1+g·\|x\|)` with `g = Color² × 6`; the input reaches the stage at unity, with no trim in front of it | The tube stage softening and soft-clipping when driven is the reputation; the curve and its drive span are chosen. |
+| **A-7** | The wet taper `Echo Volume² × 1.2` | A perceptually even knob with a little more level at the top. The dry beside it is machine behaviour, not an assumption: it never fades out. |
 
 ## Controls
 
-Seven parameters — exactly what the machine has knobs for, plus one honest
-addition:
+Five parameters — the machine's knobs less its two input trims, which this
+model deliberately does not carry, plus one honest addition:
 
 | Parameter | Range | What it does |
 |-----------|-------|--------------|
-| `mic_level` "Mic Level" | float 0–1 | The high-gain input trim: drive into the tube front end. Scales up to ×2 (A-6, A-7). |
-| `gtr_level` "Gtr Level" | float 0–1 | The instrument input trim. Scales up to ×1 (A-6, A-7). |
-| `color` "Color" | float 0–1 | **Not a panel control.** This model's knob for how hard the tube stage is driven — the machine only lets you reach that by overlevelling the input. Zero is clean; more softens the peaks (A-6). |
+| `color` "Color" | float 0–1 | **Not a panel control.** This model's knob for how hard the tube stage is driven — and since the input itself enters the stage at unity, its only input level control. Zero is clean; more softens the peaks (A-6). |
 | `delay_time` "Time" | float 0–1 | Tape speed: slower = longer. The knob is linear; the seconds it means are exponential (A-1), and slowing it deepens and slows the wow (A-2, A-3). |
 | `recount` "Recount" | float 0–1 | Repeat count; the loop passes unity near three quarters of the travel (A-4) and past there it runs away, finite, as a real loop does. |
 | `timbre` "Timbre" | float 0–1 | The tone of the repeats — the low-pass every pass through the loop goes through (A-5). |
-| `echo_volume` "Volume" | float 0–1 | The level of the repeats against the dry, **which is always present**. The machine has no wet/dry crossfade and no dry-kill, and neither has this model (A-8). |
+| `echo_volume` "Volume" | float 0–1 | The level of the repeats against the dry, **which is always present**. The machine has no wet/dry crossfade and no dry-kill, and neither has this model (A-7). |
 
 ### Where the controls sit on a fresh instance
 
-The input trims (0.25 mic, 0.5 guitar) sum to unity through the mixer at
-full scale (0.25 × 2 + 0.5 × 1 = 1, A-6), so a hot input arrives at the
-tube stage at its clean edge — not clipped, not timid. Color 0.2 for the
-same reason: audible warmth, no distortion a player did not ask for. Delay
+The input reaches the tube stage at unity — there is no trim in front of it,
+so a hot input arrives exactly as hot as the player made it — and Color sits
+low at 0.2 for the same reason the trims once sat near their clean edge:
+audible warmth, no distortion a player did not ask for. Color is now the
+only road to drive, the one knob that decides how hard the tube works (A-6).
+Delay
 Time 0.5 centres the exponential range at its geometric mean, ≈ 350 ms —
 "medium" on a machine whose whole charm is that its delays live where tape
 lives. Recount 0.4 sits deliberately under the A-4 crossover: a first
@@ -155,7 +159,7 @@ cargo test -p nice-ecomplex --features standalone
 ```
 
 The interface is what the scaffold could promise before there was sound,
-and it still does: that the host sees exactly the seven parameters
+and it still does: that the host sees exactly the five parameters
 promised, that the factory state is the resting place `dsp` itself names,
 that publishing leaves the cells saying what the transport runs on, that a
 saved move seeds the audio thread and a control never moved keeps the
@@ -187,12 +191,15 @@ against arithmetic the model has no standing to dispute:
   darker Timbre measurably thins the repeats (A-5 as behaviour);
 * the fixed 90 Hz high-pass is a tilt, not a mute — low frequencies come
   back around, they do not vanish;
-* one tape is heard in both lanes and the dry keeps its own lane: a stereo
-  input shares one drum but never merges its dry.
+* the machine is mono end to end: the DSP's only entry is one mono lane,
+  the only audio layout the plugin offers is one mono in and one mono out,
+  and the standalone host folds the captured stereo frame at its edge and
+  duplicates the answer back onto the device — width is the host's work,
+  not the tape's.
 
-What none of that tests is the eight named assumptions — the range, the
+What none of that tests is the seven named assumptions — the range, the
 drum's rate, the flutter's depth, the crossover, the tone stage's
-shorthand, the front-end curve and its trim spans, the one-bus reading of
-two jacks, the wet taper. No test can check an assumption against a
+shorthand, the front-end curve and its drive span, the wet taper. No test
+can check an assumption against a
 document that does not state it; those belong to `TODO.md`, and they are
 what an afternoon with the machine and a bench would retire.

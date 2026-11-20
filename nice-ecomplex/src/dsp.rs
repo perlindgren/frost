@@ -6,6 +6,11 @@
 //! measured, and the numbers below are a player's model of how the machine
 //! behaves, not its electrical behaviour.
 //!
+//! The machine is mono — one source on the tape, one output — and so is
+//! this model: mono in, mono out, with the signal entering the front end
+//! at unity. Making a stereo signal mono, or a mono one stereo, is the
+//! host's work, not the tape's.
+//!
 //! What the talk around the machine agrees on, and this model follows:
 //!
 //! * One motor turns one drum; the **Delay Time** knob changes the tape
@@ -49,15 +54,10 @@
 //! * **A-6** — The front-end curve is `x·(1+g)/(1+g·|x|)`: small signals see
 //!   a clean gain of `1+g`, `x = 1` passes unchanged, and the output ceiling
 //!   is `(1+g)/g`. `g` comes from COLOR squared (so the first half of the
-//!   knob stays nearly clean) times 6. The mic trim scales up to ×2 and the
-//!   guitar trim up to ×1 — nominal numbers, since each machine's trim is
-//!   whatever the unit does.
-//! * **A-7** — A plugin has one input bus where the machine has two jacks
-//!   (mic and guitar) that mix inside it; the model feeds both trims from the
-//!   same arriving signal, exactly as running one source into both jacks
-//!   would. The trims therefore set drive into the front end, which is what
-//!   they do on the panel.
-//! * **A-8** — The wet taper is `Echo Volume² × 1.2`: a perceptually even
+//!   knob stays nearly clean) times 6, and COLOR is the model's only drive
+//!   control: the input reaches the tube stage at unity, with no trim in
+//!   front of it.
+//! * **A-7** — The wet taper is `Echo Volume² × 1.2`: a perceptually even
 //!   knob with a little more level at the top. The dry path beside it is
 //!   honest machine behaviour, not an assumption — it never fades out.
 //!
@@ -114,11 +114,9 @@ pub fn feedback_gain(recount: f32) -> f32 {
 /// the sample loop touch no parameter and no atomics at all.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Controls {
-    /// Microphone trim: drive into the front end (**A-6**, **A-7**).
-    pub mic_level: f32,
-    /// Guitar trim: the same, for the instrument jack (**A-6**, **A-7**).
-    pub gtr_level: f32,
-    /// COLOR: the tube-style front end's drive. 0 is clean passthrough.
+    /// COLOR: the tube-style front end's drive, and the model's only input
+    /// level control — the signal itself arrives at unity (**A-6**).
+    /// 0 is clean passthrough.
     pub color: f32,
     /// Delay Time: tape speed, coupled to wow exactly as on the machine.
     pub delay_time: f32,
@@ -128,21 +126,18 @@ pub struct Controls {
     /// Timbre: the tone of the repeats (**A-5**).
     pub timbre: f32,
     /// Echo Volume: the level of the repeats against the ever-present dry
-    /// (**A-8**). There is no dry-kill to model because the machine has none.
+    /// (**A-7**). There is no dry-kill to model because the machine has none.
     pub echo_volume: f32,
 }
 
 impl Default for Controls {
-    /// The middle of the machine: unity through the input mixer at full
-    /// scale (0.25 × 2 + 0.5 × 1 = 1, **A-6**), a front end just cracked
-    /// open, a mid-length delay (about 350 ms on the A-1 taper), repeats
-    /// that decay well short of howling, and Echo Volume half up. Every
-    /// number here is this model's taste; none of them is a factory setting,
-    /// because the machine has no recalls.
+    /// The middle of the machine: an input arriving at unity, a front end
+    /// just cracked open, a mid-length delay (about 350 ms on the A-1
+    /// taper), repeats that decay well short of howling, and Echo Volume
+    /// half up. Every number here is this model's taste; none of them is a
+    /// factory setting, because the machine has no recalls.
     fn default() -> Self {
         Self {
-            mic_level: 0.25,
-            gtr_level: 0.5,
             color: 0.2,
             delay_time: 0.5,
             recount: 0.4,
@@ -195,7 +190,6 @@ fn high_pole(fc: f32, rate: f32) -> f32 {
 /// What one block runs on: everything derived from `Controls` once, so the
 /// sample loop is arithmetic only.
 struct Block {
-    input_gain: f32,
     pre_g: f32,
     delay_frames: f32,
     wow_step: f32,
@@ -270,8 +264,6 @@ impl Ecomplex {
         let color = controls.color.clamp(0.0, 1.0);
         let echo_volume = controls.echo_volume.clamp(0.0, 1.0);
         Block {
-            input_gain: controls.mic_level.clamp(0.0, 1.0) * 2.0
-                + controls.gtr_level.clamp(0.0, 1.0), // A-6
             pre_g: color * color * 6.0, // A-6
             delay_frames: delay_seconds(controls.delay_time) * self.rate,
             wow_step: std::f32::consts::TAU * wow_hz / self.rate.max(1.0),
@@ -285,7 +277,7 @@ impl Ecomplex {
                 self.rate,
             ),
             hp_a: high_pole(90.0, self.rate),
-            wet: echo_volume * echo_volume * 1.2, // A-8
+            wet: echo_volume * echo_volume * 1.2, // A-7
         }
     }
 
@@ -299,9 +291,9 @@ impl Ecomplex {
         for i in 0..n {
             let dry = input[i];
 
-            // Into the front end: both trims from one bus (A-7), then the
-            // tube curve (A-6).
-            let driven = preamp(dry * block.input_gain, block.pre_g);
+            // Into the front end: the input itself, at unity, straight
+            // into the tube curve (A-6) — COLOR is the only drive.
+            let driven = preamp(dry, block.pre_g);
 
             // The drum's wow: fundamental plus a little second harmonic so
             // the wobble is a machine, not a signal generator (A-2, A-3).
@@ -336,43 +328,6 @@ impl Ecomplex {
 
             // And out: the wet repeats over the dry that is always there.
             output[i] = dry + toned * block.wet;
-        }
-    }
-
-    /// The stereo shape is the mono machine in front of a stereo rig — the
-    /// way players actually used it: the input sums to the one tape path,
-    /// the dry keeps its own two lanes, and the echo arrives identically in
-    /// both. A true two-tape spread is TODO.md debt, stated where a reader
-    /// will look.
-    pub fn process_stereo(
-        &mut self,
-        controls: &Controls,
-        input: [&[f32]; 2],
-        output: [&mut [f32]; 2],
-    ) {
-        let n = input[0]
-            .len()
-            .min(input[1].len())
-            .min(output[0].len())
-            .min(output[1].len());
-        let mut summed = [0.0f32; BLOCK];
-        let mut wetted = [0.0f32; BLOCK];
-        let mut done = 0;
-        while done < n {
-            let m = (n - done).min(BLOCK);
-            for i in 0..m {
-                summed[i] = (input[0][done + i] + input[1][done + i]) * 0.5;
-            }
-            self.process_mono(controls, &summed[..m], &mut wetted[..m]);
-            for i in 0..m {
-                // The machine heard the sum and answered with `wetted`; the
-                // wet share is that answer minus what went in, and it lands
-                // in both lanes beside each lane's own dry.
-                let wet = wetted[i] - summed[i];
-                output[0][done + i] = input[0][done + i] + wet;
-                output[1][done + i] = input[1][done + i] + wet;
-            }
-            done += m;
         }
     }
 
@@ -458,13 +413,12 @@ mod tests {
     fn echo_volume_zero_leaves_the_dry_untouched() {
         // The machine's defining promise, as a test: the dry path never
         // fades out, so with the echo down the plugin is a straight wire —
-        // however hard COLOR and the input trims drive the tape path, and
-        // however close to self-oscillation the loop runs.
+        // however hard COLOR drives the front end, and however close to
+        // self-oscillation the loop runs.
         let mut machine = Ecomplex::new(48_000.0, &Controls::default());
         let mut controls = Controls {
             echo_volume: 0.0,
             color: 0.9,
-            mic_level: 1.0,
             recount: 0.9,
             ..Controls::default()
         };
@@ -490,8 +444,6 @@ mod tests {
         let controls = Controls {
             recount: 0.0,
             color: 0.0,
-            mic_level: 0.0,
-            gtr_level: 1.0,
             echo_volume: 1.0,
             ..Controls::default()
         };
@@ -577,8 +529,6 @@ mod tests {
         let controls = Controls {
             color: 1.0,
             echo_volume: 1.0,
-            gtr_level: 1.0,
-            mic_level: 0.0,
             ..Controls::default()
         };
         let mut machine = Ecomplex::new(48_000.0, &controls);
@@ -601,8 +551,6 @@ mod tests {
                 timbre,
                 recount: 0.0,
                 color: 0.0,
-                gtr_level: 1.0,
-                mic_level: 0.0,
                 echo_volume: 1.0,
                 delay_time: 0.0, // 40 ms: well inside the test window
             };
@@ -641,8 +589,6 @@ mod tests {
         for i in 0i32..=10 {
             let t = i as f32 / 10.0;
             let controls = Controls {
-                mic_level: t,
-                gtr_level: 1.0 - t,
                 color: t,
                 delay_time: t,
                 recount: t,
@@ -655,52 +601,6 @@ mod tests {
             let out = render(&mut machine, &controls, &input);
             assert!(out.iter().all(|x| x.is_finite()), "finite at t={t}");
         }
-    }
-
-    #[test]
-    fn stereo_keeps_its_dry_lanes_and_shares_one_tape() {
-        // The declared stereo shape, in both directions. With the echo down,
-        // each lane passes through untouched — even when the two lanes
-        // disagree, because the summed tape drives nothing.
-        let n = BLOCK * 80; // long enough for a 40 ms delay to arrive
-        let l: Vec<f32> = (0..n).map(|i| (i as f32 * 0.11).sin()).collect();
-        let r: Vec<f32> = (0..n).map(|i| (i as f32 * 0.97).cos() * -0.5).collect();
-        let mut ol = vec![0.0f32; n];
-        let mut or_ = vec![0.0f32; n];
-        let quiet = Controls {
-            echo_volume: 0.0,
-            color: 1.0,
-            gtr_level: 1.0,
-            ..Controls::default()
-        };
-        let mut machine = Ecomplex::new(48_000.0, &quiet);
-        machine.process_stereo(&quiet, [&l, &r], [&mut ol, &mut or_]);
-        assert_eq!(ol, l);
-        assert_eq!(or_, r);
-        // With the echo up, both lanes move — by exactly the same amount,
-        // because there is one tape, not two.
-        let loud = Controls {
-            echo_volume: 0.9,
-            delay_time: 0.0,
-            ..quiet
-        };
-        let mut machine = Ecomplex::new(48_000.0, &loud);
-        let mut ol = vec![0.0f32; n];
-        let mut or_ = vec![0.0f32; n];
-        machine.process_stereo(&loud, [&l, &r], [&mut ol, &mut or_]);
-        let delta_l: Vec<f32> = ol.iter().zip(&l).map(|(o, x)| o - x).collect();
-        let delta_r: Vec<f32> = or_.iter().zip(&r).map(|(o, x)| o - x).collect();
-        let shared = delta_l
-            .iter()
-            .zip(&delta_r)
-            .all(|(a, b)| (a - b).abs() <= 1e-6f32.max(a.abs() * 1e-6));
-        assert!(shared, "one tape answers both lanes with the same wet");
-        let echo_present = delta_l[n - 1].abs() > 1e-4;
-        assert!(
-            echo_present,
-            "and the echo has arrived by the end: {}",
-            delta_l[n - 1]
-        );
     }
 
     #[test]

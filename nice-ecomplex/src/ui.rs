@@ -4,7 +4,8 @@
 //! a place on screen and a readout, so the plugin, its parameters, the host's
 //! automation and the standalone settings page can all be exercised. The tape
 //! path it drives is the real one — one drum, one playback head, a tube front
-//! end in front of both inputs, and wow coupled to the tape speed the TIME knob
+//! end that the single input enters at unity, and wow coupled to the tape
+//! speed the TIME knob
 //! sets — and what this layout shows of the machine is honest: every readout is
 //! the parameter's own value, read back each frame, so host automation moves the
 //! numbers whether or not a hand is touching anything. The
@@ -51,10 +52,10 @@ const DIAL_TRAVEL_FINE: f32 = knob::TRAVEL_FINE;
 /// The three groups across the window. The controls name their own slot, so
 /// this list is only the captions — a control cannot be left out of the layout
 /// by forgetting to add it to a table. The columns follow the signal path,
-/// which is what makes them more than decoration: the two input trims and the
-/// front-end drive sit together because all three decide what reaches the tape,
-/// and COLOR sits with them rather than with any tone control because in this
-/// model it is pre-gain on the tube stage, not an equaliser. TIME, RECOUNT and
+/// which is what makes them more than decoration: COLOR owns the input column
+/// alone, because the single input enters the front end at unity and it is the
+/// one control deciding what reaches the tape — the drive of the tube stage,
+/// not an equaliser, and no trim sits in front of it. TIME, RECOUNT and
 /// TIMBRE are the loop itself — its speed, how much of each repeat is recorded
 /// again, and the low-pass every pass goes through. VOLUME stands alone in the
 /// output column because the dry signal is always there and it is the only
@@ -76,15 +77,15 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
 /// TEXT that no name in the palette covers.
 const BG: Color = rgb(32, 28, 44);
 
-/// The continuous controls — all there are, on this machine as on the original:
-/// no mode switch, no spring, nothing else to route. Each names itself, the
+/// The continuous controls — all there are. The machine's two input trims are
+/// deliberately not among them: the one input enters the front end at unity
+/// and COLOR is the only drive (see `dsp`). Nothing else to route — no mode
+/// switch, no spring. Each names itself, the
 /// parameter it owns and its place in the layout, and nothing else about a dial
 /// lives here — value, range and formatting come off the parameter itself, so a
 /// range change in `lib.rs` cannot leave the view disagreeing with the DSP.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Dial {
-    MicLevel,
-    GtrLevel,
     Color,
     DelayTime,
     Recount,
@@ -93,9 +94,7 @@ enum Dial {
 }
 
 impl Dial {
-    const ALL: [Dial; 7] = [
-        Dial::MicLevel,
-        Dial::GtrLevel,
+    const ALL: [Dial; 5] = [
         Dial::Color,
         Dial::DelayTime,
         Dial::Recount,
@@ -105,8 +104,6 @@ impl Dial {
 
     fn label(self) -> &'static str {
         match self {
-            Dial::MicLevel => "MIC LEVEL",
-            Dial::GtrLevel => "GTR LEVEL",
             Dial::Color => "COLOR",
             Dial::DelayTime => "TIME",
             Dial::Recount => "RECOUNT",
@@ -117,10 +114,6 @@ impl Dial {
 
     fn tip(self) -> &'static str {
         match self {
-            Dial::MicLevel => {
-                "Microphone trim into the tube front end — more of it drives the stage harder"
-            }
-            Dial::GtrLevel => "Guitar trim into the same front end",
             Dial::Color => {
                 "Drive on the tube-style front end; zero is clean, more softens the peaks"
             }
@@ -139,8 +132,6 @@ impl Dial {
 
     fn param<'a>(&self, params: &'a EcomplexParams) -> &'a FloatParam {
         match self {
-            Dial::MicLevel => &params.mic_level,
-            Dial::GtrLevel => &params.gtr_level,
             Dial::Color => &params.color,
             Dial::DelayTime => &params.delay_time,
             Dial::Recount => &params.recount,
@@ -151,8 +142,6 @@ impl Dial {
 
     fn cell<'a>(&self, shared: &'a EcomplexSharedState) -> &'a AtomicCell<f32> {
         match self {
-            Dial::MicLevel => &shared.mic_level,
-            Dial::GtrLevel => &shared.gtr_level,
             Dial::Color => &shared.color,
             Dial::DelayTime => &shared.delay_time,
             Dial::Recount => &shared.recount,
@@ -193,9 +182,7 @@ trait Placement {
 impl Placement for Dial {
     fn slot(&self) -> Option<(usize, usize)> {
         match self {
-            Dial::MicLevel => Some((0, 0)),
-            Dial::GtrLevel => Some((0, 1)),
-            Dial::Color => Some((0, 2)),
+            Dial::Color => Some((0, 0)),
             Dial::DelayTime => Some((1, 0)),
             Dial::Recount => Some((1, 1)),
             Dial::Timbre => Some((1, 2)),
@@ -341,8 +328,6 @@ impl EcomplexUi {
         if crate::STANDALONE_MODE.load(Ordering::Relaxed) {
             let shared = &self.shared;
             let mut settings = Settings::load().0;
-            settings.mic_level = Some(shared.mic_level.load());
-            settings.gtr_level = Some(shared.gtr_level.load());
             settings.color = Some(shared.color.load());
             settings.delay_time = Some(shared.delay_time.load());
             settings.recount = Some(shared.recount.load());

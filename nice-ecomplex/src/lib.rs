@@ -3,7 +3,7 @@
 //! plugin ships as *Nice Ecomplex*, the prefix every bundle in this workspace
 //! carries; the Binson Echoplex T.E.C. 1 is named only as the machine it
 //! models, and `dsp`'s module documentation records which facts about that
-//! machine are panel knowledge and which — A-1 through A-8 — are this model's
+//! machine are panel knowledge and which — A-1 through A-7 — are this model's
 //! named assumptions.
 //!
 //! This file is the interface to the host: the parameters a host can automate,
@@ -13,16 +13,18 @@
 //! snapshot, so what a host can say and what the tape is doing never meet in
 //! the middle of a block.
 //!
-//! The control set is the machine's own, as its panel describes it: Mic
-//! Level, Guitar Level, Delay Time, Recount, Timbre and Echo Volume — plus
-//! Color, which the panel does *not* have and this model adds as a handle on
-//! the tube front end's drive (A-6), because on the real machine that colour
-//! only arrives by overleveling the input, and a plugin user deserves the
-//! knob. There are no switches here, on either side: the machine has none —
-//! no mode dial, no tank selector, no effect toggle — so this crate carries
-//! no stepped parameters at all, and the parameter set is seven floats.
+//! The control set is the machine's own, as its panel describes it: Delay
+//! Time, Recount, Timbre and Echo Volume — plus Color, which the panel does
+//! *not* have and this model adds as a handle on the tube front end's drive
+//! (A-6), because on the real machine that colour only arrives by
+//! overleveling the input, and a plugin user deserves the knob. The machine
+//! had two input jacks and their trims; this model keeps neither — the one
+//! input enters the tube stage at unity, and Color is the only drive. There
+//! are no switches here, on either side: the machine has none — no mode
+//! dial, no tank selector, no effect toggle — so this crate carries no
+//! stepped parameters at all, and the parameter set is five floats.
 //! Echo Volume sets the echo level against a dry that is always present
-//! (A-8): like the machine, this plugin has no wet/dry crossfade and no
+//! (A-7): like the machine, this plugin has no wet/dry crossfade and no
 //! dry-kill.
 #![deny(unsafe_code)]
 
@@ -87,8 +89,6 @@ pub struct EcomplexSharedState {
     /// are the parameters' truth: nice-plug gives a parameter no public
     /// setter, so a hostless app has no other door to write through, and the
     /// view writes these cells directly.
-    pub mic_level: AtomicCell<f32>,
-    pub gtr_level: AtomicCell<f32>,
     pub color: AtomicCell<f32>,
     pub delay_time: AtomicCell<f32>,
     pub recount: AtomicCell<f32>,
@@ -129,8 +129,6 @@ impl EcomplexSharedState {
     /// very worst.
     fn controls(&self) -> dsp::Controls {
         dsp::Controls {
-            mic_level: self.mic_level.load(),
-            gtr_level: self.gtr_level.load(),
             color: self.color.load(),
             delay_time: self.delay_time.load(),
             recount: self.recount.load(),
@@ -142,8 +140,6 @@ impl EcomplexSharedState {
     /// The other direction: publish what the host's parameters say, so the
     /// cells agree with what the transport is about to run on.
     fn publish(&self, controls: &dsp::Controls) {
-        self.mic_level.store(controls.mic_level);
-        self.gtr_level.store(controls.gtr_level);
         self.color.store(controls.color);
         self.delay_time.store(controls.delay_time);
         self.recount.store(controls.recount);
@@ -152,25 +148,19 @@ impl EcomplexSharedState {
     }
 }
 
-/// The parameters, each exactly as the host sees it: seven floats, because
-/// seven is what the machine has knobs for (Color included, and it is honest
-/// about being this model's addition — see the module header). The ranges are
+/// The parameters, each exactly as the host sees it: five floats, one for
+/// each knob this model keeps (Color included, and it is honest about being
+/// this model's addition — see the module header). The ranges are
 /// all the plain 0..1 travel; every taper that is not linear — Delay Time's
 /// exponential, Echo Volume's squared law — lives in `dsp`, where a test can
 /// name it, because a parameter range is a wire format and a curve is a
 /// model.
 #[derive(Params)]
 pub struct EcomplexParams {
-    /// Mic Level: the machine's high-gain input trim, standing here as one
-    /// of two input handles on a single plugin input (A-7).
-    #[id = "mic_level"]
-    pub mic_level: FloatParam,
-    /// Guitar Level: the instrument input trim.
-    #[id = "gtr_level"]
-    pub gtr_level: FloatParam,
-    /// Color: how hard the tube front end is driven (A-6). Not a panel
-    /// control — this model's knob for a property the machine only lets you
-    /// reach by overleveling the input.
+    /// Color: how hard the tube front end is driven (A-6) — the model's only
+    /// input level control, since the signal itself enters the stage at
+    /// unity. Not a panel control: this model's knob for a property the
+    /// machine only lets you reach by overleveling the input.
     #[id = "color"]
     pub color: FloatParam,
     /// Delay Time: tape speed, slow = long. The knob is linear; the seconds
@@ -185,19 +175,17 @@ pub struct EcomplexParams {
     /// over the fixed 90 Hz head tilt (A-5).
     #[id = "timbre"]
     pub timbre: FloatParam,
-    /// Echo Volume: the level of the echo against the ever-present dry (A-8).
+    /// Echo Volume: the level of the echo against the ever-present dry (A-7).
     /// The machine's own "Volume" — there is no dry control to fade.
     #[id = "echo_volume"]
     pub echo_volume: FloatParam,
 }
 
 impl Default for EcomplexParams {
-    /// Where the controls sit on a fresh instance. The input trims are set so
-    /// a full-scale signal arrives at the preamp at unity through the mixer
-    /// (0.25 × the mic's extra trim + 0.5 × the guitar trim = 1.0): the
-    /// factory sound should be the tube stage at its clean edge, not a
-    /// clipped one, and not timid either (A-6, A-7). Color sits low for the
-    /// same reason — audible warmth, no distortion a player did not ask for.
+    /// Where the controls sit on a fresh instance. The single input enters
+    /// the front end at unity, so Color alone sets how hard the tube stage
+    /// is worked; it sits low — the factory sound should be the tube stage
+    /// at its clean edge, not a clipped one, and not timid either (A-6).
     ///
     /// Delay Time centres the exponential range at its geometric mean, about
     /// 346 ms (A-1) — "medium" on a machine whose whole charm is that its
@@ -210,8 +198,6 @@ impl Default for EcomplexParams {
         let knob =
             |name, value| FloatParam::new(name, value, FloatRange::Linear { min: 0.0, max: 1.0 });
         Self {
-            mic_level: knob("Mic Level", 0.25),
-            gtr_level: knob("Guitar Level", 0.5),
             color: knob("Color", 0.2),
             delay_time: knob("Delay Time", 0.5),
             recount: knob("Recount", 0.4),
@@ -227,8 +213,6 @@ impl EcomplexParams {
     /// once is what lets the transport's sample loop touch no atomics at all.
     fn controls(&self) -> dsp::Controls {
         dsp::Controls {
-            mic_level: self.mic_level.value(),
-            gtr_level: self.gtr_level.value(),
             color: self.color.value(),
             delay_time: self.delay_time.value(),
             recount: self.recount.value(),
@@ -301,8 +285,6 @@ pub(crate) fn seed_standalone_params(
             cell.store(param.range().unnormalize(t));
         }
     };
-    seed(&shared.mic_level, &params.mic_level, prefs.mic_level);
-    seed(&shared.gtr_level, &params.gtr_level, prefs.gtr_level);
     seed(&shared.color, &params.color, prefs.color);
     seed(&shared.delay_time, &params.delay_time, prefs.delay_time);
     seed(&shared.recount, &params.recount, prefs.recount);
@@ -319,8 +301,6 @@ impl Default for EcomplexPlugin {
             output_rms: AtomicCell::new(0.0),
             output_peak: AtomicCell::new(0.0),
             meter_updated: AtomicU64::new(0),
-            mic_level: AtomicCell::new(params.mic_level.value()),
-            gtr_level: AtomicCell::new(params.gtr_level.value()),
             color: AtomicCell::new(params.color.value()),
             delay_time: AtomicCell::new(params.delay_time.value()),
             recount: AtomicCell::new(params.recount.value()),
@@ -373,23 +353,16 @@ impl Plugin for EcomplexPlugin {
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    /// Stereo first, because players expect a stereo lane pair even when the
-    /// echo itself is one tape (this model feeds both lanes from one drum —
-    /// the machine *is* mono, and v1 keeps its dry lanes while sharing its
-    /// wet; a stereo spread is a TODO.md debt, honestly declared); mono for
-    /// the hosts that only offer an insert that way.
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            ..AudioIOLayout::const_default()
-        },
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(1),
-            main_output_channels: NonZeroU32::new(1),
-            ..AudioIOLayout::const_default()
-        },
-    ];
+    /// Mono in, mono out, and nothing else: the machine is mono — one
+    /// source on one tape — and so is this model, the input entering the
+    /// tube stage at unity. The plugin neither folds a stereo signal down
+    /// nor widens a mono one; that width work belongs to the host and the
+    /// rack, which is exactly why this is the only layout here.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: NonZeroU32::new(1),
+        main_output_channels: NonZeroU32::new(1),
+        ..AudioIOLayout::const_default()
+    }];
 
     type Editor = EcomplexEditor;
     type SysExMessage = ();
@@ -459,17 +432,13 @@ impl Plugin for EcomplexPlugin {
             let (energy, peak) = block_stats(&input, channels, n, &mut self.tp_in);
             input_energy += energy;
             input_peak = input_peak.max(peak);
-            if channels == 1 {
-                self.ecomplex
-                    .process_mono(&controls, &input[0][..n], &mut output[0][..n]);
-            } else {
-                let (left, right) = output.split_at_mut(1);
-                self.ecomplex.process_stereo(
-                    &controls,
-                    [&input[0][..n], &input[1][..n]],
-                    [&mut left[0][..n], &mut right[0][..n]],
-                );
-            }
+            // One tape, one channel: the first channel is the input. Should
+            // a host hand over a wider buffer than the mono layout declares,
+            // the tape still reads channel 0 alone and leaves the other lanes
+            // silent — the plugin never folds channels together; width is
+            // the host's work, not the tape's.
+            self.ecomplex
+                .process_mono(&controls, &input[0][..n], &mut output[0][..n]);
             let (energy, peak) = block_stats(&output, channels, n, &mut self.tp_out);
             output_energy += energy;
             output_peak = output_peak.max(peak);
@@ -550,15 +519,7 @@ mod tests {
         ids.sort_unstable();
         assert_eq!(
             ids,
-            [
-                "color",
-                "delay_time",
-                "echo_volume",
-                "gtr_level",
-                "mic_level",
-                "recount",
-                "timbre"
-            ]
+            ["color", "delay_time", "echo_volume", "recount", "timbre"]
         );
     }
 
@@ -566,21 +527,18 @@ mod tests {
     fn the_defaults_are_a_configuration_the_sources_describe() {
         // There is no factory preset for a 1964 tape echo, so "default" here
         // means the playing position the sources describe as normal: dry and
-        // echo together, repeats decaying, tone mid-travel, and the input
-        // mixer handing the tube stage a full-scale signal at unity — the
-        // clean edge, not past it (A-6, A-7).
+        // echo together, repeats decaying, tone mid-travel, and a unity
+        // input meeting a front end just cracked open — the clean edge, not
+        // past it (A-6).
         let params = EcomplexParams::default();
         let controls = params.controls();
-        // The mixer truth: mic trim doubles, guitar trim does not (A-7), and
-        // at defaults they sum to unity so a hot input arrives unclipped.
-        assert!((controls.mic_level * 2.0 + controls.gtr_level - 1.0).abs() < 1e-6);
         // Recount sits under A-4's unity crossover: the factory sound decays,
         // and the howling quarter stays for whoever reaches for it.
         assert!(
             dsp::feedback_gain(controls.recount) < 1.0,
             "factory Recount must not self-oscillate"
         );
-        // The dry is always present (A-8): a fresh instance must run wet but
+        // The dry is always present (A-7): a fresh instance must run wet but
         // not fully substituted — Echo Volume at half, squared-law, sits
         // below the 1.2 full-travel gain.
         assert!(controls.echo_volume > 0.0 && controls.echo_volume < 1.0);
@@ -591,8 +549,6 @@ mod tests {
         // these two ever drift, the plugin and the model disagree about the
         // factory sound and neither says so.
         let dsp_default = dsp::Controls::default();
-        assert_eq!(controls.mic_level, dsp_default.mic_level);
-        assert_eq!(controls.gtr_level, dsp_default.gtr_level);
         assert_eq!(controls.color, dsp_default.color);
         assert_eq!(controls.delay_time, dsp_default.delay_time);
         assert_eq!(controls.recount, dsp_default.recount);
@@ -642,7 +598,7 @@ mod tests {
         assert!(close(seeded.color, 0.6));
         // A control never moved keeps the parameter's own default: the file
         // records moves, it does not restate the plugin.
-        assert_eq!(seeded.mic_level, defaults.mic_level);
+        assert_eq!(seeded.timbre, defaults.timbre);
         assert_eq!(seeded.echo_volume, defaults.echo_volume);
         // A hand-edited file cannot push a parameter off its range; the clamp
         // is the one a host's write would have applied.

@@ -48,8 +48,6 @@ fn a_block_costs_nothing_to_the_allocator() {
         let mut ecomplex = Ecomplex::new(48_000.0, &controls);
         let input = [0.25f32; BLOCK];
         let mut mono = [0.0f32; BLOCK];
-        let mut left = [0.0f32; BLOCK];
-        let mut right = [0.0f32; BLOCK];
         // The first block through any filter is the one that used to be allowed
         // to prepare coefficients; measure after that, the way a host's real
         // blocks arrive.
@@ -57,11 +55,6 @@ fn a_block_costs_nothing_to_the_allocator() {
         let counted = allocation_counter::measure(|| {
             for _ in 0..64 {
                 ecomplex.process_mono(&controls, &input, &mut mono);
-                ecomplex.process_stereo(
-                    &controls,
-                    [&input[..], &input[..]],
-                    [&mut left[..], &mut right[..]],
-                );
             }
         });
         assert_eq!(counted.count_total, 0, "the audio thread allocates");
@@ -79,12 +72,10 @@ fn moving_the_controls_costs_nothing_either() {
     let counted = allocation_counter::measure(|| {
         // Every control moves, on walks with different periods so no pair of
         // them repeats its combination twice while the sweep lasts: the front
-        // end's two trims and its drive slew against the loop's time, feed and
-        // tone, with the output volume crossing them all. A hidden allocation
-        // hiding behind one specific combination is what this sweep is for.
+        // end's drive slew against the loop's time, feed and tone, with the
+        // output volume crossing them all. A hidden allocation hiding behind
+        // one specific combination is what this sweep is for.
         for i in 0u32..64 {
-            controls.mic_level = (i % 9) as f32 / 8.0;
-            controls.gtr_level = 1.0 - (i % 7) as f32 / 6.0;
             controls.color = (i % 5) as f32 / 4.0;
             controls.delay_time = (i % 13) as f32 / 12.0;
             controls.recount = (i % 11) as f32 / 10.0;
@@ -96,7 +87,7 @@ fn moving_the_controls_costs_nothing_either() {
     assert_eq!(counted.count_total, 0, "automation allocates");
 }
 
-/// Reset must clear both lanes, noise/modulation and transport history even
+/// Reset must clear the tape path, noise/modulation and transport history even
 /// after controls have changed, without touching the allocator.
 #[test]
 fn reset_is_allocation_free_and_matches_a_fresh_machine() {
@@ -104,11 +95,10 @@ fn reset_is_allocation_free_and_matches_a_fresh_machine() {
         let mut controls = Controls::default();
         let mut machine = Ecomplex::new(rate, &controls);
         let input = [0.25; BLOCK];
-        let mut left = [0.0; BLOCK];
-        let mut right = [0.0; BLOCK];
+        let mut output = [0.0; BLOCK];
         for pass in 0..2 {
             for _ in 0..128 {
-                machine.process_stereo(&controls, [&input, &input], [&mut left, &mut right]);
+                machine.process_mono(&controls, &input, &mut output);
             }
             if pass == 0 {
                 controls.delay_time = 0.87;
@@ -122,29 +112,19 @@ fn reset_is_allocation_free_and_matches_a_fresh_machine() {
             assert_eq!(counted.count_current, 0, "reset frees storage");
             assert_eq!(counted.bytes_current, 0, "reset changes allocated bytes");
             let mut fresh = Ecomplex::new(rate, &controls);
-            let mut expected_left = [0.0; BLOCK];
-            let mut expected_right = [0.0; BLOCK];
-            // Long enough to expose old tape/spring contents, not just the
-            // immediate dry signal. Different inputs exercise both lanes.
+            let mut expected = [0.0; BLOCK];
+            // Long enough to expose old tape contents, not just the immediate
+            // dry signal.
             for block in 0..(rate as usize * 4 / BLOCK) {
                 let mut impulse = [0.0; BLOCK];
                 if block == 0 {
                     impulse[0] = 1.0;
                 }
-                let silence = [0.0; BLOCK];
-                machine.process_stereo(&controls, [&impulse, &silence], [&mut left, &mut right]);
-                fresh.process_stereo(
-                    &controls,
-                    [&impulse, &silence],
-                    [&mut expected_left, &mut expected_right],
-                );
+                machine.process_mono(&controls, &impulse, &mut output);
+                fresh.process_mono(&controls, &impulse, &mut expected);
                 assert_eq!(
-                    left, expected_left,
-                    "left after reset at {rate} Hz, block {block}"
-                );
-                assert_eq!(
-                    right, expected_right,
-                    "right after reset at {rate} Hz, block {block}"
+                    output, expected,
+                    "output after reset at {rate} Hz, block {block}"
                 );
             }
         }
