@@ -17,13 +17,12 @@ pub struct Target {
 
 /// Moves an existing card, or a new card already appended as a stage and a
 /// branch of its own. IDs are retained, and empty branches and stages
-/// collapse. Dropping on the left chains the moving card before the target,
-/// and dropping on the right chains it after the target — except at the
-/// outer edge of a split, where the edge belongs to the fork: left of a
-/// lane's leading card lands the card in a new stage ahead of the whole
-/// split, and right of a lane's trailing card lands it in a new stage
-/// behind the whole merge. Dropping above or below puts the card in a
-/// branch of its own alongside the target's branch.
+/// collapse. Dropping on the right of a card chains the moving card into
+/// that card's branch after the target, whichever lane of a split it is;
+/// dropping on the left chains it before the target, except at the leading
+/// card of a split, where the card lands in a new stage ahead of the whole
+/// fork; dropping above or below puts it in a branch of its own alongside
+/// the target's branch.
 pub fn place(
     stages: &[Vec<Vec<NodeId>>],
     moving: NodeId,
@@ -48,13 +47,6 @@ pub fn place(
         // stage that has become a single chain, left still chains.
         Side::Left if row == 0 && result[column].len() > 1 => {
             result.insert(column, vec![vec![moving]])
-        }
-        // And its right edge is the merge: dropping to the right of any
-        // lane's trailing card lands the card behind the whole fork, in a
-        // stage of its own. Before a lane's tail, or in a stage that has
-        // become a single chain, right still chains.
-        Side::Right if row + 1 == result[column][branch].len() && result[column].len() > 1 => {
-            result.insert(column + 1, vec![vec![moving]])
         }
         Side::Left => result[column][branch].insert(row, moving),
         Side::Right => result[column][branch].insert(row + 1, moving),
@@ -211,44 +203,19 @@ mod tests {
         );
     }
     #[test]
-    fn a_card_dropped_behind_a_split_lands_after_the_merge() {
-        // The split feeds card 7, and card 1 is looking for a home.
+    fn right_of_a_split_lane_chains_into_that_lane_whichever_tail_it_is() {
+        // The fork feeds card 7, and card 1 wants to join a lane. Right of
+        // either lane's trailing card chains into that lane's sequence —
+        // the merge is not a drop point of its own.
         let original = vec![
             vec![vec![NodeId(1)]],
             vec![vec![NodeId(3)], vec![NodeId(5)]],
             vec![vec![NodeId(7)]],
         ];
-        let expected = vec![
-            vec![vec![NodeId(3)], vec![NodeId(5)]],
-            vec![vec![NodeId(1)]],
-            vec![vec![NodeId(7)]],
-        ];
-        // Aimed at either lane's trailing card, the fork keeps its shape and
-        // the card stands behind the whole stage.
-        for tail in [NodeId(3), NodeId(5)] {
-            assert_eq!(
-                place(
-                    &original,
-                    NodeId(1),
-                    Target {
-                        card: tail,
-                        side: Side::Right
-                    }
-                )
-                .unwrap(),
-                expected
-            );
-        }
-        // A card that leaves the tail of its own lane and lands right of the
-        // other lane's tail also walks out behind the fork.
-        let leaver = vec![
-            vec![vec![NodeId(1), NodeId(2)], vec![NodeId(3)]],
-            vec![vec![NodeId(7)]],
-        ];
         assert_eq!(
             place(
-                &leaver,
-                NodeId(2),
+                &original,
+                NodeId(1),
                 Target {
                     card: NodeId(3),
                     side: Side::Right
@@ -256,8 +223,22 @@ mod tests {
             )
             .unwrap(),
             vec![
-                vec![vec![NodeId(1)], vec![NodeId(3)]],
-                vec![vec![NodeId(2)]],
+                vec![vec![NodeId(3), NodeId(1)], vec![NodeId(5)]],
+                vec![vec![NodeId(7)]]
+            ]
+        );
+        assert_eq!(
+            place(
+                &original,
+                NodeId(1),
+                Target {
+                    card: NodeId(5),
+                    side: Side::Right
+                }
+            )
+            .unwrap(),
+            vec![
+                vec![vec![NodeId(3)], vec![NodeId(5), NodeId(1)]],
                 vec![vec![NodeId(7)]]
             ]
         );
