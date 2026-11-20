@@ -29,6 +29,12 @@ pub struct Card {
     /// every card had before chains existed, so a saved rack that never names
     /// a branch still lays out and wires exactly as it did.
     pub branch: Option<u64>,
+    /// The columns this card's lane runs between, as `(start, end)`: the
+    /// split the lane leaves and the join it returns to. `None` is the shape
+    /// every lane had before local forks meant — the card runs the whole
+    /// stage, from its left edge to its right — so a saved rack that never
+    /// names a span still lays out and wires exactly as it did.
+    pub span: Option<(u64, u64)>,
     pub name: String,
     pub details: nice_clap_host::Descriptor,
     pub path: PathBuf,
@@ -54,6 +60,7 @@ impl Card {
             id,
             stage: id.0,
             branch: None,
+            span: None,
             name,
             details,
             path,
@@ -63,24 +70,38 @@ impl Card {
         })
     }
 }
+/// One lane of a stage: its cards in chain order, and the columns it runs
+/// between. `start` is the split its wire leaves and `end` the join it
+/// returns to; `(0, the stage's width)` is the shape every lane had before
+/// local forks meant, which is also what a card with no span of its own
+/// reads as — so a saved rack that never names a span lays out, wires and
+/// draws exactly as it did.
+#[derive(Clone)]
+pub struct Branch<'a> {
+    pub cards: Vec<&'a Card>,
+    pub start: usize,
+    pub end: usize,
+}
 /// The rack's cards, grouped the way the wiring is built: a left-to-right
-/// series of stages, each stage a set of branches fed the same signal, each
-/// branch a serial chain of one or more cards.
+/// series of stages, each stage a set of lanes fed from the stage's wires,
+/// each lane a serial chain of one or more cards running between two of the
+/// stage's column boundaries.
 ///
 /// Cards are grouped by consecutive equal `stage` values, exactly as stages
 /// have always grouped; within a stage, consecutive cards sharing a `branch`
-/// key chain into one branch, and a `None` key is always a branch of one.
-/// Removal rearranges nothing, so a lone card may keep a key whose head is
-/// gone — a key is an opaque label, and only the carrying-over of equal keys
-/// matters.
-pub fn branches(cards: &[Card]) -> Vec<Vec<Vec<&Card>>> {
-    let mut stages: Vec<Vec<Vec<&Card>>> = Vec::new();
+/// key chain into one lane, and a `None` key is always a lane of one. A
+/// lane's span comes from its cards when every card of the lane carries the
+/// same one — spans live on the cards, immune to the renumbering a stage
+/// rename works on keys — and a lane whose cards disagree, or name nothing,
+/// runs the whole stage like always.
+pub fn branches(cards: &[Card]) -> Vec<Vec<Branch<'_>>> {
+    let mut grouped: Vec<Vec<Vec<&Card>>> = Vec::new();
     for card in cards {
-        let Some(stage) = stages
+        let Some(stage) = grouped
             .last_mut()
             .filter(|stage| stage[0][0].stage == card.stage)
         else {
-            stages.push(vec![vec![card]]);
+            grouped.push(vec![vec![card]]);
             continue;
         };
         if card.branch.is_some()
@@ -93,7 +114,34 @@ pub fn branches(cards: &[Card]) -> Vec<Vec<Vec<&Card>>> {
             stage.push(vec![card]);
         }
     }
-    stages
+    grouped
+        .into_iter()
+        .map(|stage| {
+            let width = stage.iter().map(Vec::len).max().unwrap_or(1);
+            stage
+                .into_iter()
+                .map(|cards| {
+                    let named = cards
+                        .iter()
+                        .map(|card| card.span)
+                        .collect::<Option<Vec<_>>>();
+                    let (start, end) = match named {
+                        Some(spans) if spans.windows(2).all(|pair| pair[0] == pair[1]) => {
+                            let (start, end) = spans[0];
+                            (start as usize, end as usize)
+                        }
+                        _ => (0, width),
+                    };
+                    let lane = crate::layout::Lane::spanning(start, end, cards);
+                    Branch {
+                        cards: lane.chain,
+                        start: lane.start,
+                        end: lane.end,
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }
 pub fn arrange(
     cards: Vec<Card>,
@@ -105,10 +153,14 @@ pub fn arrange(
         .map(|stage| {
             stage
                 .iter()
-                .map(|branch| branch.iter().map(|card| card.id).collect())
+                .map(|branch| crate::layout::Lane {
+                    start: branch.start,
+                    end: branch.end,
+                    chain: branch.cards.iter().map(|card| card.id).collect(),
+                })
                 .collect()
         })
-        .collect::<Vec<Vec<Vec<_>>>>();
+        .collect::<Vec<Vec<_>>>();
     let layout = crate::layout::place(&layout, moving, target)?;
     let mut cards = cards
         .into_iter()
@@ -116,26 +168,32 @@ pub fn arrange(
         .collect::<BTreeMap<_, _>>();
     let mut result = Vec::new();
     for stage in layout {
-        let key = stage[0][0].0;
-        for branch in stage {
-            // A branch of one is just a card on its own: the key only needs
+        let key = stage[0].chain[0];
+        let width = stage.iter().map(|lane| lane.end).max().unwrap_or(1);
+        for lane in stage {
+            // A lane of one is just a card on its own: the key only needs
             // to exist to hold a chain together, and `arrange` has the whole
-            // picture, so it writes the cleanest labels it can.
-            let branch_key = (branch.len() > 1).then_some(branch[0].0);
-            for id in branch {
+            // picture, so it writes the cleanest labels it can — and a span
+            // is only worth keeping when the lane does not run the stage.
+            let branch_key = (lane.chain.len() > 1).then_some(lane.chain[0]);
+            let span = (lane.start != 0 || lane.end != width)
+                .then_some((lane.start as u64, lane.end as u64));
+            for id in lane.chain {
                 let mut card = cards.remove(&id).unwrap();
-                card.stage = key;
-                card.branch = branch_key;
+                card.stage = key.0;
+                card.branch = branch_key.map(|head| head.0);
+                card.span = span;
                 result.push(card);
             }
         }
     }
     Ok(result)
 }
-/// One stage's worth of card shapes: branches top lane down, each branch a
-/// serial chain of `(id, inputs, outputs)`. `plan` works on these rather
-/// than on loaded plugins, so the width arithmetic stays witnessable.
-type StagePlan = Vec<Vec<(NodeId, Channels, Channels)>>;
+/// One stage's worth of card shapes: lanes top lane down, each lane a serial
+/// chain of `(id, inputs, outputs)` running between the lane's own two
+/// column boundaries. `plan` works on these rather than on loaded plugins,
+/// so the width arithmetic stays witnessable.
+type StagePlan = Vec<crate::layout::Lane<(NodeId, Channels, Channels)>>;
 
 /// The rack's two ends, as the device settings describe them.
 ///
@@ -315,14 +373,17 @@ pub fn chain(
         .map(|stage| {
             stage
                 .into_iter()
-                .map(|branch| {
-                    branch
+                .map(|lane| crate::layout::Lane {
+                    start: lane.start,
+                    end: lane.end,
+                    chain: lane
+                        .cards
                         .into_iter()
                         .map(|card| {
                             bindings.insert(card.id, card.binding.clone());
                             (card.id, card.inputs, card.outputs)
                         })
-                        .collect()
+                        .collect(),
                 })
                 .collect()
         })
@@ -332,150 +393,330 @@ pub fn chain(
 /// The wiring itself, carried out on card shapes — id, input count, output
 /// count — rather than on loaded plugins, so the width arithmetic can be
 /// witnessed without a single CLAP file on disk. The shapes arrive grouped
-/// the way `branches` groups cards: stages left to right, branches top lane
-/// down, each branch a serial chain.
+/// the way `branches` groups cards: stages left to right, each stage a set of
+/// lanes with their own column spans, top lane down, each lane a serial chain.
+///
+/// A stage is read column by column. A wire enters the stage's left boundary;
+/// at each interior boundary, the wires that *arrive* there — the tails of
+/// lanes ending at it, the chain wires of cards seated inside it, and the one
+/// wire still running straight through — are resolved: one arrival passes
+/// through and stays the live wire, two or more join at a `Mixer` born at that
+/// boundary, and a lane head seating on the boundary drinks the live wire
+/// instead (the trunk forking to heads needs no node: it is a split, drawn as
+/// a ring). Cards only convert widths where a split lets them: the rack's own
+/// `IN` jack and a boundary where more than one lane head seats.
+#[derive(Clone)]
+enum Feed {
+    /// A wire already built, carried by node and width.
+    Wired(NodeId, Channels),
+    /// The tail wire of a lane: its last card's output, running to the
+    /// lane's end boundary.
+    Tail(usize),
+    /// The chain wire entering a card seated inside a boundary: the output
+    /// of the card one step before it in its lane.
+    Mid(usize, usize),
+    /// The mixer born at a boundary, fed by that boundary's arrivals.
+    Mixer(usize),
+}
+/// What arrives at one column boundary of a stage, as seen before any node
+/// is born: the live wire heads seat on, the mixer (with its feeds, top lane
+/// down) if two or more arrivals join, the count of lane heads seating here,
+/// and whether this is the stage's own left edge.
+struct Boundary {
+    signal: Feed,
+    mixer: Option<Vec<Feed>>,
+    starts: usize,
+    first: bool,
+}
+/// Sweep a stage's columns left to right, purely — no nodes, no birthing —
+/// to work out what each boundary carries. `entry` is the wire entering the
+/// stage's left edge.
+fn boundaries(stage: &StagePlan, entry: Feed) -> Vec<Boundary> {
+    let width = stage.iter().map(|lane| lane.end).max().unwrap_or(0);
+    let mut live = Some(entry.clone());
+    let mut sweep = Vec::with_capacity(width + 1);
+    for column in 0..=width {
+        let ends: Vec<usize> = (0..stage.len())
+            .filter(|&lane| stage[lane].end == column)
+            .collect();
+        let starts = stage.iter().filter(|lane| lane.start == column).count();
+        let mids: Vec<(usize, usize)> = (0..stage.len())
+            .filter_map(|lane| {
+                column
+                    .checked_sub(stage[lane].start)
+                    .filter(|&at| at > 0 && at < stage[lane].chain.len())
+                    .map(|at| (lane, at))
+            })
+            .collect();
+        let (signal, mixer) = if ends.is_empty() {
+            let signal = live.clone().unwrap_or_else(|| entry.clone());
+            if starts > 0 {
+                live = None;
+            }
+            (signal, None)
+        } else {
+            let mut feeds: Vec<Feed> = ends.iter().map(|&lane| Feed::Tail(lane)).collect();
+            feeds.extend(mids.iter().map(|&(lane, at)| Feed::Mid(lane, at - 1)));
+            feeds.extend(live.take());
+            if feeds.len() == 1 {
+                let wire = feeds.into_iter().next().unwrap();
+                live = (starts == 0 && mids.is_empty()).then(|| wire.clone());
+                (wire, None)
+            } else {
+                live = None;
+                (Feed::Mixer(column), Some(feeds))
+            }
+        };
+        sweep.push(Boundary {
+            signal,
+            mixer,
+            starts,
+            first: column == 0,
+        });
+    }
+    sweep
+}
+/// The graph under construction with its two counters: `born` ranks nodes in
+/// reading order — the plan the DSP runs — and `next_id` hands out auxiliary
+/// ids (maps and mixers) descending from just under `OUT`, exactly as before
+/// lanes gave each lane its own span.
+struct Wiring {
+    graph: RackGraph,
+    born: u64,
+    next_id: u64,
+}
+impl Wiring {
+    fn next(&mut self) -> NodeId {
+        let id = NodeId(self.next_id);
+        self.next_id -= 1;
+        id
+    }
+    fn bear(&mut self) -> u64 {
+        let rank = self.born;
+        self.born += 1;
+        rank
+    }
+    fn map(&mut self, from: NodeId, inputs: Channels, outputs: Channels) -> NodeId {
+        let map = self.next();
+        let rank = self.bear();
+        self.graph.priority.insert(map, rank);
+        self.graph
+            .nodes
+            .insert(map, NodeKind::ChannelMap { inputs, outputs });
+        self.graph.connections.push(Connection { from, to: map });
+        map
+    }
+    fn card(&mut self, from: NodeId, id: NodeId, inputs: Channels, outputs: Channels) {
+        let rank = self.bear();
+        self.graph.priority.insert(id, rank);
+        self.graph
+            .nodes
+            .insert(id, NodeKind::Plugin { inputs, outputs });
+        self.graph.connections.push(Connection { from, to: id });
+    }
+    /// A mixer and its risers, feeds top lane down: every feed is raised to
+    /// the join width — riser born before the mixer, so the plan still reads
+    /// top-down — and then the mixer node itself is born.
+    fn mixer(&mut self, feeds: Vec<(NodeId, Channels)>) -> (NodeId, Channels) {
+        let join = feeds
+            .iter()
+            .map(|(_, width)| *width)
+            .max()
+            .unwrap_or(Channels::Mono);
+        let mut raised = Vec::with_capacity(feeds.len());
+        for (node, width) in feeds {
+            raised.push(if width == join {
+                node
+            } else {
+                self.map(node, width, join)
+            });
+        }
+        let id = self.next();
+        let rank = self.bear();
+        self.graph.priority.insert(id, rank);
+        self.graph.nodes.insert(id, NodeKind::Mixer(join));
+        for riser in raised {
+            self.graph.connections.push(Connection {
+                from: riser,
+                to: id,
+            });
+        }
+        (id, join)
+    }
+}
+/// What has been born inside one stage so far: each lane's card outputs, and
+/// the mixers at boundaries already raised. A mixer is memoised so the card
+/// that consumes it is born after it, whenever that consumption is reached.
+#[derive(Default)]
+struct StageWiring {
+    cards: Vec<Vec<(NodeId, Channels)>>,
+    mixers: BTreeMap<usize, (NodeId, Channels)>,
+}
+/// Resolve a boundary feed to the wire (node, width) it stands for, birthing
+/// whatever it depends on first: a lane up to its tail (or up to a seated
+/// card), and mixers recursively. Feeds always descend in column, so the
+/// recursion terminates.
+fn feed_wire(
+    wiring: &mut Wiring,
+    stage: &StagePlan,
+    sweep: &[Boundary],
+    lanes: &mut StageWiring,
+    index: usize,
+    feed: Feed,
+) -> Result<(NodeId, Channels), WidthConflict> {
+    match feed {
+        Feed::Wired(node, width) => Ok((node, width)),
+        Feed::Tail(lane) => {
+            birth_lane(wiring, stage, sweep, lanes, index, lane, None)?;
+            Ok(lanes.cards[lane][stage[lane].chain.len() - 1])
+        }
+        Feed::Mid(lane, at) => {
+            birth_lane(wiring, stage, sweep, lanes, index, lane, Some(at))?;
+            Ok(lanes.cards[lane][at])
+        }
+        Feed::Mixer(column) => {
+            if let Some(wire) = lanes.mixers.get(&column) {
+                return Ok(*wire);
+            }
+            let feeds = sweep[column].mixer.clone().unwrap_or_default();
+            let mut raised = Vec::with_capacity(feeds.len());
+            for feed in feeds {
+                raised.push(feed_wire(wiring, stage, sweep, lanes, index, feed)?);
+            }
+            let wire = wiring.mixer(raised);
+            lanes.mixers.insert(column, wire);
+            Ok(wire)
+        }
+    }
+}
+/// Birth a lane's cards, chain head to tail, up to the whole lane or up to
+/// (and including) one seated card. A head seats on its boundary's live
+/// wire; a card seated at a boundary where a mixer joins is fed by that
+/// mixer; anywhere else the chain carries the wire. Widths convert only at
+/// a head seating on a split.
+fn birth_lane(
+    wiring: &mut Wiring,
+    stage: &StagePlan,
+    sweep: &[Boundary],
+    lanes: &mut StageWiring,
+    index: usize,
+    lane: usize,
+    upto: Option<usize>,
+) -> Result<(), WidthConflict> {
+    let target = upto.map_or(stage[lane].chain.len(), |at| {
+        (at + 1).min(stage[lane].chain.len())
+    });
+    while lanes.cards[lane].len() < target {
+        let at = lanes.cards[lane].len();
+        let (id, inputs, outputs) = stage[lane].chain[at];
+        let column = stage[lane].start + at;
+        let (node, width) = if at == 0 {
+            feed_wire(
+                wiring,
+                stage,
+                sweep,
+                lanes,
+                index,
+                sweep[column].signal.clone(),
+            )?
+        } else if sweep[column].mixer.is_some() {
+            feed_wire(wiring, stage, sweep, lanes, index, Feed::Mixer(column))?
+        } else {
+            lanes.cards[lane][at - 1]
+        };
+        if inputs != width {
+            let converts =
+                at == 0 && ((sweep[column].first && index == 0) || sweep[column].starts > 1);
+            if !converts {
+                return Err(WidthConflict {
+                    card: id,
+                    wire: width,
+                    wants: inputs,
+                });
+            }
+            let map = wiring.map(node, width, inputs);
+            wiring.card(map, id, inputs, outputs);
+        } else {
+            wiring.card(node, id, inputs, outputs);
+        }
+        lanes.cards[lane].push((id, outputs));
+    }
+    Ok(())
+}
 fn plan(stages: &[StagePlan], route: Route) -> Result<RackGraph, WidthConflict> {
-    let mut graph = RackGraph::default();
+    let mut wiring = Wiring {
+        graph: RackGraph::default(),
+        born: 0,
+        next_id: u64::MAX - 1,
+    };
     let input = IN;
     let output = OUT;
-    let mut auxiliary = u64::MAX - 1;
-    let mut next = || {
-        let id = NodeId(auxiliary);
-        auxiliary -= 1;
-        id
-    };
     // `branches` hands out the cards the way the rack is read: stage by
     // stage, top lane down, chain head to tail. Ranking every node at its
     // creation step is therefore the layout's reading order, and
-    // `RackGraph::priority` makes the compile plan run lanes top-down —
-    // the bottom lane starts its block work where the lane above ended.
-    let mut born = 0u64;
-    graph.nodes.insert(input, NodeKind::Input(route.input));
-    graph.priority.insert(input, born);
-    born += 1;
-    graph.nodes.insert(output, NodeKind::Output(route.output));
+    // `RackGraph::priority` makes the compile plan run lanes top-down — the
+    // bottom lane starts its block work where the lane above ended.
+    wiring
+        .graph
+        .nodes
+        .insert(input, NodeKind::Input(route.input));
+    let rank = wiring.bear();
+    wiring.graph.priority.insert(input, rank);
+    wiring
+        .graph
+        .nodes
+        .insert(output, NodeKind::Output(route.output));
     let mut previous = input;
-    // The trunk carries the width of whatever the rack has read so far. It
-    // starts at the device's own width, and a `ChannelMap` appears only where
-    // the rack is allowed to convert: at the `IN` jack, at the head of each
-    // branch of a split — where one wire becomes several, so a circle belongs
-    // there anyway — and at the `OUT` jack. Between two adjacent cards the
-    // wire is one conductor with nothing in the middle of it, so a card that
-    // wants another width there is refused. A stage whose branches disagree
-    // ends each branch at the widest count before the mixer, because the
-    // compile refuses unequal feeds.
     let mut trunk = route.input;
     for (index, stage) in stages.iter().enumerate() {
-        let mut ends = Vec::new();
-        // A branch may start on a wire of its own width only where the rack
-        // converts: the device's own input, and a stage that splits the trunk
-        // into parallel lanes.
-        let converts = index == 0 || stage.len() > 1;
-        for branch_cards in stage {
-            let mut branch = previous;
-            let mut width = trunk;
-            for (position, &(id, inputs, outputs)) in branch_cards.iter().enumerate() {
-                if inputs != width {
-                    if !converts || position > 0 {
-                        return Err(WidthConflict {
-                            card: id,
-                            wire: width,
-                            wants: inputs,
-                        });
-                    }
-                    let map = next();
-                    graph.priority.insert(map, born);
-                    born += 1;
-                    graph.nodes.insert(
-                        map,
-                        NodeKind::ChannelMap {
-                            inputs: width,
-                            outputs: inputs,
-                        },
-                    );
-                    graph.connections.push(Connection {
-                        from: branch,
-                        to: map,
-                    });
-                    branch = map;
-                }
-                graph.priority.insert(id, born);
-                born += 1;
-                graph.nodes.insert(id, NodeKind::Plugin { inputs, outputs });
-                graph.connections.push(Connection {
-                    from: branch,
-                    to: id,
-                });
-                branch = id;
-                width = outputs;
-            }
-            ends.push((branch, width));
-        }
-        previous = if ends.len() == 1 {
-            trunk = ends[0].1;
-            ends[0].0
-        } else {
-            let join = ends.iter().map(|(_, width)| *width).max().unwrap_or(trunk);
-            // The risers are built before the mixer is ranked, so the plan
-            // still reads top-down: every feed is born before the node it
-            // feeds joins.
-            let feeds = ends
-                .into_iter()
-                .map(|(end, width)| {
-                    if width == join {
-                        return end;
-                    }
-                    let map = next();
-                    graph.priority.insert(map, born);
-                    born += 1;
-                    graph.nodes.insert(
-                        map,
-                        NodeKind::ChannelMap {
-                            inputs: width,
-                            outputs: join,
-                        },
-                    );
-                    graph.connections.push(Connection { from: end, to: map });
-                    map
-                })
-                .collect::<Vec<_>>();
-            let id = next();
-            graph.priority.insert(id, born);
-            born += 1;
-            graph.nodes.insert(id, NodeKind::Mixer(join));
-            for end in feeds {
-                graph.connections.push(Connection { from: end, to: id });
-            }
-            trunk = join;
-            id
+        let sweep = boundaries(stage, Feed::Wired(previous, trunk));
+        let width = stage.iter().map(|lane| lane.end).max().unwrap_or(0);
+        let mut lanes = StageWiring {
+            cards: vec![Vec::new(); stage.len()],
+            ..StageWiring::default()
         };
+        for lane in 0..stage.len() {
+            birth_lane(&mut wiring, stage, &sweep, &mut lanes, index, lane, None)?;
+        }
+        // Mixers nothing consumed inside a lane still close the stage: a
+        // legacy stage's end-boundary mixer lands here, after every lane's
+        // cards, exactly as the old per-stage join did.
+        for column in 0..=width {
+            if sweep[column].mixer.is_some() {
+                feed_wire(
+                    &mut wiring,
+                    stage,
+                    &sweep,
+                    &mut lanes,
+                    index,
+                    Feed::Mixer(column),
+                )?;
+            }
+        }
+        let (node, carried) = feed_wire(
+            &mut wiring,
+            stage,
+            &sweep,
+            &mut lanes,
+            index,
+            sweep[width].signal.clone(),
+        )?;
+        previous = node;
+        trunk = carried;
     }
     if trunk != route.output {
-        let map = next();
-        graph.priority.insert(map, born);
-        born += 1;
-        graph.nodes.insert(
-            map,
-            NodeKind::ChannelMap {
-                inputs: trunk,
-                outputs: route.output,
-            },
-        );
-        graph.connections.push(Connection {
-            from: previous,
-            to: map,
-        });
-        previous = map;
+        previous = wiring.map(previous, trunk, route.output);
     }
-    graph.connections.push(Connection {
+    wiring.graph.connections.push(Connection {
         from: previous,
         to: output,
     });
     // The output was in the graph from the start but is ranked last: the
     // master trim and metering belong after the last card, as they do on the
     // DSP timeline.
-    graph.priority.insert(output, born);
-    Ok(graph)
+    let rank = wiring.bear();
+    wiring.graph.priority.insert(output, rank);
+    Ok(wiring.graph)
 }
 /// Master metering, published as f32 bits by the DSP thread and read by the
 /// window. `input`/`output` carry linear RMS; the peak fields carry linear
@@ -1344,6 +1585,7 @@ impl Runtime {
                 id: card.id.0,
                 stage: card.stage,
                 branch: card.branch,
+                span: card.span,
                 path: card.path.clone(),
                 class: card.binding.class.clone(),
                 name: card.name.clone(),
@@ -1624,6 +1866,14 @@ mod tests {
             output_rate: None,
         }
     }
+    /// A stage written the way the rack was drawn before lanes carried
+    /// spans of their own: every lane full width from the left edge.
+    fn lanes(chains: Vec<Vec<(NodeId, Channels, Channels)>>) -> StagePlan {
+        chains
+            .into_iter()
+            .map(|chain| crate::layout::Lane::from(0, chain))
+            .collect()
+    }
     /// The plan's width arithmetic, witnessed without any plugin: a map is
     /// born only where the rack is allowed to convert — its own two jacks and
     /// the head of a branch — so a pair of mono cards on a mono input costs
@@ -1632,7 +1882,10 @@ mod tests {
     fn a_plan_carries_its_route_and_maps_only_the_devices_own_ends() {
         let mono = Channels::Mono;
         let graph = plan(
-            &[vec![vec![(NodeId(2), mono, mono), (NodeId(3), mono, mono)]]],
+            &[lanes(vec![vec![
+                (NodeId(2), mono, mono),
+                (NodeId(3), mono, mono),
+            ]])],
             Route::default(),
         )
         .expect("mono cards on a mono input");
@@ -1716,10 +1969,10 @@ mod tests {
     fn a_plan_lifts_each_branch_to_the_widest_tail_before_the_mixer() {
         let mono = Channels::Mono;
         let graph = plan(
-            &[vec![
+            &[lanes(vec![
                 vec![(NodeId(2), mono, mono)],
                 vec![(NodeId(3), Channels::Stereo, Channels::Stereo)],
-            ]],
+            ])],
             Route::default(),
         )
         .expect("a split stage converts at each branch head");
@@ -1767,10 +2020,10 @@ mod tests {
     fn a_plan_holds_a_unanimous_branch_width_all_the_way_to_the_output() {
         let mono = Channels::Mono;
         let graph = plan(
-            &[vec![
+            &[lanes(vec![
                 vec![(NodeId(2), mono, mono)],
                 vec![(NodeId(3), mono, mono)],
-            ]],
+            ])],
             Route::default(),
         )
         .expect("two mono branches on a mono input");
@@ -1807,7 +2060,7 @@ mod tests {
     #[test]
     fn a_plan_needs_no_crook_when_the_counts_already_agree() {
         let stereo = Channels::Stereo;
-        let graph = plan(&[vec![vec![(NodeId(2), stereo, stereo)]]], wide()).unwrap();
+        let graph = plan(&[lanes(vec![vec![(NodeId(2), stereo, stereo)]])], wide()).unwrap();
         assert_eq!(graph.connections.len(), 2);
         assert!(
             graph
@@ -1827,7 +2080,7 @@ mod tests {
     fn a_card_wide_at_one_end_only_meets_the_route_it_was_given() {
         let mono = Channels::Mono;
         let stereo = Channels::Stereo;
-        let wide_out = &[vec![vec![(NodeId(2), mono, stereo)]]][..];
+        let wide_out = &[lanes(vec![vec![(NodeId(2), mono, stereo)]])][..];
         let graph = plan(wide_out, Route::default()).expect("the card meets both ends");
         assert!(
             junctions(&graph).is_empty(),
@@ -1872,10 +2125,10 @@ mod tests {
         let mono = Channels::Mono;
         let stereo = Channels::Stereo;
         let refused = plan(
-            &[vec![vec![
+            &[lanes(vec![vec![
                 (NodeId(2), stereo, stereo),
                 (NodeId(3), mono, stereo),
-            ]]],
+            ]])],
             wide(),
         )
         .expect_err("a mono card cannot sit on the stereo wire");
@@ -1896,10 +2149,10 @@ mod tests {
             "This card needs a mono input — the wire feeding it is stereo"
         );
         let refused = plan(
-            &[vec![vec![
+            &[lanes(vec![vec![
                 (NodeId(2), mono, mono),
                 (NodeId(3), stereo, stereo),
-            ]]],
+            ]])],
             wide(),
         )
         .expect_err("nor a stereo card on the wire a mono card leaves");
@@ -1977,7 +2230,7 @@ mod tests {
         // now both circles exist: the split names the card it feeds, the join
         // names the card it reads and no drain.
         let graph = plan(
-            &[vec![vec![(NodeId(2), stereo, stereo)]]],
+            &[lanes(vec![vec![(NodeId(2), stereo, stereo)]])],
             Route {
                 output: mono,
                 ..Route::default()
@@ -2702,6 +2955,7 @@ mod tests {
             id: 7,
             stage: 1,
             branch: None,
+            span: None,
             path: "/plugins/tuner.clap".into(),
             class: "same-class".into(),
             name: "Tuner".into(),
@@ -3140,6 +3394,7 @@ mod card_mode_tests {
             id: 7,
             stage: 7,
             branch: None,
+            span: None,
             path: "/plugins/test.clap".into(),
             class: "test".into(),
             name: "Test".into(),

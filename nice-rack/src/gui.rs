@@ -797,14 +797,83 @@ struct Geometry {
     flow: f32,
     max_vertical: f32,
 }
-fn groups(cards: &[Card]) -> Vec<Vec<Vec<NodeId>>> {
+/// One lane of a stage as the canvas sees it: its cards in order, and the
+/// stage-local column span the lane occupies. A lane that runs the whole
+/// stage spans `0..width`, exactly as every lane did before lanes learned
+/// to start and stop partway along a stage; a shorter lane shares the stage
+/// with its neighbours and opens or closes at one of the stage's interior
+/// boundaries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuiLane {
+    /// The lane's cards, in the order the wire runs through them.
+    ids: Vec<NodeId>,
+    /// The stage-local column the lane's first card stands in.
+    start: usize,
+    /// One past the stage-local column of its last possible card — the
+    /// boundary its tail runs out to.
+    end: usize,
+}
+fn groups(cards: &[Card]) -> Vec<Vec<GuiLane>> {
     crate::runtime::branches(cards)
         .iter()
         .map(|stage| {
             stage
                 .iter()
-                .map(|branch| branch.iter().map(|card| card.id).collect())
+                .map(|branch| GuiLane {
+                    ids: branch.cards.iter().map(|card| card.id).collect(),
+                    start: branch.start,
+                    end: branch.end,
+                })
                 .collect()
+        })
+        .collect()
+}
+/// How wide a stage is: one past the last column any of its lanes reaches.
+fn stage_width(lanes: &[GuiLane]) -> usize {
+    lanes.iter().map(|lane| lane.end).max().unwrap_or(1)
+}
+/// Where a stage's boundary ring stands. Boundary `0` and boundary `width`
+/// are the stage's own split and merge columns, exactly as they always were;
+/// an interior boundary sits in the air between the two columns it divides —
+/// clear of both cards' stub boxes — so the ring reads as belonging to the
+/// stage rather than to either card facing it.
+fn ring_x(base_x: f32, boundary: usize, width: usize) -> f32 {
+    if boundary == 0 {
+        junction_x(base_x, false)
+    } else if boundary >= width {
+        junction_x(base_x + (width - 1) as f32 * COLUMN_STEP, true)
+    } else {
+        base_x + boundary as f32 * COLUMN_STEP - COLUMN_STEP / 2.0
+    }
+}
+/// The boundaries where a shared stage wears a collar, with the collar's
+/// shape: a bar (`true`) where lanes part or continue, a plus (`false`)
+/// where lanes gather. The stage's own ends always wear one — the trunk
+/// feeds boundary `0` and leaves from boundary `width`, so both need their
+/// air gap whatever the lanes do in between. An interior boundary wears one
+/// when lanes part there (two or more lanes start), gather there (two or
+/// more end), or trade over (a lane ending or starting while another
+/// crosses through). A boundary crossed by nothing and touched by only one
+/// lane is no junction at all, and wears nothing.
+fn stage_rings(lanes: &[GuiLane]) -> Vec<(usize, bool)> {
+    if lanes.len() < 2 {
+        return Vec::new();
+    }
+    let width = stage_width(lanes);
+    (0..=width)
+        .filter_map(|boundary| {
+            let starts = lanes.iter().filter(|lane| lane.start == boundary).count();
+            let ends = lanes.iter().filter(|lane| lane.end == boundary).count();
+            let crossing = lanes
+                .iter()
+                .filter(|lane| lane.start < boundary && boundary < lane.end)
+                .count();
+            (boundary == 0
+                || boundary == width
+                || starts >= 2
+                || ends >= 2
+                || (starts + ends >= 1 && crossing >= 1))
+                .then_some((boundary, ends < 2))
         })
         .collect()
 }
@@ -821,20 +890,37 @@ struct StageColumn {
     /// Where the wire arriving at this stage begins: the previous stage's
     /// `merge`, or the face of the rack's own `IN` card for the first stage.
     feed: f32,
+    /// The canvas column its boundary `0` stands in: the column its first
+    /// cards share, which for a lane that starts mid-stage is no longer the
+    /// leftmost slot the stage happens to own.
+    base: f32,
+    /// How many columns the stage runs.
+    width: usize,
+}
+/// Where a stage's boundary ring stands, in the same columns the wiring
+/// drawing uses.
+fn boundary_ring_x(stage: &StageColumn, boundary: usize) -> f32 {
+    ring_x(stage.base, boundary, stage.width)
 }
 
-fn stage_columns(stages: &[Vec<NodeId>], slots: &[Slot], input_x: f32) -> Vec<StageColumn> {
+fn stage_columns(stages: &[Vec<GuiLane>], slots: &[Slot], input_x: f32) -> Vec<StageColumn> {
     let mut columns: Vec<StageColumn> = Vec::with_capacity(stages.len());
     for stage in stages {
-        let mut edges: Option<(f32, f32)> = None;
-        for id in stage {
-            let Some(slot) = slots.iter().find(|slot| slot.id == *id) else {
+        // The stage's own first column, worked out from each lane's head
+        // card by undoing the span that shifted it right; every lane agrees.
+        let mut base: Option<f32> = None;
+        for lane in stage {
+            let Some(head) = lane.ids.first() else {
                 continue;
             };
-            edges = Some(match edges {
-                Some((left, right)) => (left.min(slot.x), right.max(slot.x)),
-                None => (slot.x, slot.x),
-            });
+            let Some(slot) = slots.iter().find(|slot| slot.id == *head) else {
+                continue;
+            };
+            base = Some(
+                base.map_or(slot.x - lane.start as f32 * COLUMN_STEP, |past: f32| {
+                    past.min(slot.x - lane.start as f32 * COLUMN_STEP)
+                }),
+            );
         }
         // Read before the push: a stage is fed from the column the stage
         // before it hands off in, and the first stage from the rack's `IN`.
@@ -843,11 +929,14 @@ fn stage_columns(stages: &[Vec<NodeId>], slots: &[Slot], input_x: f32) -> Vec<St
             .map_or(wire_box_x(input_x, true), |past| past.merge);
         // A stage with nothing to place keeps its index, because every later
         // stage is numbered against it, and borrows the rack's own column.
-        let (left, right) = edges.unwrap_or((input_x, input_x));
+        let base = base.unwrap_or(input_x);
+        let width = stage_width(stage);
         columns.push(StageColumn {
-            split: junction_x(left, false),
-            merge: junction_x(right, true),
+            split: junction_x(base, false),
+            merge: ring_x(base, width, width),
             feed,
+            base,
+            width,
         });
     }
     columns
@@ -925,10 +1014,25 @@ impl WidthMark {
 /// candidate seat is shrunk by `MARK_HIT` at both ends and the first one with
 /// room left wins. That single rule is what leaves a stretch too short for a
 /// circle of its own — see [`MARK_HIT`].
-fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> Vec<WidthMark> {
+fn width_marks(found: &[Junction], stages: &[Vec<GuiLane>], frame: &Geometry) -> Vec<WidthMark> {
     let columns = stage_columns(stages, &frame.slots, frame.input.x);
     let slot_of = |id: NodeId| frame.slots.iter().find(|slot| slot.id == id);
-    let stage_of = |id: NodeId| stages.iter().position(|stage| stage.contains(&id));
+    let stage_of = |id: NodeId| {
+        stages
+            .iter()
+            .position(|stage| stage.iter().any(|lane| lane.ids.contains(&id)))
+    };
+    // Which lane of which stage a card belongs to, so a wire can be seated
+    // at the boundary ring its own lane opens or closes at rather than at
+    // the stage's outer pair.
+    let place_of = |id: NodeId| -> Option<(usize, usize)> {
+        stages.iter().enumerate().find_map(|(index, stage)| {
+            stage
+                .iter()
+                .position(|lane| lane.ids.contains(&id))
+                .map(|lane| (index, lane))
+        })
+    };
     // Risers are drawn clamped to the visible height of the rack, so a circle
     // riding one is clamped exactly the same way.
     let row = |y: f32| y.max(frame.bottom).min(frame.top);
@@ -946,13 +1050,21 @@ fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> 
     // Where the wire arriving at a stage starts: after the join ring when the
     // stage before it ran branches in parallel — the ring is not a card and
     // has no slot, which is what the check for a multi-branch stage stands in
-    // for — or else at the face of the stub box it was fed from.
+    // for — or else at the face of the stub box it was fed from. A lane of
+    // that stage may have ended early, at one of the stage's interior rings;
+    // the wire then starts at that ring's edge instead.
     let arrives = |index: usize, from: Option<NodeId>| -> f32 {
         let feed = columns
             .get(index)
             .map_or(wire_box_x(frame.input.x, true), |column| column.feed);
         if index > 0 && stages[index - 1].len() > 1 {
-            return feed + MIXER_RING;
+            let ring = from
+                .and_then(place_of)
+                .filter(|(past, _)| *past == index - 1)
+                .map_or(feed, |(_, lane)| {
+                    boundary_ring_x(&columns[index - 1], stages[index - 1][lane].end)
+                });
+            return ring + MIXER_RING;
         }
         match from {
             None => in_face(),
@@ -992,18 +1104,22 @@ fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> 
         let Some(index) = stage_of(to) else {
             // Nothing in the layout answers to it, so the wire lands on the
             // join ring: this is the conversion lifting one branch to the
-            // width the others arrive at before the ring gathers them.
+            // width the others arrive at before the ring gathers them — the
+            // ring its own lane closes at, wherever along the stage that is.
             let Some(from) = junction.from else {
                 return seats;
             };
-            let (Some(index), Some(slot)) = (stage_of(from), slot_of(from)) else {
+            let (Some(index), Some(slot), Some((_, lane))) =
+                (stage_of(from), slot_of(from), place_of(from))
+            else {
                 return seats;
             };
+            let ring = boundary_ring_x(&columns[index], stages[index][lane].end);
             let side = (row(slot.y) - frame.flow).signum();
             seats.push(Seat {
                 from: row(slot.y),
                 to: frame.flow + side * (MIXER_RING + MARK_AIR),
-                cross: columns[index].merge,
+                cross: ring,
                 vertical: true,
                 forward: -side,
             });
@@ -1012,7 +1128,7 @@ fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> 
             // run does reach the ring, so the circle rides that instead.
             seats.push(Seat {
                 from: right_face(slot.x),
-                to: columns[index].merge - (MIXER_RING + MARK_AIR),
+                to: ring - (MIXER_RING + MARK_AIR),
                 cross: slot.y,
                 vertical: false,
                 forward: 1.0,
@@ -1023,6 +1139,12 @@ fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> 
             return seats;
         };
         let shared = stages[index].len() > 1;
+        // The ring this card's lane opens at: the stage's split column when
+        // the lane runs from the stage's very start, one of its interior
+        // rings otherwise.
+        let head_ring = place_of(to).map_or(columns[index].split, |(_, lane)| {
+            boundary_ring_x(&columns[index], stages[index][lane].start)
+        });
         // On the line the whole rack flows along, rather than one of a
         // parallel stage's other rows. This is a comparison and not simply
         // `!shared`, because the middle row of a three-deep stage sits on the
@@ -1031,12 +1153,13 @@ fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> 
         let on_line = (slot.y - frame.flow).abs() < 1.0;
         if shared && !on_line {
             // Fed by a riser out of the trunk: the conversion belongs on it,
-            // in the column the stage drops out of, which no other wire or
-            // box occupies at this height.
+            // in the column the stage drops out of — the column this lane
+            // drops out of — which no other wire or box occupies at this
+            // height.
             seats.push(Seat {
                 from: frame.flow,
                 to: row(slot.y),
-                cross: columns[index].split,
+                cross: head_ring,
                 vertical: true,
                 forward: (row(slot.y) - frame.flow).signum(),
             });
@@ -1048,7 +1171,12 @@ fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> 
                 junction_x(slot.x, false)
             },
             to: if shared {
-                columns[index].split.min(left_face(slot.x))
+                // A lane opening at an interior ring has no trunk between
+                // the ring and its first card for a circle to ride: the
+                // stretch there is the card's own lead, twelve pixels wide.
+                head_ring
+                    .max(junction_x(slot.x, false))
+                    .min(left_face(slot.x))
             } else {
                 left_face(slot.x)
             },
@@ -1177,7 +1305,7 @@ enum MeterPos {
 /// * the output is last, and it has two faces — the OUT jack's meter on the
 ///   canvas and the panel meter above — reading the one summed signal, so
 ///   acknowledging either clears both, and neither owes anything further.
-fn acknowledged(from: MeterPos, stages: &[Vec<Vec<NodeId>>]) -> Vec<MeterPos> {
+fn acknowledged(from: MeterPos, stages: &[Vec<GuiLane>]) -> Vec<MeterPos> {
     let mut out = vec![from];
     let mut first_downstream = 0;
     let mut rest_of_branch: &[NodeId] = &[];
@@ -1191,12 +1319,12 @@ fn acknowledged(from: MeterPos, stages: &[Vec<Vec<NodeId>>]) -> Vec<MeterPos> {
             if !side {
                 out.push(MeterPos::Wire(id, true));
             }
-            let located = stages.iter().enumerate().find_map(|(stage, branch)| {
-                branch.iter().find_map(|chain| {
-                    chain
+            let located = stages.iter().enumerate().find_map(|(stage, lanes)| {
+                lanes.iter().find_map(|lane| {
+                    lane.ids
                         .iter()
                         .position(|&card| card == NodeId(id))
-                        .map(|row| (stage, &chain[row + 1..]))
+                        .map(|row| (stage, &lane.ids[row + 1..]))
                 })
             });
             match located {
@@ -1212,8 +1340,8 @@ fn acknowledged(from: MeterPos, stages: &[Vec<Vec<NodeId>>]) -> Vec<MeterPos> {
         out.extend([MeterPos::Wire(id.0, false), MeterPos::Wire(id.0, true)]);
     }
     for stage in &stages[first_downstream.min(stages.len())..] {
-        for branch in stage {
-            for id in branch {
+        for lane in stage {
+            for id in &lane.ids {
                 out.extend([MeterPos::Wire(id.0, false), MeterPos::Wire(id.0, true)]);
             }
         }
@@ -1224,7 +1352,7 @@ fn acknowledged(from: MeterPos, stages: &[Vec<Vec<NodeId>>]) -> Vec<MeterPos> {
     out.extend([MeterPos::Wire(MASTER_WIRE_KEY, false), MeterPos::MasterOut]);
     out
 }
-fn geometry(groups: &[Vec<Vec<NodeId>>], w: f32, h: f32, scroll: f32, vertical: f32) -> Geometry {
+fn geometry(groups: &[Vec<GuiLane>], w: f32, h: f32, scroll: f32, vertical: f32) -> Geometry {
     let top = h / 2.0 - 90.0;
     let bottom = -h / 2.0 + 150.0;
     let available = (top - bottom).max(112.0);
@@ -1254,12 +1382,12 @@ fn geometry(groups: &[Vec<Vec<NodeId>>], w: f32, h: f32, scroll: f32, vertical: 
             flow + (stage.len() - 1) as f32 * row_step / 2.0
         };
         let mut width = 1;
-        for (row, branch) in stage.iter().enumerate() {
-            width = width.max(branch.len());
-            for (index, &id) in branch.iter().enumerate() {
+        for (row, lane) in stage.iter().enumerate() {
+            width = width.max(lane.end);
+            for (index, &id) in lane.ids.iter().enumerate() {
                 slots.push(Slot {
                     id,
-                    x: first_column + (column + index as f32) * COLUMN_STEP,
+                    x: first_column + (column + lane.start as f32 + index as f32) * COLUMN_STEP,
                     y: first - row as f32 * row_step,
                 });
             }
@@ -1317,7 +1445,7 @@ struct ForkMark {
 /// they come back — every fork in the rack, however local, guards both of
 /// its ends.
 fn fork_marks(
-    groups: &[Vec<Vec<NodeId>>],
+    groups: &[Vec<GuiLane>],
     slots: &[Slot],
     flow: f32,
     drag: Option<NodeId>,
@@ -1328,42 +1456,94 @@ fn fork_marks(
         .filter_map(|stage| {
             let anchor = stage
                 .iter()
-                .flatten()
+                .flat_map(|lane| lane.ids.iter())
                 .copied()
                 .find(|id| Some(*id) != drag)?;
-            let xs: Vec<f32> = stage
+            let slot_of = |id: NodeId| slots.iter().find(|slot| slot.id == id);
+            // The stage's first column, the same arithmetic `stage_columns`
+            // uses: each lane's head minus the columns it opens past.
+            let base = stage
                 .iter()
-                .flatten()
-                .filter_map(|id| slots.iter().find(|slot| slot.id == *id))
-                .map(|slot| slot.x)
-                .collect();
-            let head = *xs.iter().min_by(|a, b| a.total_cmp(b))?;
-            let tail = *xs.iter().max_by(|a, b| a.total_cmp(b))?;
-            Some([
-                ForkMark {
+                .filter_map(|lane| {
+                    slot_of(*lane.ids.first()?).map(|slot| slot.x - lane.start as f32 * COLUMN_STEP)
+                })
+                .min_by(|a, b| a.total_cmp(b))?;
+            let width = stage_width(stage);
+            // Only the outer rings are doors: a split or merge drop speaks
+            // for the stage as a whole, and an interior ring belongs to one
+            // lane's opening, not to a fork the drop would build.
+            let marks = stage_rings(stage)
+                .into_iter()
+                .filter(|(boundary, _)| *boundary == 0 || *boundary == width)
+                .map(|(boundary, _)| ForkMark {
                     anchor,
-                    x: junction_x(head, false),
+                    x: ring_x(base, boundary, width),
                     y: flow,
-                    side: Side::Split,
-                },
-                ForkMark {
-                    anchor,
-                    x: junction_x(tail, true),
-                    y: flow,
-                    side: Side::Join,
-                },
-            ])
+                    side: if boundary == 0 {
+                        Side::Split
+                    } else {
+                        Side::Join
+                    },
+                })
+                .collect::<Vec<_>>();
+            (!marks.is_empty()).then_some(marks)
         })
         .collect::<Vec<_>>()
         .into_iter()
         .flatten()
         .collect()
 }
+/// One stretch of wire leaving a card toward the next card of its lane,
+/// seen as a drop zone: the shoulder of a lane's own run. A card held
+/// above or below that shoulder joins the lane's parallel, bracketed by
+/// the same split and merge that guard the run it was aimed at.
+#[derive(Clone, Copy)]
+struct WireRun {
+    card: NodeId,
+    x0: f32,
+    x1: f32,
+    y: f32,
+}
+
+/// Every adjacent pair of a lane's cards offers one run — the wire that
+/// leaves the first card's edge and reaches the next. Pairs that include
+/// the dragged card are skipped: its own stub is not a landing.
+fn wire_runs(groups: &[Vec<GuiLane>], slots: &[Slot], drag: Option<NodeId>) -> Vec<WireRun> {
+    let mut runs = Vec::new();
+    for lane in groups.iter().flat_map(|stage| stage.iter()) {
+        for pair in lane.ids.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if Some(a) == drag || Some(b) == drag {
+                continue;
+            }
+            let (Some(a_slot), Some(b_slot)) = (
+                slots.iter().find(|slot| slot.id == a),
+                slots.iter().find(|slot| slot.id == b),
+            ) else {
+                continue;
+            };
+            runs.push(WireRun {
+                card: a,
+                x0: a_slot.x + CARD_WIDTH / 2.0,
+                x1: b_slot.x - CARD_WIDTH / 2.0,
+                y: a_slot.y,
+            });
+        }
+    }
+    runs
+}
+/// Everything the wire space offers as a landing besides the card faces:
+/// the rings of every fork, and the shoulder of every lane's run.
+#[derive(Default)]
+struct DropZones<'a> {
+    joins: &'a [ForkMark],
+    runs: &'a [WireRun],
+}
 fn target_at(
     mouse: Option<[f32; 2]>,
     slots: &[Slot],
     moving: Option<NodeId>,
-    joins: &[ForkMark],
+    zones: &DropZones,
     top: f32,
     bottom: f32,
     w: f32,
@@ -1372,10 +1552,12 @@ fn target_at(
     if y > top || y < bottom {
         return None;
     }
-    // A point on a card's face is the loudest intent there is: chain into
-    // that lane, at that position, head or not. The rings sit out in the
-    // wire space between stages, so the face is consulted first and a graze
-    // of a lane's corner stays inside its lane.
+    // A point on a card's face is the loudest intent there is. Held low on
+    // the face the lane claims the drop — chain into it, head or not; held
+    // high, up or down and clear of the middle, it asks for a fork of its
+    // own around that one column. The rings sit out in the wire space
+    // between stages, so the face is consulted first and a graze of a
+    // lane's corner stays inside its lane.
     if let Some(slot) = slots
         .iter()
         .filter(|slot| Some(slot.id) != moving && visible(slot, top, bottom, w))
@@ -1385,14 +1567,48 @@ fn target_at(
                 .total_cmp(&((x - b.x).powi(2) + (y - b.y).powi(2)))
         })
     {
+        let dx = x - slot.x;
+        let dy = y - slot.y;
+        let side = if dy.abs() >= 14.0 && dy.abs() > dx.abs() {
+            if dy > 0.0 { Side::Over } else { Side::Under }
+        } else if dx < 0.0 {
+            Side::Left
+        } else {
+            Side::Right
+        };
         return Some(Target {
             card: slot.id,
-            side: if x < slot.x { Side::Left } else { Side::Right },
+            side,
+        });
+    }
+    // Directly under a card's column, in the gap between the faces, the
+    // pull reads like the high face did: a fork of its own around that
+    // one card's column, opening above or below the card it hangs under.
+    if let Some(slot) = slots
+        .iter()
+        .filter(|slot| Some(slot.id) != moving && visible(slot, top, bottom, w))
+        .filter(|slot| {
+            let dx = (x - slot.x).abs();
+            let dy = (y - slot.y).abs();
+            dx <= CARD_WIDTH / 2.0 && dy > 35.0 && dy <= 76.0
+        })
+        .min_by(|a, b| {
+            (y - a.y)
+                .abs()
+                .total_cmp(&(y - b.y).abs())
+                .then((x - a.x).abs().total_cmp(&(x - b.x).abs()))
+        })
+    {
+        let dy = y - slot.y;
+        return Some(Target {
+            card: slot.id,
+            side: if dy > 0.0 { Side::Over } else { Side::Under },
         });
     }
     // Past the faces, a ring is the fork's own door: nearer wins, and it
     // answers for the whole stage, not the lane its anchor happens to head.
-    if let Some(mark) = joins
+    if let Some(mark) = zones
+        .joins
         .iter()
         .filter(|mark| mark.x + JOIN_HIT >= -w / 2.0 && mark.x - JOIN_HIT <= w / 2.0)
         .min_by(|a, b| {
@@ -1404,6 +1620,18 @@ fn target_at(
         return Some(Target {
             card: mark.anchor,
             side: mark.side,
+        });
+    }
+    // Between two cards of one lane the wire runs with room above and
+    // below it: a card held by that shoulder reaches for the whole lane's
+    // parallel — the split opens before the run and the join closes after
+    // it — while a card held level with the wire chains straight through.
+    if let Some(run) = zones.runs.iter().find(|run| {
+        run.x0 <= x && x <= run.x1 && (y - run.y).abs() > 14.0 && (y - run.y).abs() <= 50.0
+    }) {
+        return Some(Target {
+            card: run.card,
+            side: if y > run.y { Side::Above } else { Side::Below },
         });
     }
     let slot = slots
@@ -1436,7 +1664,7 @@ fn target_at(
 /// every lane — while the ring is being drawn, that is every lane — so the
 /// tick can stretch across all of them instead of marking one wire.
 fn fork_lanes(
-    stages: &[Vec<Vec<NodeId>>],
+    stages: &[Vec<GuiLane>],
     drag: Option<NodeId>,
     target: &Target,
 ) -> Option<Vec<NodeId>> {
@@ -1445,10 +1673,10 @@ fn fork_lanes(
     }
     let stage = stages
         .iter()
-        .find(|stage| stage.iter().any(|lane| lane.contains(&target.card)))?;
+        .find(|stage| stage.iter().any(|lane| lane.ids.contains(&target.card)))?;
     let heads: Vec<NodeId> = stage
         .iter()
-        .filter_map(|lane| lane.iter().copied().find(|id| Some(*id) != drag))
+        .filter_map(|lane| lane.ids.iter().copied().find(|id| Some(*id) != drag))
         .collect();
     (heads.len() > 1).then_some(heads)
 }
@@ -1486,6 +1714,7 @@ pub fn run(
         )?;
         card.stage = saved.stage;
         card.branch = saved.branch;
+        card.span = saved.span;
         cards.push(card);
         if let Some(bytes) = &saved.state {
             states.insert(NodeId(saved.id), bytes.clone());
@@ -2394,7 +2623,10 @@ impl Process for RackUi {
                 point.or(mouse),
                 &geometry.slots,
                 None,
-                &fork_marks(&groups, &geometry.slots, geometry.flow, None),
+                &DropZones {
+                    joins: &fork_marks(&groups, &geometry.slots, geometry.flow, None),
+                    runs: &wire_runs(&groups, &geometry.slots, None),
+                },
                 geometry.top,
                 geometry.bottom,
                 w,
@@ -2565,12 +2797,8 @@ impl Process for RackUi {
         // drawn or broken: a circle stands on a wire, so a right-click has to
         // be able to choose between the two, and the same frame that finds
         // the break has to know whether a circle is in the way.
-        let stages = groups
-            .iter()
-            .map(|stage| stage.iter().flatten().copied().collect::<Vec<NodeId>>())
-            .collect::<Vec<_>>();
         let marks = match self.runtime.junctions() {
-            Some(found) => width_marks(&found, &stages, &layout),
+            Some(found) => width_marks(&found, &groups, &layout),
             None => Vec::new(),
         };
         // Where every circle stands this frame, read once: the break guards,
@@ -2758,7 +2986,7 @@ impl Process for RackUi {
             0.0,
             h / 2.0 - 72.0,
             &self.font,
-            "Above/below: parallel    Left/right: chain",
+            "Card top/bottom: split    Above/below a wire: parallel    Left/right: chain",
             14.0,
             500.0,
             rgb(150, 145, 164),
@@ -2823,41 +3051,47 @@ impl Process for RackUi {
         // itself when it builds one, for the same reason: nothing else
         // changes a wire's channel count.
         let mut incoming = route.input.count().clamp(1, 2);
+        // The stage's own columns, worked out once for the frame: the base
+        // is where its first column stands however the lanes are offset
+        // within it, and its split and merge are the rings at boundary `0`
+        // and boundary `width`.
+        let columns = stage_columns(&groups, &layout.slots, layout.input.x);
         for (index, group) in groups.iter().enumerate() {
             let stage_slots = layout
                 .slots
                 .iter()
-                .filter(|slot| group.iter().flatten().any(|id| *id == slot.id))
+                .filter(|slot| {
+                    group
+                        .iter()
+                        .flat_map(|lane| lane.ids.iter())
+                        .any(|id| *id == slot.id)
+                })
                 .collect::<Vec<_>>();
-            // The stage's cards by branch, in the order the branches run down:
-            // every branch starts in the stage's first column, so a head card —
-            // whichever row it stands in — shares the split column.
+            // The stage's cards by lane, in the order the lanes run down: a
+            // lane's head stands at the ring its span opens on, not
+            // necessarily at the stage's own split.
             let stage = group
                 .iter()
-                .map(|branch| {
-                    branch
+                .map(|lane| {
+                    lane.ids
                         .iter()
                         .filter_map(|id| stage_slots.iter().copied().find(|slot| slot.id == *id))
                         .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>();
-            let x = stage_slots[0].x;
+            let column = columns[index];
+            let base = column.base;
+            let width = column.width;
+            let x = base;
             let shared = group.len() > 1;
             // Whether the wire arriving here comes out of an earlier stage rather
             // than out of the rack's `IN` jack, which decides whether the left end
             // of this stage's input is a column somebody else's wire ends in.
             let fed = index > 0;
-            let split = junction_x(x, false);
-            // The merge column stands right of whichever branch's chain reaches
-            // furthest — the risers gather every branch there.
-            let merge = junction_x(
-                stage_slots
-                    .iter()
-                    .map(|slot| slot.x)
-                    .reduce(f32::max)
-                    .unwrap_or(x),
-                true,
-            );
+            let split = column.split;
+            // The merge column stands right of whichever lane's span reaches
+            // furthest — the risers gather every lane there.
+            let merge = column.merge;
             // The trunk, up to the column this stage splits at, at the height
             // signals flow at. A stage on its own sits on that very line, so its
             // trunk is the connector an operator sees running between two meters,
@@ -2899,7 +3133,12 @@ impl Process for RackUi {
                 // split column, because the join happens at that
                 // column's mixer and nowhere on the way down.
                 let row = |y: f32| y.max(layout.bottom).min(layout.top);
-                for branch in &stage {
+                for (branch, lane) in stage.iter().zip(group) {
+                    // Every lane hands to its own rings: a lane that opens
+                    // or closes mid-stage drops and climbs at the boundary
+                    // its span stands on, not at the stage's outer collar.
+                    let head_ring = ring_x(base, lane.start, width);
+                    let tail_ring = ring_x(base, lane.end, width);
                     if let (Some(head), Some(tail)) = (branch.first(), branch.last()) {
                         // The riser starts outside the collar's air gap and
                         // never runs under the disc; a branch standing on the
@@ -2909,7 +3148,7 @@ impl Process for RackUi {
                         if drop.abs() > RING_CLEAR {
                             wire_riser(
                                 ctx,
-                                split,
+                                head_ring,
                                 layout.flow + drop.signum() * RING_CLEAR,
                                 row(head.y),
                                 wire,
@@ -2920,19 +3159,24 @@ impl Process for RackUi {
                         if climb.abs() > RING_CLEAR {
                             wire_riser(
                                 ctx,
-                                merge,
+                                tail_ring,
                                 row(tail.y),
                                 layout.flow + climb.signum() * RING_CLEAR,
                                 wire,
                                 self.wire_lanes(tail.id.0, true),
                             );
-                        } else if let Some((from, to)) = flow_to_ring(tail.x, merge) {
+                        } else if lane.end == width
+                            && let Some((from, to)) = flow_to_ring(tail.x, tail_ring)
+                        {
                             // The lane on the line that stops short of the
                             // merge column runs its signal along the line to
                             // the collar; the fold at the ring stands, but
                             // the handover cannot be missing. Like the
                             // risers it is the stage's own wire — there is
-                            // no click here for anyone to break.
+                            // no click here for anyone to break. A lane
+                            // that closes on an interior ring keeps its
+                            // tail's own metered lead instead, drawn a few
+                            // lines below.
                             wire_segment(
                                 ctx,
                                 from,
@@ -2944,73 +3188,41 @@ impl Process for RackUi {
                         }
                     }
                 }
-                // The same collar stands at the split, so every fork reads
-                // as gated at both ends: an upright bar where one trunk
-                // divides, facing the merge's `+` where the lanes gather
-                // back. Like the merge it is painted last, over the risers
-                // that cross here — cut away from under them, the collar
-                // would just be a bead threaded onto its own riser.
-                ctx.circle(split, layout.flow, MIXER_RING, wire, 0.15);
-                ctx.circle(split, layout.flow, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
-                ctx.line(
-                    split,
-                    layout.flow - 4.0,
-                    split,
-                    layout.flow + 4.0,
-                    wire,
-                    2.0,
-                    0.22,
-                );
-                // A ring at the merge, in the wires' own colour: the trunk
-                // and the risers cross right here, so without a collar the
-                // join read as just another stroke on the wire. The disc
-                // with a background-coloured one on top cuts that crossing
-                // away, and the two bars drawn dead-centre on the junction
-                // make the `+` — set as type it rides the font's math axis
-                // and sat low inside the ring.
-                ctx.circle(merge, layout.flow, MIXER_RING, wire, 0.15);
-                ctx.circle(merge, layout.flow, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
-                ctx.line(
-                    merge - 4.0,
-                    layout.flow,
-                    merge + 4.0,
-                    layout.flow,
-                    wire,
-                    2.0,
-                    0.22,
-                );
-                ctx.line(
-                    merge,
-                    layout.flow - 4.0,
-                    merge,
-                    layout.flow + 4.0,
-                    wire,
-                    2.0,
-                    0.22,
-                );
             }
-            for branch in &stage {
+            for (branch, lane) in stage.iter().zip(group) {
+                // The rings this lane hands off on: a full-span lane's are
+                // the stage's own split and merge; one that opens or closes
+                // mid-stage reaches only the boundary its span stands on.
+                let head_ring = ring_x(base, lane.start, width);
+                let tail_ring = ring_x(base, lane.end, width);
                 for (position, slot) in branch.iter().copied().enumerate() {
                     if !visible(slot, layout.top, layout.bottom, w) {
                         continue;
                     }
                     // Where the card stands in its branch decides the wire it owns:
-                    // the head takes the stage's split column, the tail feeds its
-                    // merge column, and a card in between reaches only the junctions
-                    // its own chain runs through — the one the signal came from, and
-                    // the one it goes on to.
+                    // the head takes the ring its lane opens on, the tail feeds
+                    // the ring its lane closes on, and a card in between reaches
+                    // only the junctions its own chain runs through — the one the
+                    // signal came from, and the one it goes on to.
                     let head = position == 0;
                     let tail = position + 1 == branch.len();
                     let x = slot.x;
                     let chain_in = junction_x(branch[position.saturating_sub(1)].x, true);
-                    let lead_in = if head { split } else { chain_in };
-                    let lead_out = if tail { merge } else { junction_x(x, true) };
+                    // A lane that opens mid-stage starts at the ring its
+                    // riser foot stands under — for a full-span lane that
+                    // ring is the stage's own split, and nothing moves.
+                    let lead_in = if head { head_ring } else { chain_in };
+                    let lead_out = if tail { tail_ring } else { junction_x(x, true) };
                     let feed_in = if head { previous_x } else { chain_in };
-                    // A tail card hands its signal to the stage's merge
-                    // column even in the last stage: from there the run
+                    // A tail card hands its signal to the ring its lane
+                    // closes on even in the last stage: from there the run
                     // into the `OUT` card is the master wire's own, cut
                     // short only by the card's switch.
-                    let out_end = if !tail { junction_x(x, true) } else { merge };
+                    let out_end = if !tail {
+                        junction_x(x, true)
+                    } else {
+                        tail_ring
+                    };
                     if self.runtime.bypassed(slot.id.0) {
                         let gap = stage_slots
                             .iter()
@@ -3038,10 +3250,16 @@ impl Process for RackUi {
                         // cut in half. That lane's wire ends at the air gap
                         // beside the ring, and its stub folds away with the
                         // meter — the wire, like the trunk feeding it, is
-                        // the stage's and nobody's to break here.
+                        // the stage's and nobody's to break here. Only the
+                        // stage's own collars are tight on the card like
+                        // that; an interior ring stands a whole air gap off
+                        // the junction, and the lane opening or closing on
+                        // it keeps its meter — the disc, painted after,
+                        // cuts the lead short where it passes.
                         let on_collar = shared
                             && (slot.y - layout.flow).abs() < 0.5
-                            && ((head && !side) || (tail && side));
+                            && ((head && !side && lane.start == 0)
+                                || (tail && side && lane.end == width));
                         if on_collar {
                             continue;
                         }
@@ -3140,6 +3358,30 @@ impl Process for RackUi {
                         // passing.
                         let stub_color = stub_color(self.wire_meters.get(&key), gate, wire);
                         ctx.rectangle(bx, slot.y, STUB_HALF, STUB_TALL, stub_color, 0.25);
+                    }
+                }
+            }
+            if shared {
+                // The rings, boundary by boundary, in the order they run
+                // across the stage: an upright bar where one trunk divides
+                // or a lane peels off, a `+` where lanes gather back. The
+                // outermost are the split and the merge they have always
+                // been; an interior one stands in the air between the two
+                // columns it divides, marking where a lane opens or closes.
+                // Like the merge they are painted after every riser and
+                // every lead that crosses here, cut away from under them —
+                // a collar would just be a bead threaded onto its own
+                // riser, and a lane running on past an interior ring shows
+                // through the disc as signal passing a junction.
+                for (boundary, bar) in stage_rings(group) {
+                    let x = ring_x(base, boundary, width);
+                    ctx.circle(x, layout.flow, MIXER_RING, wire, 0.15);
+                    ctx.circle(x, layout.flow, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
+                    if bar {
+                        ctx.line(x, layout.flow - 4.0, x, layout.flow + 4.0, wire, 2.0, 0.22);
+                    } else {
+                        ctx.line(x - 4.0, layout.flow, x + 4.0, layout.flow, wire, 2.0, 0.22);
+                        ctx.line(x, layout.flow - 4.0, x, layout.flow + 4.0, wire, 2.0, 0.22);
                     }
                 }
             }
@@ -3542,11 +3784,15 @@ impl Process for RackUi {
         };
         if (self.drag.is_some() && self.moved) || self.external_drag {
             let joins = fork_marks(&groups, &layout.slots, layout.flow, self.drag);
+            let runs = wire_runs(&groups, &layout.slots, self.drag);
             let target = target_at(
                 preview_mouse,
                 &layout.slots,
                 self.drag,
-                &joins,
+                &DropZones {
+                    joins: &joins,
+                    runs: &runs,
+                },
                 layout.top,
                 layout.bottom,
                 w,
@@ -3612,19 +3858,23 @@ impl Process for RackUi {
                         rgb(103, 237, 175),
                         0.5,
                     ),
-                    Side::Above | Side::Below => ctx.rectangle(
-                        slot.x,
-                        slot.y
-                            + if target.side == Side::Above {
-                                66.0
-                            } else {
-                                -66.0
-                            },
-                        93.0,
-                        2.0,
-                        rgb(103, 237, 175),
-                        0.5,
-                    ),
+                    Side::Above | Side::Below | Side::Over | Side::Under => {
+                        // Every one of these is the same local fork in
+                        // `place`: a lane of its own hugging this one
+                        // column, above or below the aimed-at card. The
+                        // bar shows where the newcomer's lane will run,
+                        // spanning the card so the bracket reads as
+                        // hugging this column alone.
+                        let above = matches!(target.side, Side::Above | Side::Over);
+                        ctx.rectangle(
+                            slot.x,
+                            slot.y + if above { 50.0 } else { -50.0 },
+                            130.0,
+                            2.0,
+                            rgb(103, 237, 175),
+                            0.5,
+                        );
+                    }
                 }
                 if let Some([x, y]) = preview_mouse {
                     ctx.text(
@@ -3634,6 +3884,7 @@ impl Process for RackUi {
                         match target.side {
                             Side::Split => "Ahead of the split",
                             Side::Join => "After the merge",
+                            Side::Over | Side::Under => "Split around the card",
                             _ if parallel => "Parallel branch",
                             _ => "Chain",
                         },
@@ -4110,12 +4361,26 @@ fn draw_details(ctx: &mut Context, font: &Arc<[u8]>, card: &Card) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Fixture lanes spanning the whole stage — the shape the rack drew
+    /// before a lane owned its own span. The stage runs as wide as its
+    /// longest lane, so every lane reaches from split to merge exactly
+    /// as the old bare chain-of-chains shape meant it did.
+    fn spanning(rows: &[&[u64]]) -> Vec<GuiLane> {
+        let width = rows.iter().map(|row| row.len()).max().unwrap_or(1).max(1);
+        rows.iter()
+            .map(|row| GuiLane {
+                ids: row.iter().map(|id| NodeId(*id)).collect(),
+                start: 0,
+                end: width,
+            })
+            .collect()
+    }
     #[test]
     fn a_ring_drop_names_the_whole_fork_and_a_lane_drop_its_lane() {
         let stages = vec![
-            vec![vec![NodeId(1)]],
-            vec![vec![NodeId(3), NodeId(4)], vec![NodeId(5)]],
-            vec![vec![NodeId(7)]],
+            spanning(&[&[1]]),
+            spanning(&[&[3, 4], &[5]]),
+            spanning(&[&[7]]),
         ];
         let aim = |card: u64, side: Side| Target {
             card: NodeId(card),
@@ -4145,7 +4410,7 @@ mod tests {
             None
         );
         // A lone lane is no fork to stand ahead of or behind.
-        let chain = vec![vec![vec![NodeId(1), NodeId(3)]]];
+        let chain = vec![spanning(&[&[1, 3]])];
         assert_eq!(fork_lanes(&chain, None, &aim(1, Side::Split)), None);
     }
     #[test]
@@ -4163,30 +4428,45 @@ mod tests {
             },
         ];
         for (point, side) in [
-            // On a card's face the lane claims the drop — even high on the
-            // card, where a loose pointer once asked for a parallel row.
-            ([10.0, 20.0], Side::Right),
-            ([-10.0, -20.0], Side::Left),
+            // High on a card's face, up or down and clear of the middle,
+            // the drop asks for a fork of its own around that column.
+            ([10.0, 20.0], Side::Over),
+            ([-10.0, -20.0], Side::Under),
+            ([0.0, 30.0], Side::Over),
+            // Low on the face, on the card's own line, the middle still
+            // chains — only the up-and-down pull breaks it out.
+            ([0.0, 10.0], Side::Right),
+            // Held out at the face's corners, the pull is sideways and the
+            // lane keeps it: chain into that end.
             ([92.0, 34.0], Side::Right),
             ([-92.0, -34.0], Side::Left),
-            // A hair past the face and the row gesture returns.
-            ([0.0, 36.0], Side::Above),
+            // A hair past the face, still in the column, the fork answer
+            // goes on: the gap above or below a card is its face's ask.
+            ([0.0, 36.0], Side::Over),
             ([-100.0, 0.0], Side::Left),
             ([100.0, 0.0], Side::Right),
-            ([0.0, 75.0], Side::Above),
-            ([0.0, -75.0], Side::Below),
+            ([0.0, 75.0], Side::Over),
+            ([0.0, -75.0], Side::Under),
             // Flung well past a card's side but deeper still vertically,
             // the drop reads as the row it reaches for, not a chain.
             ([110.0, 130.0], Side::Above),
             ([-110.0, 130.0], Side::Above),
             ([-110.0, -130.0], Side::Below),
             ([110.0, -130.0], Side::Below),
-            // A shallow diagonal beside the card still means chain.
+            // A shallow diagonal beside a lone card still means chain.
             ([110.0, 40.0], Side::Right),
             ([-110.0, -40.0], Side::Left),
         ] {
             assert_eq!(
-                target_at(Some(point), &slots, None, &[], 200.0, -150.0, 1000.0),
+                target_at(
+                    Some(point),
+                    &slots,
+                    None,
+                    &DropZones::default(),
+                    200.0,
+                    -150.0,
+                    1000.0,
+                ),
                 Some(Target {
                     card: NodeId(1),
                     side
@@ -4197,7 +4477,7 @@ mod tests {
                     Some(point),
                     &slots,
                     Some(NodeId(3)),
-                    &[],
+                    &DropZones::default(),
                     200.0,
                     -150.0,
                     1000.0
@@ -4208,13 +4488,24 @@ mod tests {
                 })
             );
         }
-        assert!(target_at(Some([0.0, 250.0]), &slots, None, &[], 200.0, -150.0, 1000.0).is_none());
+        assert!(
+            target_at(
+                Some([0.0, 250.0]),
+                &slots,
+                None,
+                &DropZones::default(),
+                200.0,
+                -150.0,
+                1000.0,
+            )
+            .is_none()
+        );
     }
     #[test]
     fn both_rings_guard_every_fork() {
         // A two-lane stage with a card each, its trunk on the middle line:
         // one ring where the lanes fan apart, one where they merge back.
-        let groups = vec![vec![vec![NodeId(3)], vec![NodeId(5)]]];
+        let groups = vec![spanning(&[&[3], &[5]])];
         let slots = [
             Slot {
                 id: NodeId(3),
@@ -4244,7 +4535,18 @@ mod tests {
         // behind the merge.
         for (x, side) in [(split, Side::Split), (merge, Side::Join)] {
             assert_eq!(
-                target_at(Some([x, 0.0]), &slots, None, &marks, 200.0, -150.0, 1000.0),
+                target_at(
+                    Some([x, 0.0]),
+                    &slots,
+                    None,
+                    &DropZones {
+                        joins: &marks,
+                        runs: &[],
+                    },
+                    200.0,
+                    -150.0,
+                    1000.0,
+                ),
                 Some(Target {
                     card: NodeId(3),
                     side
@@ -4258,7 +4560,10 @@ mod tests {
                 Some([merge + 40.0, 70.0]),
                 &slots,
                 None,
-                &marks,
+                &DropZones {
+                    joins: &marks,
+                    runs: &[],
+                },
                 200.0,
                 -150.0,
                 1000.0
@@ -4273,13 +4578,10 @@ mod tests {
         let marks = fork_marks(&groups, &slots, 0.0, Some(NodeId(3)));
         assert_eq!(marks.len(), 2);
         assert!(marks.iter().all(|mark| mark.anchor == NodeId(5)));
-        assert!(fork_marks(&[vec![vec![NodeId(3)]]], &slots, 0.0, None).is_empty());
+        assert!(fork_marks(&[spanning(&[&[3]])], &slots, 0.0, None).is_empty());
         // Two forked stages answer for themselves; every local fork gets
         // its own pair of doors.
-        let twice = vec![
-            vec![vec![NodeId(3)], vec![NodeId(5)]],
-            vec![vec![NodeId(7)], vec![NodeId(9)]],
-        ];
+        let twice = vec![spanning(&[&[3], &[5]]), spanning(&[&[7], &[9]])];
         let twice_slots = [
             Slot {
                 id: NodeId(3),
@@ -4323,7 +4625,7 @@ mod tests {
         // Dragging a whole lane away collapses the span to a chain.
         assert_eq!(
             fork_lanes(
-                &[vec![vec![NodeId(3), NodeId(4)], vec![NodeId(5)]]],
+                &[spanning(&[&[3, 4], &[5]])],
                 Some(NodeId(5)),
                 &at(3, Side::Join)
             ),
@@ -4335,7 +4637,7 @@ mod tests {
         // The tightest stack of lanes still leaves the split ring's reach
         // clear of the lane faces — and wherever they could touch, the
         // face wins: a graze of a lane head stays inside its lane.
-        let groups = vec![vec![vec![NodeId(3)], vec![NodeId(5)]]];
+        let groups = vec![spanning(&[&[3], &[5]])];
         let slots = [
             Slot {
                 id: NodeId(3),
@@ -4359,7 +4661,10 @@ mod tests {
                 Some([135.0, 24.0]),
                 &slots,
                 None,
-                &marks,
+                &DropZones {
+                    joins: &marks,
+                    runs: &[],
+                },
                 200.0,
                 -150.0,
                 1000.0
@@ -4371,11 +4676,84 @@ mod tests {
         );
     }
     #[test]
-    fn parallel_cards_are_stacked_and_stages_remain_left_to_right() {
-        let groups = vec![
-            vec![vec![NodeId(1)], vec![NodeId(3)]],
-            vec![vec![NodeId(5)]],
+    fn the_shoulder_of_a_lanes_wire_opens_a_lane_of_its_own() {
+        // Two cards chained in one lane leave a wire between them with room
+        // above and below. A card held by that shoulder reaches for the
+        // run's upstream card: the pick answers with that card and the
+        // side of the shoulder, and `place` opens the local fork around
+        // the upstream card alone — no full-run bracket. A card held level
+        // with the wire still threads straight through the lane.
+        let groups = vec![spanning(&[&[1, 2]])];
+        let slots = [
+            Slot {
+                id: NodeId(1),
+                x: 0.0,
+                y: 0.0,
+            },
+            Slot {
+                id: NodeId(2),
+                x: 248.0,
+                y: 0.0,
+            },
         ];
+        let runs = wire_runs(&groups, &slots, None);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            (runs[0].card, runs[0].x0, runs[0].x1, runs[0].y),
+            (NodeId(1), 93.0, 155.0, 0.0)
+        );
+        let pick = |point: [f32; 2]| {
+            target_at(
+                Some(point),
+                &slots,
+                Some(NodeId(9)),
+                &DropZones {
+                    joins: &[],
+                    runs: &runs,
+                },
+                200.0,
+                -150.0,
+                1000.0,
+            )
+        };
+        assert_eq!(
+            pick([124.0, 30.0]),
+            Some(Target {
+                card: NodeId(1),
+                side: Side::Above
+            })
+        );
+        assert_eq!(
+            pick([124.0, -30.0]),
+            Some(Target {
+                card: NodeId(1),
+                side: Side::Below
+            })
+        );
+        // Level with the wire the chain answer stands: the shoulder is only
+        // the air above and below it.
+        assert_eq!(
+            pick([124.0, 8.0]),
+            Some(Target {
+                card: NodeId(1),
+                side: Side::Right
+            })
+        );
+        // Inside a column but past the run's shoulder, the card's own
+        // gap answer rules: above the card is its fork, and a card's own
+        // stub is never a landing: dragging one of the pair leaves no run.
+        assert_eq!(
+            pick([40.0, 70.0]),
+            Some(Target {
+                card: NodeId(1),
+                side: Side::Over
+            })
+        );
+        assert!(wire_runs(&groups, &slots, Some(NodeId(1))).is_empty());
+    }
+    #[test]
+    fn parallel_cards_are_stacked_and_stages_remain_left_to_right() {
+        let groups = vec![spanning(&[&[1], &[3]]), spanning(&[&[5]])];
         let layout = geometry(&groups, 1040.0, 580.0, 0.0, 0.0);
         assert_eq!(layout.slots[0].x, layout.slots[1].x);
         assert!(layout.slots[0].y > layout.slots[1].y);
@@ -4556,12 +4934,14 @@ mod tests {
     }
 
     /// `in → [a] → [b ∥ c] → [d] → out`, the shape `runtime::chain` wires:
-    /// stages in series, `b` and `c` in parallel inside the middle one.
-    fn rack() -> Vec<Vec<Vec<NodeId>>> {
+    /// stages in series, `b` and `c` in parallel inside the middle one —
+    /// every lane spanning its stage, as the rack drew before a lane owned
+    /// its own span.
+    fn rack() -> Vec<Vec<GuiLane>> {
         vec![
-            vec![vec![NodeId(1)]],
-            vec![vec![NodeId(3)], vec![NodeId(5)]],
-            vec![vec![NodeId(7)]],
+            spanning(&[&[1]]),
+            spanning(&[&[3], &[5]]),
+            spanning(&[&[7]]),
         ]
     }
     fn covers(from: MeterPos) -> Vec<MeterPos> {
@@ -5295,20 +5675,17 @@ mod tests {
     /// The layout the draw pass gives a rack in a 496 × 580 canvas: the rack's
     /// own `IN` card where [`in_x`] says it stands, the first stage one column
     /// right of it, and the line signals flow at 30 below the middle.
-    fn frame(groups: &[Vec<Vec<NodeId>>]) -> Geometry {
+    fn frame(groups: &[Vec<GuiLane>]) -> Geometry {
         geometry(groups, 496.0, 580.0, 0.0, 0.0)
     }
-    /// The same groups flattened the way the draw pass flattens them: one
-    /// list of cards per stage, in the order the trunk walks them.
-    fn flatten(groups: &[Vec<Vec<NodeId>>]) -> Vec<Vec<NodeId>> {
-        groups
-            .iter()
-            .map(|stage| stage.iter().flatten().copied().collect::<Vec<_>>())
-            .collect()
+    /// The stages carried along beside the layout, the way the draw pass
+    /// keeps the lanes it laid out.
+    fn flatten(groups: &[Vec<GuiLane>]) -> Vec<Vec<GuiLane>> {
+        groups.to_vec()
     }
     /// A layout and the stages it was laid out from, which is everything
     /// [`width_marks`] asks for.
-    fn placed(groups: &[Vec<Vec<NodeId>>]) -> (Geometry, Vec<Vec<NodeId>>) {
+    fn placed(groups: &[Vec<GuiLane>]) -> (Geometry, Vec<Vec<GuiLane>>) {
         (frame(groups), flatten(groups))
     }
     /// One width conversion, as the engine wired it. A `to` of no card is the
@@ -5346,7 +5723,7 @@ mod tests {
         // wire ends 103 px from the card's centre — exactly where the card's
         // own box faces it back. 42 px of drawn wire, 26 px more than a
         // circle and its click area need, which is why it sits dead centre.
-        let (frame, stages) = placed(&[vec![vec![NodeId(1)]]]);
+        let (frame, stages) = placed(&[spanning(&[&[1]])]);
         let marks = width_marks(
             &[conversion(
                 9,
@@ -5373,10 +5750,7 @@ mod tests {
         // out of the trunk, and the conversion belongs on the riser: the
         // column it drops out of carries no card at this height, so nothing
         // crowds it. Its pins point along the riser, the way the signal does.
-        let (frame, stages) = placed(&[
-            vec![vec![NodeId(1)]],
-            vec![vec![NodeId(3)], vec![NodeId(5)]],
-        ]);
+        let (frame, stages) = placed(&[spanning(&[&[1]]), spanning(&[&[3], &[5]])]);
         let marks = width_marks(
             &[conversion(
                 9,
@@ -5412,10 +5786,7 @@ mod tests {
         // the others is lifted to their width on a riser of its own, in the
         // column the ring stands in. The signal travels that riser back down
         // to the ring, whichever side of the line the branch hangs on.
-        let (frame, stages) = placed(&[
-            vec![vec![NodeId(1)]],
-            vec![vec![NodeId(3)], vec![NodeId(5)]],
-        ]);
+        let (frame, stages) = placed(&[spanning(&[&[1]]), spanning(&[&[3], &[5]])]);
         let marks = width_marks(
             &[conversion(
                 9,
@@ -5449,7 +5820,7 @@ mod tests {
         // stub box — 31.5. A circle and its click ring fit with 15.5 of slack,
         // centred on the stretch: it stands clear of both the ring and the
         // stub box it runs to.
-        let (frame, stages) = placed(&[vec![vec![NodeId(1)], vec![NodeId(3)]]]);
+        let (frame, stages) = placed(&[spanning(&[&[1], &[3]])]);
         let marks = width_marks(
             &[conversion(
                 9,
@@ -5474,7 +5845,7 @@ mod tests {
         // to itself: 248, less the 105 to the merge column, less the 103 to
         // the face of the card's stub box, is 40 — a circle rides it centred,
         // with 12 of wire showing on either side of its click ring.
-        let (frame, stages) = placed(&[vec![vec![NodeId(1)]]]);
+        let (frame, stages) = placed(&[spanning(&[&[1]])]);
         let marks = width_marks(
             &[conversion(
                 9,
@@ -5516,14 +5887,11 @@ mod tests {
         // signals flow at, so the riser that would lift it to the ring has no
         // length at all — and the 2.5 of wire its output run does have is
         // drawn under the ring. No seat, so no circle.
-        let groups = [
-            vec![vec![NodeId(1)]],
-            vec![vec![NodeId(3)], vec![NodeId(4)], vec![NodeId(5)]],
-        ];
+        let groups = [spanning(&[&[1]]), spanning(&[&[3], &[4], &[5]])];
         let frame = geometry(&groups, 496.0, 700.0, 0.0, 0.0);
         let stages = flatten(&groups);
         assert_eq!(
-            stages[1][1],
+            stages[1][1].ids[0],
             NodeId(4),
             "the middle row is the one on the line"
         );
@@ -5566,7 +5934,7 @@ mod tests {
         // the split side and the merge side of the stage; the middle one is on
         // the line, so its split is seated in the gutter the trunk drops out
         // of, and its lift belongs to the ring.
-        let groups = [vec![vec![NodeId(1)], vec![NodeId(2)], vec![NodeId(3)]]];
+        let groups = [spanning(&[&[1], &[2], &[3]])];
         let frame = geometry(&groups, 496.0, 700.0, 0.0, 0.0);
         let stages = flatten(&groups);
         let marks = width_marks(
@@ -5635,7 +6003,7 @@ mod tests {
         // clamped to the stretch its seat was offered, so a circle pulled off
         // the end of its wire stays on the wire — and the conversion itself
         // never moved, only its mark.
-        let (frame, stages) = placed(&[vec![vec![NodeId(1)]]]);
+        let (frame, stages) = placed(&[spanning(&[&[1]])]);
         let marks = width_marks(
             &[conversion(
                 9,

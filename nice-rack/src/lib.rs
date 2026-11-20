@@ -69,6 +69,15 @@ pub struct SavedPlugin {
     /// branch of its own — the wiring that file's racks have always had.
     #[serde(default)]
     pub branch: Option<u64>,
+    /// The columns of its stage this card's lane runs across, as a
+    /// half-open `(start, end)` pair — the same value on every card of the
+    /// lane. A lane may start after the stage's split and end before its
+    /// merge, which is how a local fork around one column is remembered;
+    /// `None` is the whole stage, the shape every lane had before local
+    /// forks existed. `#[serde(default)]` on its own, so a file written
+    /// before spans existed still loads and lays out exactly as it did.
+    #[serde(default)]
+    pub span: Option<(u64, u64)>,
     pub path: std::path::PathBuf,
     pub class: String,
     pub name: String,
@@ -188,6 +197,7 @@ mod tests {
                 // One card carries a chain key and one does not, so the file
                 // is read for both shapes and the key survives as written.
                 branch: (id == 1).then_some(1),
+                span: None,
                 path: "/plugins/tuner.clap".into(),
                 class: "same-class".into(),
                 name: "Tuner".into(),
