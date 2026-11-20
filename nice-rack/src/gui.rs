@@ -288,6 +288,18 @@ fn junction_x(x: f32, side: bool) -> f32 {
     let edge = CARD_WIDTH / 2.0 + JUNCTION_GAP;
     if side { x + edge } else { x - edge }
 }
+/// The run a lane standing on the flow line leaves to the merge ring when
+/// its chain stops short of the stage's deepest lane. It has no riser to
+/// climb anywhere — its signal runs on along the line itself, past the
+/// columns where its stub would have stood, and hands to the collar at the
+/// air gap. The fold at the collar holds all the same: no stub, no meter,
+/// and no break here — the wire is the stage's. A lane whose tail already
+/// stands at the merge column has nothing to draw: the rim stands a few
+/// pixels off its edge, inside the clearance, exactly as before.
+fn flow_to_ring(tail_x: f32, merge: f32) -> Option<(f32, f32)> {
+    (merge - junction_x(tail_x, true) > 0.5)
+        .then(|| (tail_x + CARD_WIDTH / 2.0, merge - RING_CLEAR))
+}
 /// The stretch of wire that belongs to one side of one card: the signal's
 /// whole journey between the card's edge and the junction it reaches, so that
 /// clicking anywhere along it means the same thing — this card's input, or
@@ -1077,6 +1089,54 @@ fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> 
         }
     }
     marks
+}
+
+/// The stretch of drawn wire `from..to`, cut where every conversion circle
+/// stands on it, each piece as wide as the signal that piece actually
+/// carries: a wire runs into a circle at the width the conversion takes in,
+/// and leaves it at the width the conversion makes. Without the cut the
+/// whole stretch runs at whatever width its owner assumed, and a mono wire
+/// feeding a split reads as stereo already split — a cable that looks
+/// broken where an operator should see channels dividing.
+///
+/// Only a circle drawn inside the stretch, at the stretch's own height,
+/// cuts it. A vertical mark rides a riser, and how many risers a column
+/// carries is the riser's own affair. The width the caller had (`lanes`)
+/// stands for every stretch no circle reaches — which on an unmarked wire
+/// is all of it.
+fn width_runs(
+    from: f32,
+    to: f32,
+    lanes: usize,
+    y: f32,
+    marks: &[WidthMark],
+    offsets: &std::collections::BTreeMap<NodeId, f32>,
+) -> Vec<(f32, f32, usize)> {
+    let mut cuts = marks
+        .iter()
+        .filter(|mark| !mark.vertical)
+        .map(|mark| (mark.centre(offsets), mark.inputs, mark.outputs))
+        .filter(|([x, cross], _, _)| (*cross - y).abs() < 0.5 && *x > from && *x < to)
+        .collect::<Vec<_>>();
+    cuts.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
+    if cuts.is_empty() {
+        return vec![(from, to, lanes)];
+    }
+    let mut runs = Vec::with_capacity(cuts.len() + 1);
+    let mut start = from;
+    // What the first circle takes in is what the wire before it carries.
+    let mut width = cuts[0].1;
+    for ([x, _], _, outputs) in cuts {
+        if x > start {
+            runs.push((start, x, width));
+        }
+        start = x;
+        width = outputs;
+    }
+    if to > start {
+        runs.push((start, to, width));
+    }
+    runs
 }
 
 /// A meter the user can click, in the order the signal passes them.
@@ -2819,7 +2879,16 @@ impl Process for RackUi {
             } else {
                 wire_end(split, wire_box_x(x, false), feed_open)
             };
-            wire_segment(ctx, previous_x, feed_to, layout.flow, wire, incoming);
+            for (from, to, lanes) in width_runs(
+                previous_x,
+                feed_to,
+                incoming,
+                layout.flow,
+                &marks,
+                &self.mark_offsets,
+            ) {
+                wire_segment(ctx, from, to, layout.flow, wire, lanes);
+            }
             if shared {
                 // The risers, branch by branch: each one drops from the
                 // flow line into its head card carrying the width that
@@ -2854,6 +2923,21 @@ impl Process for RackUi {
                                 merge,
                                 row(tail.y),
                                 layout.flow + climb.signum() * RING_CLEAR,
+                                wire,
+                                self.wire_lanes(tail.id.0, true),
+                            );
+                        } else if let Some((from, to)) = flow_to_ring(tail.x, merge) {
+                            // The lane on the line that stops short of the
+                            // merge column runs its signal along the line to
+                            // the collar; the fold at the ring stands, but
+                            // the handover cannot be missing. Like the
+                            // risers it is the stage's own wire — there is
+                            // no click here for anyone to break.
+                            wire_segment(
+                                ctx,
+                                from,
+                                to,
+                                layout.flow,
                                 wire,
                                 self.wire_lanes(tail.id.0, true),
                             );
@@ -3041,14 +3125,12 @@ impl Process for RackUi {
                         } else {
                             wire_end(outer, bx, open)
                         };
-                        wire_segment(
-                            ctx,
-                            inner,
-                            outer,
-                            slot.y,
-                            wire,
-                            self.wire_lanes(slot.id.0, side),
-                        );
+                        let lanes = self.wire_lanes(slot.id.0, side);
+                        for (from, to, width) in
+                            width_runs(inner, outer, lanes, slot.y, &marks, &self.mark_offsets)
+                        {
+                            wire_segment(ctx, from, to, slot.y, wire, width);
+                        }
                         // The stub box is the whole of a minimised meter's
                         // face, so it carries everything the rack knows about
                         // the wire: red for a clip nobody has acknowledged, amber
@@ -3104,21 +3186,26 @@ impl Process for RackUi {
         {
             self.toggle_wire(MASTER_WIRE_KEY, false);
         }
-        wire_segment(
-            ctx,
+        let out_head = wire_end(
+            out.x - CARD_WIDTH / 2.0,
+            out_stub,
+            self.wire_open(MASTER_WIRE_KEY, false),
+        );
+        for (from, to, lanes) in width_runs(
             previous_x,
-            wire_end(
-                out.x - CARD_WIDTH / 2.0,
-                out_stub,
-                self.wire_open(MASTER_WIRE_KEY, false),
-            ),
-            layout.flow,
-            wire,
+            out_head,
             // The master wire is what the rack hands the device, so it runs
             // as wide as the playback side is: the engine refuses a graph
-            // whose tail is any other width, map aside.
+            // whose tail is any other width, map aside. A conversion
+            // standing on the wire steps it down or up at its circle
+            // regardless — the mark's own widths say what each side carries.
             route.output.count().clamp(1, 2),
-        );
+            layout.flow,
+            &marks,
+            &self.mark_offsets,
+        ) {
+            wire_segment(ctx, from, to, layout.flow, wire, lanes);
+        }
         // The conversions themselves, drawn last among the wires so a circle
         // always reads as the thing standing on a wire and never as a wire
         // passing under it. The ring is the collar the mixer's join already
@@ -5454,6 +5541,24 @@ mod tests {
         assert!(marks.is_empty(), "{marks:?}");
     }
     #[test]
+    fn a_lane_on_the_line_stops_its_wire_at_the_ring_and_never_short_of_it() {
+        // `IN → (Dist → Clone ∥ Tuner ∥ Ecomplex) → OUT` with Tuner on the
+        // line: its chain stops a column short of the deepest lane, and its
+        // collar fold leaves no stub of its own to carry the wire, so the
+        // stage must run the lane onto the ring itself — from the card's
+        // edge out to the air gap, no further.
+        let merge = junction_x(card_x(1), true);
+        assert_eq!(
+            flow_to_ring(card_x(0), merge),
+            Some((card_x(0) + CARD_WIDTH / 2.0, merge - RING_CLEAR)),
+            "the run starts at the card's own edge and stops beside the collar"
+        );
+        // A lane whose tail already stands at the merge column keeps the
+        // fold whole: the rim rests a hair off its edge and there is no
+        // gutter of wire to draw.
+        assert_eq!(flow_to_ring(card_x(1), merge), None);
+    }
+    #[test]
     fn three_parallel_branches_are_each_seated_where_their_own_wire_runs() {
         // Three mono cards in parallel on a mono device: the engine splits the
         // trunk for each branch and lifts each branch again before the ring.
@@ -5561,6 +5666,89 @@ mod tests {
             moved.first().map(|mark| mark.centre(&offsets)),
             Some([149.0, 30.0]),
             "a stranger's nudge moves nothing"
+        );
+    }
+    /// A circle already seated, parked wherever its stretch puts it: the
+    /// tests below are about the wire's lanes, not about finding the seat.
+    fn circle(
+        id: u64,
+        inputs: usize,
+        outputs: usize,
+        cross: f32,
+        lo: f32,
+        hi: f32,
+        vertical: bool,
+    ) -> WidthMark {
+        WidthMark {
+            id: NodeId(id),
+            inputs,
+            outputs,
+            cross,
+            lo,
+            hi,
+            forward: 1.0,
+            vertical,
+        }
+    }
+    #[test]
+    fn a_wire_steps_its_lanes_at_the_circle_standing_on_it() {
+        // The rack's master wire out of a mono chain into a stereo device:
+        // the operator asked to see a mono wire, a split, and a stereo wire
+        // to the sink — so the wire carries one lane up to the circle and
+        // two past it, and never two lanes that were stereo before they
+        // were made stereo.
+        let mark = circle(9, 1, 2, 30.0, 100.0, 200.0, false);
+        assert_eq!(
+            width_runs(0.0, 300.0, 2, 30.0, &[mark], &BTreeMap::new()),
+            vec![(0.0, 150.0, 1), (150.0, 300.0, 2)],
+            "one lane in, two out, cut at the circle's centre"
+        );
+        // The widths belong to the circle, not to the caller: asked for one
+        // lane the whole way, the stretch past it still carries two.
+        assert_eq!(
+            width_runs(0.0, 300.0, 1, 30.0, &[mark], &BTreeMap::new()),
+            vec![(0.0, 150.0, 1), (150.0, 300.0, 2)]
+        );
+    }
+    #[test]
+    fn only_a_circle_drawn_on_the_stretch_itself_cuts_it() {
+        let mark = circle(9, 1, 2, 30.0, 100.0, 200.0, false);
+        // Same height, but the stretch ends before the circle: nothing cuts.
+        assert_eq!(
+            width_runs(0.0, 120.0, 2, 30.0, &[mark], &BTreeMap::new()),
+            vec![(0.0, 120.0, 2)]
+        );
+        // Same stretch, another row: the circle rides a different wire.
+        assert_eq!(
+            width_runs(0.0, 300.0, 2, 40.0, &[mark], &BTreeMap::new()),
+            vec![(0.0, 300.0, 2)]
+        );
+        // A circle on a riser cuts nothing here: a column's lanes are the
+        // riser's own affair.
+        let riser = circle(9, 1, 2, 150.0, 0.0, 300.0, true);
+        assert_eq!(
+            width_runs(0.0, 300.0, 2, 30.0, &[riser], &BTreeMap::new()),
+            vec![(0.0, 300.0, 2)]
+        );
+        // And a circle dragged along its wire cuts where it now stands.
+        let mut offsets = BTreeMap::new();
+        offsets.insert(mark.id, -20.0);
+        assert_eq!(
+            width_runs(0.0, 300.0, 2, 30.0, &[mark], &offsets),
+            vec![(0.0, 130.0, 1), (130.0, 300.0, 2)]
+        );
+    }
+    #[test]
+    fn two_circles_on_one_wire_step_its_lanes_from_one_to_the_next() {
+        // A wire lifted to stereo and folded back to mono on the same run
+        // carries three widths, and each belongs between its own pair of
+        // circles: the second takes in what the first made.
+        let wide = circle(9, 1, 2, 30.0, 100.0, 200.0, false);
+        let narrow = circle(8, 2, 1, 30.0, 210.0, 310.0, false);
+        assert_eq!(
+            width_runs(0.0, 400.0, 1, 30.0, &[narrow, wide], &BTreeMap::new()),
+            vec![(0.0, 150.0, 1), (150.0, 260.0, 2), (260.0, 400.0, 1)],
+            "the cuts follow the circles left to right, whatever order the marks came in"
         );
     }
 }
