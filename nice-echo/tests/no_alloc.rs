@@ -47,8 +47,6 @@ fn a_block_costs_nothing_to_the_allocator() {
         let mut echo = Echo::new(48_000.0, &controls);
         let input = [0.25f32; BLOCK];
         let mut mono = [0.0f32; BLOCK];
-        let mut left = [0.0f32; BLOCK];
-        let mut right = [0.0f32; BLOCK];
         // The first block through any filter is the one that used to be allowed
         // to prepare coefficients; measure after that, the way a host's real
         // blocks arrive.
@@ -56,11 +54,6 @@ fn a_block_costs_nothing_to_the_allocator() {
         let counted = allocation_counter::measure(|| {
             for _ in 0..64 {
                 echo.process_mono(&controls, &input, &mut mono);
-                echo.process_stereo(
-                    &controls,
-                    [&input[..], &input[..]],
-                    [&mut left[..], &mut right[..]],
-                );
             }
         });
         assert_eq!(counted.count_total, 0, "the audio thread allocates");
@@ -97,19 +90,19 @@ fn moving_the_controls_costs_nothing_either() {
     assert_eq!(counted.count_total, 0, "automation allocates");
 }
 
-/// Reset must clear both lanes, noise/modulation and transport history even
-/// after controls have changed, without touching the allocator.
+/// Reset must clear the tape, the spring, the noise/modulation and the
+/// transport history even after controls have changed, without touching the
+/// allocator.
 #[test]
 fn reset_is_allocation_free_and_matches_a_fresh_machine() {
     for rate in [8_000.0, 48_000.0, 96_000.0] {
         let mut controls = Controls::default();
         let mut machine = Echo::new(rate, &controls);
         let input = [0.25; BLOCK];
-        let mut left = [0.0; BLOCK];
-        let mut right = [0.0; BLOCK];
+        let mut out = [0.0; BLOCK];
         for pass in 0..2 {
             for _ in 0..128 {
-                machine.process_stereo(&controls, [&input, &input], [&mut left, &mut right]);
+                machine.process_mono(&controls, &input, &mut out);
             }
             if pass == 0 {
                 controls.repeat_rate = 0.91;
@@ -123,29 +116,22 @@ fn reset_is_allocation_free_and_matches_a_fresh_machine() {
             assert_eq!(counted.count_current, 0, "reset frees storage");
             assert_eq!(counted.bytes_current, 0, "reset changes allocated bytes");
             let mut fresh = Echo::new(rate, &controls);
-            let mut expected_left = [0.0; BLOCK];
-            let mut expected_right = [0.0; BLOCK];
+            let mut expected = [0.0; BLOCK];
             // Long enough to expose old tape/spring contents, not just the
-            // immediate dry signal. Different inputs exercise both lanes.
+            // immediate dry signal: one impulse through the loop, then the
+            // tail ringing out against silence.
             for block in 0..(rate as usize * 4 / BLOCK) {
                 let mut impulse = [0.0; BLOCK];
                 if block == 0 {
                     impulse[0] = 1.0;
                 }
                 let silence = [0.0; BLOCK];
-                machine.process_stereo(&controls, [&impulse, &silence], [&mut left, &mut right]);
-                fresh.process_stereo(
-                    &controls,
-                    [&impulse, &silence],
-                    [&mut expected_left, &mut expected_right],
-                );
+                let fed = if block % 2 == 0 { &impulse } else { &silence };
+                machine.process_mono(&controls, fed, &mut out);
+                fresh.process_mono(&controls, fed, &mut expected);
                 assert_eq!(
-                    left, expected_left,
-                    "left after reset at {rate} Hz, block {block}"
-                );
-                assert_eq!(
-                    right, expected_right,
-                    "right after reset at {rate} Hz, block {block}"
+                    out, expected,
+                    "output after reset at {rate} Hz, block {block}"
                 );
             }
         }

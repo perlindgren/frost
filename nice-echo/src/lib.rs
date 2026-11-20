@@ -460,22 +460,16 @@ impl Plugin for EchoPlugin {
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    /// Stereo first, because the machine was played through two outputs and
-    /// players expect a stereo lane pair even when the echo itself is one
-    /// tape (v1 duplicates its lanes; the spread is a TODO.md debt, honestly
-    /// declared); mono for the hosts that only offer an insert that way.
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            ..AudioIOLayout::const_default()
-        },
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(1),
-            main_output_channels: NonZeroU32::new(1),
-            ..AudioIOLayout::const_default()
-        },
-    ];
+    /// Mono in, mono out, and nothing else: the box is mono — one signal
+    /// through one tape loop and one spring — and so is this model. The
+    /// plugin neither folds a stereo signal down nor widens a mono one;
+    /// that width work belongs to the host and the rack, which is exactly
+    /// why this is the only layout here.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: NonZeroU32::new(1),
+        main_output_channels: NonZeroU32::new(1),
+        ..AudioIOLayout::const_default()
+    }];
 
     type Editor = EchoEditor;
     type SysExMessage = ();
@@ -542,17 +536,14 @@ impl Plugin for EchoPlugin {
             let (energy, peak) = block_stats(&input, channels, n, &mut self.tp_in);
             input_energy += energy;
             input_peak = input_peak.max(peak);
-            if channels == 1 {
-                self.echo
-                    .process_mono(&controls, &input[0][..n], &mut output[0][..n]);
-            } else {
-                let (left, right) = output.split_at_mut(1);
-                self.echo.process_stereo(
-                    &controls,
-                    [&input[0][..n], &input[1][..n]],
-                    [&mut left[0][..n], &mut right[0][..n]],
-                );
-            }
+            // One tape, one spring, one channel: the first channel is the
+            // input. Should a host hand over a wider buffer than the mono
+            // layout declares, the echo still rides channel 0 alone and
+            // leaves the other lanes silent — the plugin never folds
+            // channels together; width is the host's work, not the
+            // echo's.
+            self.echo
+                .process_mono(&controls, &input[0][..n], &mut output[0][..n]);
             let (energy, peak) = block_stats(&output, channels, n, &mut self.tp_out);
             output_energy += energy;
             output_peak = output_peak.max(peak);

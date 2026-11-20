@@ -370,18 +370,16 @@ impl Plugin for WahPlugin {
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            ..AudioIOLayout::const_default()
-        },
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(1),
-            main_output_channels: NonZeroU32::new(1),
-            ..AudioIOLayout::const_default()
-        },
-    ];
+    /// Mono in, mono out, and nothing else: the pedal is mono — one guitar
+    /// under one foot — and so is this model. The plugin neither folds a
+    /// stereo signal down nor widens a mono one; that width work belongs to
+    /// the host and the rack, which is exactly why this is the only layout
+    /// here.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: NonZeroU32::new(1),
+        main_output_channels: NonZeroU32::new(1),
+        ..AudioIOLayout::const_default()
+    }];
 
     type Editor = WahEditor;
     type SysExMessage = ();
@@ -450,17 +448,13 @@ impl Plugin for WahPlugin {
             let (energy, peak) = block_stats(&input, channels, n, &mut self.tp_in);
             input_energy += energy;
             input_peak = input_peak.max(peak);
-            if channels == 1 {
-                self.filter
-                    .process_mono(&controls, &input[0][..n], &mut output[0][..n]);
-            } else {
-                let (left, right) = output.split_at_mut(1);
-                self.filter.process_stereo(
-                    &controls,
-                    [&input[0][..n], &input[1][..n]],
-                    [&mut left[0][..n], &mut right[0][..n]],
-                );
-            }
+            // One pedal, one filter: the first channel is the input. Should
+            // a host hand over a wider buffer than the mono layout declares,
+            // the vowel still shapes channel 0 alone and leaves the other
+            // lanes silent — the plugin never folds channels together; width
+            // is the host's work, not the pedal's.
+            self.filter
+                .process_mono(&controls, &input[0][..n], &mut output[0][..n]);
             let (energy, peak) = block_stats(&output, channels, n, &mut self.tp_out);
             output_energy += energy;
             output_peak = output_peak.max(peak);

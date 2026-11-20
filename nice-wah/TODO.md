@@ -38,7 +38,7 @@ level-dependent — play hard, the core saturates, the resonance compresses
 and damps. That is the audible difference between a Fasel and a CDC, and it
 is what makes a real wah feel alive under dynamics, independent of the
 envelope follower. Model as a saturation curve folding drive into the
-instantaneous Q; the added state is one flux value per channel, well inside
+instantaneous Q; the added state is one flux value, well inside
 what `tests/no_alloc.rs` polices.
 
 **The '70's voice partly lives in the cable.** The Thomas Organ circuit's

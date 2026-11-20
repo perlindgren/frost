@@ -104,8 +104,8 @@ spectrum and never a level bump; the corner travels exponentially between heel
 and toe (`heel · (toe/heel)^(t^2^taper)`), coefficients are crossfaded per
 sample across every change, and the corner slews 20 ms behind its target so a
 stepped automation lane cannot zipper. The follower is a dB-law one-pole
-(2 ms attack, 300 ms release) floored at −60 dBFS; stereo channels share one
-follower on the louder of the two, the way one hand works one pedal.
+(2 ms attack, 300 ms release) floored at −60 dBFS, reading the one input
+channel — one hand works one pedal.
 
 A heel set above its toe is a silent guard rail: the sweep parks at the heel
 rather than inverting.

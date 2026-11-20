@@ -408,17 +408,18 @@ impl Spring {
     }
 }
 
-/// One lane's tape: the loop's memory, the write cursor, the heads.
+/// The tape: the loop's memory, the write cursor, the heads. There is one
+/// of it, because there is one machine.
 #[derive(Default)]
 struct Tape {
     line: Vec<f32>,
     write: usize,
     heads: [Head; 3],
-    /// A-9's hiss generator, a plain LCG — identically seeded in both
-    /// lanes so the one monophonic tape stays bit-exact across them.
+    /// A-9's hiss generator, a plain LCG — one seeded stream for the one
+    /// tape, so the echo is bit-exact run after run.
     rng: u32,
     /// A-12's drive envelope into the record head, and the record pole's
-    /// state. Per-lane, like everything the tape itself touches.
+    /// state — like everything the tape itself touches, one of each.
     drive_env: f32,
     rec_lp: f32,
 }
@@ -427,16 +428,15 @@ impl Tape {
     /// The next hiss sample: high bits of the common 1_664_525 /
     /// 1_013_904_223 linear congruential step, scaled to ±1.5e-4, and
     /// breathing with the wow — `breath` is the shared −1..=1 wow position
-    /// and A-9's `HISS_BREATH` sets the depth. Deterministic,
-    /// allocation-free, and — the part the mono-stays-mono test leans on —
-    /// the same sequence and the same shared breath in every lane.
+    /// and A-9's `HISS_BREATH` sets the depth. Deterministic and
+    /// allocation-free: one hiss stream for the one tape.
     fn hiss(&mut self, breath: f32) -> f32 {
         self.rng = self.rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         ((self.rng >> 8) as f32 / 8_388_608.0 - 1.0) * 1.5e-4 * (1.0 + HISS_BREATH * breath)
     }
 }
 
-/// A lane's tone stage: one pole each for the bass and treble shelves.
+/// The tone stage: one pole each for the bass and treble shelves.
 #[derive(Clone, Copy, Default)]
 struct Tone {
     bass_lp: f32,
@@ -481,23 +481,22 @@ fn recipe(c: &Controls) -> Recipe {
     }
 }
 
-/// The machine: two lanes of tape and spring under one transport. The tape
-/// is monophonic — one record head, heard in both outputs — and the
-/// transport's wow and flutter are shared, because the motor does not
-/// wobble left and right differently.
+/// The machine: one tape, one spring, under one transport. The tape is
+/// monophonic by nature — one record head, one set of playback heads — and
+/// the transport's wow and flutter are shared, because the motor does not
+/// wobble differently for signals that are not there.
 pub struct Echo {
     rate: f32,
-    tapes: [Tape; 2],
-    springs: [Spring; 2],
-    tone: [Tone; 2],
+    tape: Tape,
+    spring: Spring,
+    tone: Tone,
     /// Tape speed the transport is at right now, mid-slew.
     speed: f32,
     /// Shared wow/flutter phases, in radians.
     wow_p: f32,
     flutter_p: f32,
-    /// A-11's shared wander: the phase, and sin/cos of the angle, so both
-    /// lanes and every head can read one slow transport truth for two
-    /// multiplies each.
+    /// A-11's shared wander: the phase, and sin/cos of the angle, so every
+    /// head can read one slow transport truth for two multiplies each.
     wear_p: f32,
     wear_s: f32,
     wear_c: f32,
@@ -523,9 +522,9 @@ impl Echo {
     pub fn new(rate: f32, controls: &Controls) -> Self {
         let mut echo = Self {
             rate: 0.0,
-            tapes: [Tape::default(), Tape::default()],
-            springs: [Spring::default(), Spring::default()],
-            tone: [Tone::default(), Tone::default()],
+            tape: Tape::default(),
+            spring: Spring::default(),
+            tone: Tone::default(),
             speed: tape_speed(controls.repeat_rate),
             wow_p: 0.0,
             flutter_p: 0.0,
@@ -559,17 +558,13 @@ impl Echo {
             + WOW_DEPTH_S * (1.0 + WEAR_WOW_DEPTH)
             + FLUTTER_DEPTH_S;
         let len = ((longest * rate).ceil() as usize) + 16;
-        for tape in &mut self.tapes {
-            tape.line = vec![0.0; len];
-            tape.write = 0;
-            tape.heads = [Head::default(); 3];
-            tape.drive_env = 0.0;
-            tape.rec_lp = 0.0;
-        }
-        for spring in &mut self.springs {
-            spring.set_rate(rate);
-        }
-        self.tone = [Tone::default(), Tone::default()];
+        self.tape.line = vec![0.0; len];
+        self.tape.write = 0;
+        self.tape.heads = [Head::default(); 3];
+        self.tape.drive_env = 0.0;
+        self.tape.rec_lp = 0.0;
+        self.spring.set_rate(rate);
+        self.tone = Tone::default();
         self.head_a = [
             lp_coeff(HEAD_FC_HZ[0], rate),
             lp_coeff(HEAD_FC_HZ[1], rate),
@@ -592,18 +587,14 @@ impl Echo {
     /// Clear audio and modulation history without allocating or freeing storage.
     /// Controls are preserved; transport speed starts at the current knob value.
     pub fn reset(&mut self, controls: &Controls) {
-        for tape in &mut self.tapes {
-            tape.line.fill(0.0);
-            tape.write = 0;
-            tape.heads = [Head::default(); 3];
-            tape.rng = 0;
-            tape.drive_env = 0.0;
-            tape.rec_lp = 0.0;
-        }
-        for spring in &mut self.springs {
-            spring.reset();
-        }
-        self.tone = [Tone::default(); 2];
+        self.tape.line.fill(0.0);
+        self.tape.write = 0;
+        self.tape.heads = [Head::default(); 3];
+        self.tape.rng = 0;
+        self.tape.drive_env = 0.0;
+        self.tape.rec_lp = 0.0;
+        self.spring.reset();
+        self.tone = Tone::default();
         self.speed = tape_speed(controls.repeat_rate);
         self.wow_p = 0.0;
         self.flutter_p = 0.0;
@@ -613,36 +604,14 @@ impl Echo {
         self.wow_lfo = 0.0;
     }
 
-    /// Process one mono block — at most [`BLOCK`] frames.
+    /// Process one mono block — at most [`BLOCK`] frames. One tape, one
+    /// spring, one transport: this is the only voice the machine has.
     pub fn process_mono(&mut self, controls: &Controls, input: &[f32], output: &mut [f32]) {
         let r = recipe(controls);
         let n = input.len().min(output.len()).min(BLOCK);
         for i in 0..n {
             let off = self.tick(&r);
-            output[i] = self.lane(0, &r, input[i], off);
-        }
-    }
-
-    /// Process one stereo block. Both lanes hear one tape: lane 0 and lane
-    /// 1 of a duplicated input come out identical — a stereo spread is a
-    /// TODO.md debt, honestly declared.
-    pub fn process_stereo(
-        &mut self,
-        controls: &Controls,
-        inputs: [&[f32]; 2],
-        outputs: [&mut [f32]; 2],
-    ) {
-        let r = recipe(controls);
-        let n = inputs[0]
-            .len()
-            .min(inputs[1].len())
-            .min(outputs[0].len())
-            .min(outputs[1].len())
-            .min(BLOCK);
-        for i in 0..n {
-            let off = self.tick(&r);
-            outputs[0][i] = self.lane(0, &r, inputs[0][i], off);
-            outputs[1][i] = self.lane(1, &r, inputs[1][i], off);
+            output[i] = self.voice(&r, input[i], off);
         }
     }
 
@@ -679,12 +648,12 @@ impl Echo {
             * self.rate
     }
 
-    /// One sample of one lane, with the transport's shared offset applied.
-    fn lane(&mut self, ch: usize, r: &Recipe, x: f32, wow_off: f32) -> f32 {
+    /// One sample of the one voice, with the transport's shared offset applied.
+    fn voice(&mut self, r: &Recipe, x: f32, wow_off: f32) -> f32 {
         // A-11: where each head sits in the wear wander right now.
         let (ws, wc) = (self.wear_s, self.wear_c);
         let breath = self.wow_lfo;
-        let tape = &mut self.tapes[ch];
+        let tape = &mut self.tape;
         let len = tape.line.len() as f32;
         let write = tape.write;
         let mut echo_sum = 0.0f32;
@@ -726,7 +695,7 @@ impl Echo {
 
         // The tank always runs its state — a mode switch should not unfreeze
         // a stale spring — but only its selected share reaches the output.
-        let wet = self.springs[ch].run(x, &self.spring_a, self.spring_tail_a);
+        let wet = self.spring.run(x, &self.spring_a, self.spring_tail_a);
         let rev = if r.mask & SPRING_BIT != 0 {
             r.reverb_volume
         } else {
@@ -735,7 +704,7 @@ impl Echo {
 
         let mix = r.dry * x + echo_sum * r.echo_volume + wet * rev;
         let shaped = tone(
-            &mut self.tone[ch],
+            &mut self.tone,
             self.tone_bass_a,
             self.tone_treble_a,
             r.kb,
@@ -1510,32 +1479,31 @@ mod tests {
     }
 
     #[test]
-    fn one_tape_is_heard_in_both_lanes() {
-        // The stereo run and the mono run are the same machine: lane 0 of
-        // the stereo pass equals the mono pass sample for sample, and both
-        // lanes hear the same echo (mono tape — TODO.md owns the spread).
+    fn one_tape_one_voice() {
+        // There is one machine: same controls, same input block, and two
+        // fresh boxes answer bit for bit the same way. The hiss, the wow
+        // and the wander all hang off one transport, so the mono path is
+        // exactly reproducible — and it is the only path there is.
         let c = Controls {
             mode: 10,
             intensity: 0.4,
             echo_switch: 0,
             ..Default::default()
         };
-        let mut mono = Echo::new(RATE, &c);
-        let mut st = Echo::new(RATE, &c);
+        let mut a = Echo::new(RATE, &c);
+        let mut b = Echo::new(RATE, &c);
         let mut src = [0.0f32; BLOCK];
         let mut seed = 7u32;
         for v in src.iter_mut() {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             *v = (seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
         }
-        let mut m_out = [0.0f32; BLOCK];
-        let mut l = [0.0f32; BLOCK];
-        let mut r = [0.0f32; BLOCK];
-        mono.process_mono(&c, &src, &mut m_out);
-        st.process_stereo(&c, [&src, &src], [&mut l, &mut r]);
+        let mut out_a = [0.0f32; BLOCK];
+        let mut out_b = [0.0f32; BLOCK];
+        a.process_mono(&c, &src, &mut out_a);
+        b.process_mono(&c, &src, &mut out_b);
         for i in 0..BLOCK {
-            assert_eq!(m_out[i], l[i], "mono lane is lane 0 of the stereo run");
-            assert_eq!(l[i], r[i], "both lanes hear one tape");
+            assert_eq!(out_a[i], out_b[i], "one tape answers once");
         }
     }
 }

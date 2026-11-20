@@ -310,9 +310,9 @@ pub struct Phase {
     /// The feedback ratio mid-slew — a mode flip wires the resistor in
     /// or out over the same 20 ms the tap walks — and the one-sample
     /// memory the loop closes through: the network's wet output as of
-    /// the previous sample, per channel.
+    /// the previous sample.
     feedback: f32,
-    fb_bus: [f32; 2],
+    fb_bus: f32,
     /// The allpass coefficient as the last block left it — the blend's
     /// start. One number for all four sections, because the hardware's
     /// ganged capacitor kept their cutoffs equal, and the notch
@@ -320,7 +320,7 @@ pub struct Phase {
     previous: f32,
     /// The linear gain the last block ended on, blended to likewise.
     previous_gain: f32,
-    stages_mem: [[Allpass; STAGES]; 2],
+    stages_mem: [Allpass; STAGES],
 }
 
 impl Phase {
@@ -342,10 +342,10 @@ impl Phase {
             mix: controls.mix,
             gain_db: controls.gain_db + mode.trim_db,
             feedback: mode.feedback,
-            fb_bus: [0.0; 2],
+            fb_bus: 0.0,
             previous: 0.0,
             previous_gain: 1.0,
-            stages_mem: [[Allpass::default(); STAGES]; 2],
+            stages_mem: [Allpass::default(); STAGES],
         };
         // Which coefficient, and at what gain, is `set_rate`'s question.
         phase.set_rate(rate);
@@ -370,8 +370,8 @@ impl Phase {
     /// the rest: whatever the ring was mid-flight, the reset says it
     /// never was.
     pub fn reset(&mut self) {
-        self.stages_mem = [[Allpass::default(); STAGES]; 2];
-        self.fb_bus = [0.0; 2];
+        self.stages_mem = [Allpass::default(); STAGES];
+        self.fb_bus = 0.0;
     }
 
     /// Where the sine stood for the last block, 0..1 — the editor's
@@ -420,9 +420,10 @@ impl Phase {
         }
     }
 
-    /// Run one block of one channel — up to [`BLOCK`] samples, in and out
-    /// separate buffers; the caller copies through if the host asked for
-    /// in-place. With a second channel, prefer [`Phase::process_stereo`].
+    /// Run one block — up to [`BLOCK`] samples, in and out separate
+    /// buffers; the caller copies through if the host asked for in-place.
+    /// One circuit board, one ganged capacitor bank, one signal path:
+    /// this is the only voice the machine has.
     pub fn process_mono(&mut self, controls: &Controls, input: &[f32], output: &mut [f32]) {
         let n = input.len().min(output.len()).min(BLOCK);
         let target = self.begin_block(controls, n);
@@ -433,7 +434,7 @@ impl Phase {
         let wet = self.mix;
         let dry = 1.0 - self.mix;
         let feedback = self.feedback;
-        let mut fb_bus = self.fb_bus[0];
+        let mut fb_bus = self.fb_bus;
         for (i, out) in output[..n].iter_mut().enumerate() {
             let u = (i as f32 + 1.0) / n as f32;
             let a = previous + (target - previous) * u;
@@ -444,10 +445,10 @@ impl Phase {
             // closes this loop inside the wet path; a `0.0` leaves the
             // arithmetic bit-identical to the open chain.
             let mut w = x + feedback * fb_bus;
-            for stage in self.stages_mem[0].iter_mut() {
+            for stage in self.stages_mem.iter_mut() {
                 w = stage.process(a, w);
             }
-            let tap = self.tapped(0);
+            let tap = self.tapped();
             fb_bus = tap;
             // The hardware's summer: dry and chain at equal weight, a
             // half each. Depth is that weighting's travel from
@@ -458,54 +459,7 @@ impl Phase {
             let ph = x * (1.0 - half_depth) + tap * half_depth;
             *out = (x * dry + ph * wet) * (gain_from + (gain_target - gain_from) * u);
         }
-        self.fb_bus[0] = fb_bus;
-        self.end_block(target, gain_target);
-    }
-
-    /// Run one block of two channels. Both run the same sweep through
-    /// their own allpass memories, because the hardware had one signal
-    /// path and one hand on the speed knob: the effect is mono, the
-    /// wiring is polite. (Same-tau stereo phasing — two sweeps a hair
-    /// apart — is a real trick and a different circuit; see this crate's
-    /// TODO.)
-    pub fn process_stereo(
-        &mut self,
-        controls: &Controls,
-        inputs: [&[f32]; 2],
-        outputs: [&mut [f32]; 2],
-    ) {
-        let n = inputs[0]
-            .len()
-            .min(inputs[1].len())
-            .min(outputs[0].len())
-            .min(outputs[1].len())
-            .min(BLOCK);
-        let target = self.begin_block(controls, n);
-        let previous = self.previous;
-        let gain_target = db_to_gain(self.gain_db);
-        let gain_from = self.previous_gain;
-        let half_depth = self.depth * 0.5;
-        let wet = self.mix;
-        let dry = 1.0 - self.mix;
-        let feedback = self.feedback;
-        for i in 0..n {
-            let u = (i as f32 + 1.0) / n as f32;
-            let a = previous + (target - previous) * u;
-            let gain = gain_from + (gain_target - gain_from) * u;
-            for channel in 0..2 {
-                let x = inputs[channel][i];
-                // Each channel closes its own feedback loop — one hand on
-                // the speed knob, two independent summers.
-                let mut w = x + feedback * self.fb_bus[channel];
-                for stage in self.stages_mem[channel].iter_mut() {
-                    w = stage.process(a, w);
-                }
-                let tap = self.tapped(channel);
-                self.fb_bus[channel] = tap;
-                let ph = x * (1.0 - half_depth) + tap * half_depth;
-                outputs[channel][i] = (x * dry + ph * wet) * gain;
-            }
-        }
+        self.fb_bus = fb_bus;
         self.end_block(target, gain_target);
     }
 
@@ -516,13 +470,13 @@ impl Phase {
     /// 4.0 after the fourth, and 3.0 mid-flip is the honest crossfade
     /// between neighbours, which is what keeps a selector that changes
     /// the tap silent.
-    fn tapped(&self, channel: usize) -> f32 {
+    fn tapped(&self) -> f32 {
         let stages = self.stages;
         let below = (stages as usize).clamp(1, STAGES);
         let frac = stages - below as f32;
         // `y1` of section k is that section's output for the sample just
         // processed.
-        let at = |k: usize| self.stages_mem[channel][k - 1].y1;
+        let at = |k: usize| self.stages_mem[k - 1].y1;
         if frac <= 0.0 || below >= STAGES {
             at(below)
         } else {

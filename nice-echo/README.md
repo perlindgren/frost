@@ -243,8 +243,8 @@ against arithmetic the model has no standing to dispute:
   the A-12 HF loss, measured as a treble-to-bass ratio at two levels;
 * turning Repeat Rate smears the delay on the way instead of jumping, and
   the saturation is odd, bounded, and never lets the loop out of full scale;
-* one tape is heard in both lanes: a mono input through stereo taps is the
-  same echo twice, because there is one tape, not two.
+* the box is mono: one tape, one spring, one input and one output — there
+  is no second lane to disagree with, and width is the host's work.
 
 What none of that tests is the twelve named assumptions — the spacing, the
 speeds, the wiring of eleven mode positions, the transport's depths, the

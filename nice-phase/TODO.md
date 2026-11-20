@@ -80,13 +80,13 @@ into slightly asymmetric holes. The effect is subtle — it fills a few dB
 of the notch floor and roughens the whoosh — and would cost a per-stage
 coefficient table for a benefit best heard against a null.
 
-**Stereo is one sweep in two ears.** The plugin runs its own allpass
-memories per channel with the same LFO, because the hardware had one
-signal path and one hand on the pedal; true stereo phasing (two sweeps at
-a quarter period apart, or decorrelated sections) is a real studio trick
-that belongs to a different circuit than the one this table chases. The
-same-tau version is honest; the two-sweep version would be a mode, not a
-fix.
+**Stereo is the host's work, not the box's.** The plugin is mono in, mono
+out: the hardware had one signal path and one hand on the pedal, and the
+model now says so on its layout rather than running one sweep in two
+ears. True stereo phasing (two sweeps at a quarter period apart, or
+decorrelated sections) is a real studio trick that belongs to a different
+circuit than the one this table chases — a second plugin, not a second
+lane in this one.
 
 ## Tier 3 — the plugin surface
 

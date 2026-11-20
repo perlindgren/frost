@@ -255,7 +255,7 @@ pub struct Wah {
     previous: Coefs,
     /// The linear gain the last block ended on, blended to likewise.
     previous_gain: f32,
-    filter: [Biquad; 2],
+    filter: Biquad,
 }
 
 impl Wah {
@@ -273,7 +273,7 @@ impl Wah {
             held: *controls,
             previous: Coefs::default(),
             previous_gain: 1.0,
-            filter: [Biquad::default(), Biquad::default()],
+            filter: Biquad::default(),
         };
         // Which coefficients, and at what gain, is `set_rate`'s question.
         wah.set_rate(rate);
@@ -298,7 +298,7 @@ impl Wah {
     /// slew — a reset should still settle to the pedal rather than sweep
     /// to it from wherever the last take left the filter.
     pub fn reset(&mut self) {
-        self.filter = [Biquad::default(), Biquad::default()];
+        self.filter = Biquad::default();
         self.env = 0.0;
         self.env_norm = 0.0;
     }
@@ -326,10 +326,9 @@ impl Wah {
         }
     }
 
-    /// Run one block of one channel — up to [`BLOCK`] samples, in and out
-    /// separate buffers; the caller copies through if the host asked for
-    /// in-place. With a second channel, prefer [`Wah::process_stereo`], which
-    /// lets both share one follower.
+    /// Run one block — up to [`BLOCK`] samples, in and out separate buffers;
+    /// the caller copies through if the host asked for in-place. One pedal,
+    /// one foot, one filter: this is the only voice the machine has.
     pub fn process_mono(&mut self, controls: &Controls, input: &[f32], output: &mut [f32]) {
         let n = input.len().min(output.len()).min(BLOCK);
         let target = self.begin_block(controls, n);
@@ -339,40 +338,8 @@ impl Wah {
         for (i, out) in output[..n].iter_mut().enumerate() {
             self.env_follow(input[i].abs());
             let u = (i as f32 + 1.0) / n as f32;
-            *out = self.filter[0].process(blend(previous, target, u), input[i])
+            *out = self.filter.process(blend(previous, target, u), input[i])
                 * (gain_from + (gain_target - gain_from) * u);
-        }
-        self.end_block(target, gain_target);
-    }
-
-    /// Run one block of two channels. The follower reads both, as one foot
-    /// hears the whole guitar: a hard-strummed low string opens the vowel for
-    /// the pair, not for its own channel alone.
-    pub fn process_stereo(
-        &mut self,
-        controls: &Controls,
-        inputs: [&[f32]; 2],
-        outputs: [&mut [f32]; 2],
-    ) {
-        let n = inputs[0]
-            .len()
-            .min(inputs[1].len())
-            .min(outputs[0].len())
-            .min(outputs[1].len())
-            .min(BLOCK);
-        let target = self.begin_block(controls, n);
-        let previous = self.previous;
-        let gain_target = db_to_gain(self.gain_db);
-        let gain_from = self.previous_gain;
-        for i in 0..n {
-            let left = inputs[0][i];
-            let right = inputs[1][i];
-            self.env_follow(left.abs().max(right.abs()));
-            let u = (i as f32 + 1.0) / n as f32;
-            let coefs = blend(previous, target, u);
-            let gain = gain_from + (gain_target - gain_from) * u;
-            outputs[0][i] = self.filter[0].process(coefs, left) * gain;
-            outputs[1][i] = self.filter[1].process(coefs, right) * gain;
         }
         self.end_block(target, gain_target);
     }
