@@ -17,9 +17,11 @@ pub struct Target {
 
 /// Moves an existing card, or a new card already appended as a stage and a
 /// branch of its own. IDs are retained, and empty branches and stages
-/// collapse. Dropping on the left or right of a card chains the moving card
-/// into that card's branch, before or after the target; dropping above or
-/// below puts it in a branch of its own alongside the target's branch.
+/// collapse. Dropping on the right of a card chains the moving card into
+/// that card's branch after the target; dropping on the left chains it
+/// before the target, except at the leading card of a split, where the card
+/// lands in a new stage ahead of the whole fork; dropping above or below
+/// puts it in a branch of its own alongside the target's branch.
 pub fn place(
     stages: &[Vec<Vec<NodeId>>],
     moving: NodeId,
@@ -38,6 +40,13 @@ pub fn place(
     result.retain(|stage| !stage.is_empty());
     let (column, branch, row) = find(&result, target.card).ok_or("Drop target no longer exists")?;
     match target.side {
+        // The left edge of a split is the split itself: dropping to the
+        // left of any lane's leading card lands the card ahead of the
+        // whole fork, in a stage of its own. Deeper into a lane, or in a
+        // stage that has become a single chain, left still chains.
+        Side::Left if row == 0 && result[column].len() > 1 => {
+            result.insert(column, vec![vec![moving]])
+        }
         Side::Left => result[column][branch].insert(row, moving),
         Side::Right => result[column][branch].insert(row + 1, moving),
         Side::Above => result[column].insert(branch, vec![moving]),
@@ -125,6 +134,72 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chained, vec![vec![vec![NodeId(1), NodeId(3), NodeId(2)]]]);
+    }
+    #[test]
+    fn a_card_dropped_before_a_split_lands_ahead_of_the_fork() {
+        // S feeds a split, and card 7 arrives from the plugin list.
+        let original = vec![
+            vec![vec![NodeId(1)]],
+            vec![vec![NodeId(3)], vec![NodeId(5)]],
+            vec![vec![NodeId(7)]],
+        ];
+        let expected = vec![
+            vec![vec![NodeId(1)]],
+            vec![vec![NodeId(7)]],
+            vec![vec![NodeId(3)], vec![NodeId(5)]],
+        ];
+        // Aimed at either lane's leading card, the fork keeps its shape and
+        // the card stands before the whole stage.
+        for head in [NodeId(3), NodeId(5)] {
+            assert_eq!(
+                place(
+                    &original,
+                    NodeId(7),
+                    Target {
+                        card: head,
+                        side: Side::Left
+                    }
+                )
+                .unwrap(),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn left_of_a_lane_middles_or_a_single_lane_still_chains() {
+        // Deep inside a lane, left inserts into that lane's chain.
+        let original = vec![
+            vec![vec![NodeId(1), NodeId(2)], vec![NodeId(3)]],
+            vec![vec![NodeId(7)]],
+        ];
+        assert_eq!(
+            place(
+                &original,
+                NodeId(7),
+                Target {
+                    card: NodeId(2),
+                    side: Side::Left
+                }
+            )
+            .unwrap(),
+            vec![vec![vec![NodeId(1), NodeId(7), NodeId(2)], vec![NodeId(3)]]]
+        );
+        // Pulling one lane of a split and dropping it left of the other
+        // head empties the source lane first, so the stage is a plain
+        // chain by the time the drop resolves.
+        let split = vec![vec![vec![NodeId(3)], vec![NodeId(5)]]];
+        assert_eq!(
+            place(
+                &split,
+                NodeId(5),
+                Target {
+                    card: NodeId(3),
+                    side: Side::Left
+                }
+            )
+            .unwrap(),
+            vec![vec![vec![NodeId(5), NodeId(3)]]]
+        );
     }
     #[test]
     fn moving_between_stages_collapses_an_empty_source() {

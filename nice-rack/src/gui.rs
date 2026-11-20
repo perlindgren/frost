@@ -3295,6 +3295,29 @@ impl Process for RackUi {
                     .find(|slot| slot.id == target.card)
                     .unwrap();
                 let parallel = matches!(target.side, Side::Above | Side::Below);
+                // Mirrors `place`: a left drop on a lane's leading card
+                // lands ahead of the whole fork once the dragged card has
+                // left its source lane.
+                let before_split = target.side == Side::Left
+                    && crate::runtime::branches(&self.runtime.cards)
+                        .iter()
+                        .find(|stage| {
+                            stage
+                                .iter()
+                                .any(|lane| lane.iter().any(|card| card.id == target.card))
+                        })
+                        .is_some_and(|stage| {
+                            stage
+                                .iter()
+                                .any(|lane| lane.first().is_some_and(|card| card.id == target.card))
+                                && stage
+                                    .iter()
+                                    .filter(|lane| {
+                                        lane.iter().any(|card| Some(card.id) != self.drag)
+                                    })
+                                    .count()
+                                    > 1
+                        });
                 match target.side {
                     Side::Left | Side::Right => ctx.rectangle(
                         slot.x
@@ -3328,7 +3351,13 @@ impl Process for RackUi {
                         x,
                         y + 30.0,
                         &self.font,
-                        if parallel { "Parallel branch" } else { "Chain" },
+                        if before_split {
+                            "Ahead of the split"
+                        } else if parallel {
+                            "Parallel branch"
+                        } else {
+                            "Chain"
+                        },
                         15.0,
                         550.0,
                         rgb(103, 237, 175),
