@@ -2805,21 +2805,6 @@ impl Process for RackUi {
                 incoming,
             );
             if shared {
-                // The same collar stands at the split, so every fork reads
-                // as gated at both ends: an upright bar where one trunk
-                // divides, facing the merge's `+` where the lanes gather
-                // back. Like the merge, the collar cuts the crossing away.
-                ctx.circle(split, layout.flow, MIXER_RING, wire, 0.15);
-                ctx.circle(split, layout.flow, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
-                ctx.line(
-                    split,
-                    layout.flow - 4.0,
-                    split,
-                    layout.flow + 4.0,
-                    wire,
-                    2.0,
-                    0.22,
-                );
                 // The risers, branch by branch: each one drops from the
                 // flow line into its head card carrying the width that
                 // head takes, and climbs into the merge column carrying
@@ -2849,6 +2834,23 @@ impl Process for RackUi {
                         );
                     }
                 }
+                // The same collar stands at the split, so every fork reads
+                // as gated at both ends: an upright bar where one trunk
+                // divides, facing the merge's `+` where the lanes gather
+                // back. Like the merge it is painted last, over the risers
+                // that cross here — cut away from under them, the collar
+                // would just be a bead threaded onto its own riser.
+                ctx.circle(split, layout.flow, MIXER_RING, wire, 0.15);
+                ctx.circle(split, layout.flow, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
+                ctx.line(
+                    split,
+                    layout.flow - 4.0,
+                    split,
+                    layout.flow + 4.0,
+                    wire,
+                    2.0,
+                    0.22,
+                );
                 // A ring at the merge, in the wires' own colour: the trunk
                 // and the risers cross right here, so without a collar the
                 // join read as just another stroke on the wire. The disc
