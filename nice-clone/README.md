@@ -102,8 +102,8 @@ component/device assumptions, so agreement validates the implementation, not a
 particular hardware unit. This is not a SPICE macro-model comparison.
 
 ```sh
-python3 nice-clone/tests/reference/ac_reference.py
-python3 nice-clone/tests/reference/transient_reference.py
+python3 nice-common/tests/reference/clone-drive/ac_reference.py
+python3 nice-common/tests/reference/clone-drive/transient_reference.py
 ```
 
 Tests also check nonlinear equation residuals, gain-dependent distortion, treble
@@ -130,3 +130,7 @@ needed to establish and refine a match to a particular Behringer pedal.
   Desktop and Embedded Implementations (2020)](https://arxiv.org/abs/2009.02833):
   prior circuit-modeling work and modeling context. No third-party implementation
   or trained model is incorporated.
+
+The project-owned DSP implementation lives in `nice-common/src/clone_drive.rs`
+and is shared with Nice Dist's Nice Clone model. `nice-clone/src/dsp.rs` re-exports
+the existing DSP API; the separate plugin identity, settings and behavior remain.

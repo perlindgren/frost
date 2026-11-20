@@ -375,7 +375,7 @@ jobs:
       # no SIMD engine under it, so nothing in its graph refuses the default
       # baseline.
       - name: Clippy, zero warnings, the Clone
-        run: cargo clippy -p nice-clone --all-targets -- -D warnings
+        run: cargo clippy -p nice-clone -p nice-dist --all-targets -- -D warnings
 
       # Its standalone half beside theirs: the binary, the audio owner and
       # the settings file live behind `standalone`, and a step that never
@@ -384,7 +384,7 @@ jobs:
       # `asio-host` feature switches on, is a `cfg(windows)` dependency of
       # nice-common, invisible to this runner's graph.
       - name: Clippy, zero warnings, the standalone Clone
-        run: cargo clippy -p nice-clone --features standalone --all-targets -- -D warnings
+        run: cargo clippy -p nice-clone -p nice-dist --features standalone --all-targets -- -D warnings
 
       # The rack and its four crates, named for the reason this file has now
       # written out eight times: `nice-rack`,
@@ -616,8 +616,8 @@ jobs:
       - name: Tests, the Clone
         if: needs.plan.outputs.clone == 'true'
         run: |
-          cargo test --no-fail-fast -p nice-clone
-          cargo test --no-fail-fast -p nice-clone --features standalone
+          cargo test --no-fail-fast -p nice-clone -p nice-dist
+          cargo test --no-fail-fast -p nice-clone -p nice-dist --features standalone
 
       # The rack's suites. Nine tests stand aside, every one of them naming
       # `NICE_RACK_TEST_CLAP` — this repository's own freshly built nice-tuner
@@ -838,8 +838,8 @@ jobs:
       # once.
       - name: Clippy, zero warnings, the plugins that use the shared audio
         run: |
-          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
-          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-dist -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-dist -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
 
       # The rack and its four crates, on the machine whose audio they now use.
       # Same reason as every named step in this job — `members` without
@@ -921,7 +921,7 @@ jobs:
 
       - name: Tests, the Clone, standalone
         if: needs.plan.outputs.clone == 'true'
-        run: cargo test --no-fail-fast -p nice-clone --features standalone
+        run: cargo test --no-fail-fast -p nice-clone -p nice-dist --features standalone
 
       # The rack, on the platform its binary ships on. Twenty-three tests run and
       # nine stand aside: each of the nine names `NICE_RACK_TEST_CLAP`, a native

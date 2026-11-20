@@ -94,3 +94,5 @@ nice-ecomplex-settings.ron.*
 # Rack-local audio device configuration.
 nice-rack-settings.ron
 nice-rack-settings.ron.*
+
+/nice-dist-settings.ron

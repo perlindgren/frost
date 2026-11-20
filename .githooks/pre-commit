@@ -194,7 +194,7 @@ cargo clippy -p nice-ecomplex --all-targets -- -D warnings || {
 # under these component models, which is why the line ran clean on this machine
 # at the default x86-64 baseline before it was written.
 printf 'pre-commit: clippy -D warnings (the Clone)...\n'
-cargo clippy -p nice-clone --all-targets -- -D warnings || {
+cargo clippy -p nice-clone -p nice-dist --all-targets -- -D warnings || {
     printf 'pre-commit: clippy failed in nice-clone - commit aborted.\n' >&2
     exit 1
 }
