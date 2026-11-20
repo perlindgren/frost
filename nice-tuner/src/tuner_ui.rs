@@ -332,7 +332,7 @@ impl TunerUi {
             Dropdown::Output => channels(outputs),
             Dropdown::InputCh => {
                 if inputs > 0 {
-                    format!("{} (analysis)", self.shared.input_channel.load())
+                    "1 (mono)".into()
                 } else {
                     "Unavailable".into()
                 }
@@ -2818,10 +2818,9 @@ impl TunerUi {
                 (
                     39.0,
                     format!(
-                        "{} ch · L {} · R {} · editor {}",
-                        shared.process_channels.load(),
-                        level(shared.channel_peaks[0].load()),
-                        level(shared.channel_peaks[1].load()),
+                        "in {} · out {} · editor {}",
+                        level(shared.input_peak.load()),
+                        level(shared.output_peak.load()),
                         if shared.is_open() { "on" } else { "off" }
                     ),
                 ),

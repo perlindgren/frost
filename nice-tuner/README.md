@@ -5,6 +5,11 @@ Nice Tuner is an example project whose primary purpose is to showcase
 A working chromatic tuner for stringed instruments provides the application:
 pitch detection, a tuning display, parameters and interactive settings.
 
+The box is mono — one signal through one detector — and so is this model:
+the only audio layout the plugin offers takes one mono input and meters one
+mono output. Folding a stereo signal down, or widening the answer back out,
+is the host's work and the rack's, not the tuner's.
+
 Its second purpose is to demonstrate **safe integration with external crates
 through thin, project-owned wrappers**, keeping third-party source unchanged
 instead of maintaining a large vendored fork.
@@ -164,7 +169,7 @@ For a synthetic input instead of microphone samples:
 cargo run -p nice-tuner --release --features standalone -- --test_freq 440.0
 ```
 
-`--test_freq <Hz>` (also `--test_freq=<Hz>`) replaces every input channel with
+`--test_freq <Hz>` (also `--test_freq=<Hz>`) replaces the box's one input with
 an amplitude-1.0 sine before normal plugin processing. Its phase is continuous
 across callbacks. It uses the configured input stream's sample rate and timing,
 so select/apply an audio backend as usual. The value must be finite, positive
@@ -393,7 +398,7 @@ Windows); the bundling step clears `RUSTFLAGS`, explained in the script and in
 - **No vsync**: the GUI surface runs `PresentMode::AutoNoVsync`; plugins must
   never block the host main thread.
 - **Real-time safety**: the audio thread does no analysis at all — it
-  downmixs on the stack and pushes into a preallocated lock-free
+  copies the one mono lane on the stack into a preallocated lock-free
   [rtrb](https://crates.io/crates/rtrb) ring; pitch detection runs on the UI
   thread (frost's frame pump = nice-plug's main thread), gated on the editor
   being open. Gates: `tests/rt_handoff_no_alloc.rs` (zero-alloc, lossless
@@ -463,7 +468,9 @@ rather than once per row. Opening the stream asks that one driver again, through
   unconfigured. Known position is preserved too; native position tracking is
   Windows-only with the optional placement wrapper. Reset leaves geometry alone.
 - **Applied directly**: CoreAudio stream changes use a background worker and
-  preserve the window. Mono input devices select the mono plugin layout.
+  preserve the window. The plugin layout is mono regardless of the device:
+  the input's channel count only says how many captures to open and which
+  one becomes the box's one input.
   Incomplete saved settings open the settings page with audio stopped.
 - **Precedence**: explicit settings > queried device defaults. The standalone
   application ignores audio flags on its command line. Monitoring adds 5 ms of
