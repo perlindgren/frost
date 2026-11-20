@@ -4,7 +4,7 @@ use crate::{
     layout::{Side, Target},
     routing::NodeId,
     routing::audio::{MASTER_WIRE_KEY, card_wire_key},
-    runtime::{Card, Runtime},
+    runtime::{Card, Junction, Runtime},
 };
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
 use nice_clap_host::{Descriptor, Entry};
@@ -177,6 +177,16 @@ struct RackUi {
     parameter_scroll: f32,
     press_origin: Option<[f32; 2]>,
     moved: bool,
+    /// A conversion circle being slid along its wire: `(node, where the
+    /// pointer grabbed it along the wire, the offset it had when the grab
+    /// started)`. The conversion is the engine's, not the canvas's, so this
+    /// moves nothing but the mark; it is kept for the stretch of wire the
+    /// circle was seated on and dropped the moment that stretch goes away.
+    mark_drag: Option<(NodeId, f32, f32)>,
+    /// How far each conversion circle has been nudged along its own wire, by
+    /// the node the compiled graph gave it. Purely a viewing preference: the
+    /// graph is built without it.
+    mark_offsets: std::collections::BTreeMap<NodeId, f32>,
 }
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color {
@@ -231,6 +241,27 @@ const BREAK_GAP: f32 = 4.0;
 /// overlap in miniature. Stepping back hands the column to the wire that ends
 /// there, so the operator can aim at it and never open two circuits at once.
 const RISER_KEEP: f32 = 3.0;
+/// Radius of the circle the canvas draws for a width conversion, and of the
+/// mixer's `+` ring it shares the look with. Seven is a hair under the mixer's
+/// own ring because the gutter between two facing cards is the tightest seat a
+/// circle ever gets: 38 px between the card edges, of which the two stub boxes
+/// and their air take most of what a wire can cross.
+const MARK_RADIUS: f32 = 7.0;
+/// Air left between a circle and anything its click must not steal.
+const MARK_AIR: f32 = 1.0;
+/// How far from a circle's centre a click still counts as aimed at it. Held to
+/// the ring plus a pixel of air on purpose: in the gutter between two facing
+/// cards the stub boxes' centres are 13 px from the middle of the window and
+/// their facing faces 9 px, so a hit box of `MARK_RADIUS + 2.0` or more would
+/// cover both boxes and leave the operator no way to break the wire the circle
+/// sits on.
+const MARK_HIT: f32 = MARK_RADIUS + MARK_AIR;
+/// What a circle is drawn in when the pointer is on it — the same lift the
+/// cards and stubs get, from the same family of greys.
+const MARK_HOVER: Color = rgb(163, 169, 182);
+/// Radius of the mixer's ring, which the canvas draws wherever several
+/// branches are joined into one wire.
+const MIXER_RING: f32 = 8.5;
 fn wire_box_x(x: f32, side: bool) -> f32 {
     // Stub box centres for one card: `STUB_GAP` out from each vertical card
     // edge, on the input wire for `side == false` and the output wire
@@ -740,6 +771,289 @@ fn groups(cards: &[Card]) -> Vec<Vec<Vec<NodeId>>> {
         })
         .collect()
 }
+/// The two columns one stage's risers stand in, worked out from the same
+/// helpers that draw the wires so a conversion circle is placed by the same
+/// arithmetic the wiring uses and never by a copy of it.
+#[derive(Clone, Copy)]
+struct StageColumn {
+    /// The column its branches drop out of, left of the stage.
+    split: f32,
+    /// The column they gather back into, right of the stage — which is also
+    /// where a join ring stands whenever the stage runs branches in parallel.
+    merge: f32,
+    /// Where the wire arriving at this stage begins: the previous stage's
+    /// `merge`, or the face of the rack's own `IN` card for the first stage.
+    feed: f32,
+}
+
+fn stage_columns(stages: &[Vec<NodeId>], slots: &[Slot], input_x: f32) -> Vec<StageColumn> {
+    let mut columns: Vec<StageColumn> = Vec::with_capacity(stages.len());
+    for stage in stages {
+        let mut edges: Option<(f32, f32)> = None;
+        for id in stage {
+            let Some(slot) = slots.iter().find(|slot| slot.id == *id) else {
+                continue;
+            };
+            edges = Some(match edges {
+                Some((left, right)) => (left.min(slot.x), right.max(slot.x)),
+                None => (slot.x, slot.x),
+            });
+        }
+        // Read before the push: a stage is fed from the column the stage
+        // before it hands off in, and the first stage from the rack's `IN`.
+        let feed = columns
+            .last()
+            .map_or(wire_box_x(input_x, true), |past| past.merge);
+        // A stage with nothing to place keeps its index, because every later
+        // stage is numbered against it, and borrows the rack's own column.
+        let (left, right) = edges.unwrap_or((input_x, input_x));
+        columns.push(StageColumn {
+            split: junction_x(left, false),
+            merge: junction_x(right, true),
+            feed,
+        });
+    }
+    columns
+}
+
+/// A stretch of drawn wire a conversion circle may be seated on: its two
+/// ends in either order, the coordinate across the wire it sits on, whether
+/// that wire runs up and down rather than across, and which way along it the
+/// signal travels.
+#[derive(Clone, Copy)]
+struct Seat {
+    from: f32,
+    to: f32,
+    cross: f32,
+    vertical: bool,
+    forward: f32,
+}
+
+/// One width conversion the engine actually wired, placed where the canvas
+/// can draw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WidthMark {
+    /// The conversion node in the graph the rack just compiled. The id counts
+    /// down from `u64::MAX` and belongs to that graph alone, so it is good
+    /// for remembering a nudge and for nothing else.
+    id: NodeId,
+    /// Channels on the side the signal arrives on, and on the side it leaves:
+    /// how many pins the circle carries at each end.
+    inputs: usize,
+    outputs: usize,
+    /// The coordinate across the wire, which no drag ever changes.
+    cross: f32,
+    /// The ends of the stretch the circle may slide along, already shrunk so
+    /// that neither the ring nor its click area reaches off the wire.
+    lo: f32,
+    hi: f32,
+    /// Which way along the wire the signal runs, `1.0` or `-1.0`, so the pins
+    /// point with the signal up a riser and down one alike.
+    forward: f32,
+    /// Whether the wire it rides runs up and down rather than across.
+    vertical: bool,
+}
+
+impl WidthMark {
+    /// Where the circle is drawn: the middle of its stretch of wire, shifted
+    /// along by whatever the operator has dragged it, and never off it. The
+    /// conversion itself does not move — only where its mark is parked.
+    fn centre(&self, offsets: &std::collections::BTreeMap<NodeId, f32>) -> [f32; 2] {
+        let nudge = offsets.get(&self.id).copied().unwrap_or_default();
+        let shift = ((self.lo + self.hi) * 0.5 + nudge).clamp(self.lo, self.hi);
+        if self.vertical {
+            [self.cross, shift]
+        } else {
+            [shift, self.cross]
+        }
+    }
+
+    /// The coordinate a drag reads: the one that runs along the wire,
+    /// whichever way that wire happens to run. The circle follows the pointer
+    /// in this coordinate only; the coordinate across the wire belongs to the
+    /// wire itself.
+    fn along(&self, at: [f32; 2]) -> f32 {
+        if self.vertical { at[1] } else { at[0] }
+    }
+}
+
+/// Where each conversion the engine wired can be drawn, in the layout
+/// `frame` describes.
+///
+/// The conversions come from `Runtime::junctions`, which reads them back out
+/// of the graph `chain` compiled, so a circle here is never drawn for a wire
+/// the engine did not make. What is left to work out is only where it can
+/// physically sit: a circle is a disc about `2 * MARK_RADIUS` across, and the
+/// gap between two facing stub boxes is barely wider than that, so every
+/// candidate seat is shrunk by `MARK_HIT` at both ends and the first one with
+/// room left wins. That single rule is what leaves a stretch too short for a
+/// circle of its own — see [`MARK_HIT`].
+fn width_marks(found: &[Junction], stages: &[Vec<NodeId>], frame: &Geometry) -> Vec<WidthMark> {
+    let columns = stage_columns(stages, &frame.slots, frame.input.x);
+    let slot_of = |id: NodeId| frame.slots.iter().find(|slot| slot.id == id);
+    let stage_of = |id: NodeId| stages.iter().position(|stage| stage.contains(&id));
+    // Risers are drawn clamped to the visible height of the rack, so a circle
+    // riding one is clamped exactly the same way.
+    let row = |y: f32| y.max(frame.bottom).min(frame.top);
+    // Where a card's wire becomes visible on its left, and on its right: the
+    // facing edge of its own stub box.
+    let left_face = |x: f32| wire_box_x(x, false) - STUB_HALF;
+    let right_face = |x: f32| wire_box_x(x, true) + STUB_HALF;
+    // The `IN` card carries no stub box, and is treated as though it did, so
+    // that a circle between it and the first card sits exactly where one
+    // between two cards sits.
+    let in_face = || right_face(frame.input.x);
+    // The `OUT` card does carry one, and no circle may cover it: it is where
+    // the master meter lives.
+    let out_face = left_face(frame.output.x);
+    // Where the wire arriving at a stage starts: after the join ring when the
+    // stage before it ran branches in parallel — the ring is not a card and
+    // has no slot, which is what the check for a multi-branch stage stands in
+    // for — or else at the face of the stub box it was fed from.
+    let arrives = |index: usize, from: Option<NodeId>| -> f32 {
+        let feed = columns
+            .get(index)
+            .map_or(wire_box_x(frame.input.x, true), |column| column.feed);
+        if index > 0 && stages[index - 1].len() > 1 {
+            return feed + MIXER_RING;
+        }
+        match from {
+            None => in_face(),
+            Some(id) => slot_of(id).map(|src| right_face(src.x)).unwrap_or(feed),
+        }
+    };
+
+    // Where the master wire begins: the merge column of the last stage, or
+    // the face of the `IN` card's own stub box when the rack is empty. A
+    // parallel last stage hands off from the edge of its join ring, which is
+    // no card and so has no stub box to measure from.
+    let master_from = || -> f32 {
+        let mut start = columns
+            .last()
+            .map_or(wire_box_x(frame.input.x, true), |column| column.merge);
+        if stages.last().is_some_and(|stage| stage.len() > 1) {
+            start += MIXER_RING;
+        }
+        start
+    };
+
+    let seats = |junction: &Junction| -> Vec<Seat> {
+        let mut seats = Vec::new();
+        let Some(to) = junction.to else {
+            // The conversion hands to the rack's `OUT` card, so it rides the
+            // master wire: from wherever that wire starts as far as the face
+            // of the card's own stub box.
+            seats.push(Seat {
+                from: master_from(),
+                to: out_face,
+                cross: frame.flow,
+                vertical: false,
+                forward: 1.0,
+            });
+            return seats;
+        };
+        let Some(index) = stage_of(to) else {
+            // Nothing in the layout answers to it, so the wire lands on the
+            // join ring: this is the conversion lifting one branch to the
+            // width the others arrive at before the ring gathers them.
+            let Some(from) = junction.from else {
+                return seats;
+            };
+            let (Some(index), Some(slot)) = (stage_of(from), slot_of(from)) else {
+                return seats;
+            };
+            let side = (row(slot.y) - frame.flow).signum();
+            seats.push(Seat {
+                from: row(slot.y),
+                to: frame.flow + side * (MIXER_RING + MARK_AIR),
+                cross: columns[index].merge,
+                vertical: true,
+                forward: -side,
+            });
+            // The middle row of a three-deep stage lies exactly on the flow
+            // line, so its riser has no length at all. The card's own output
+            // run does reach the ring, so the circle rides that instead.
+            seats.push(Seat {
+                from: right_face(slot.x),
+                to: columns[index].merge - (MIXER_RING + MARK_AIR),
+                cross: slot.y,
+                vertical: false,
+                forward: 1.0,
+            });
+            return seats;
+        };
+        let Some(slot) = slot_of(to) else {
+            return seats;
+        };
+        let shared = stages[index].len() > 1;
+        // On the line the whole rack flows along, rather than one of a
+        // parallel stage's other rows. This is a comparison and not simply
+        // `!shared`, because the middle row of a three-deep stage sits on the
+        // line exactly, and a stage on its own can be scrolled off it — while
+        // the trunk it hangs from stays on the line either way.
+        let on_line = (slot.y - frame.flow).abs() < 1.0;
+        if shared && !on_line {
+            // Fed by a riser out of the trunk: the conversion belongs on it,
+            // in the column the stage drops out of, which no other wire or
+            // box occupies at this height.
+            seats.push(Seat {
+                from: frame.flow,
+                to: row(slot.y),
+                cross: columns[index].split,
+                vertical: true,
+                forward: (row(slot.y) - frame.flow).signum(),
+            });
+        }
+        seats.push(Seat {
+            from: if on_line {
+                arrives(index, junction.from)
+            } else {
+                junction_x(slot.x, false)
+            },
+            to: if shared {
+                columns[index].split.min(left_face(slot.x))
+            } else {
+                left_face(slot.x)
+            },
+            cross: slot.y,
+            vertical: false,
+            forward: 1.0,
+        });
+        seats
+    };
+
+    let mut marks = Vec::with_capacity(found.len());
+    for junction in found {
+        for seat in seats(junction) {
+            // One rule for every seat: the circle needs its ring and its
+            // click area inside the stretch it was offered, and a stretch
+            // with nothing left after that is a stretch it cannot ride. A
+            // circle is never floated off drawn wire.
+            let (first, last) = if seat.from <= seat.to {
+                (seat.from, seat.to)
+            } else {
+                (seat.to, seat.from)
+            };
+            let (lo, hi) = (first + MARK_HIT, last - MARK_HIT);
+            if hi < lo {
+                continue;
+            }
+            marks.push(WidthMark {
+                id: junction.id,
+                inputs: junction.inputs.count(),
+                outputs: junction.outputs.count(),
+                cross: seat.cross,
+                lo,
+                hi,
+                forward: seat.forward,
+                vertical: seat.vertical,
+            });
+            break;
+        }
+    }
+    marks
+}
+
 /// A meter the user can click, in the order the signal passes them.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum MeterPos {
@@ -1016,6 +1330,8 @@ pub fn run(
         parameter_scroll: 0.0,
         press_origin: None,
         moved: false,
+        mark_drag: None,
+        mark_offsets: Default::default(),
     };
     let scene = Scene::new(SceneNode {
         shape: Some(Shape::Background {
@@ -2032,6 +2348,68 @@ impl Process for RackUi {
         if let Some(id) = pause_target {
             self.toggle_pause(id);
         }
+        // The width conversions the engine wired for the cards as they stand,
+        // seated on the wires that carry them. Worked out before any wire is
+        // drawn or broken: a circle stands on a wire, so a right-click has to
+        // be able to choose between the two, and the same frame that finds
+        // the break has to know whether a circle is in the way.
+        let stages = groups
+            .iter()
+            .map(|stage| stage.iter().flatten().copied().collect::<Vec<NodeId>>())
+            .collect::<Vec<_>>();
+        let marks = match self.runtime.junctions() {
+            Some(found) => width_marks(&found, &stages, &layout),
+            None => Vec::new(),
+        };
+        // Where every circle stands this frame, read once: the break guards,
+        // the pickup and a held drag all want the same point, and the point is
+        // needed before the offsets below are allowed to move.
+        let stood = marks
+            .iter()
+            .map(|mark| (mark, mark.centre(&self.mark_offsets)))
+            .collect::<Vec<(&WidthMark, [f32; 2])>>();
+        let on_mark = stood
+            .iter()
+            .any(|(_, at)| hit(mouse, at[0], at[1], MARK_HIT, MARK_HIT));
+        // A circle slides along the wire it stands on and nowhere else: the
+        // conversion itself stays exactly where the engine wired it, and the
+        // mark only ever gets moved out of the way of something it happens to
+        // cover. The nudge is remembered against the node the compiled graph
+        // named the conversion by, and dropped as soon as that graph stops
+        // describing one, so nothing is carried over from a rack that no
+        // longer needs it. A circle whose wire has grown too short to hold it
+        // is not drawn at all, which is what drops a held mark the moment its
+        // wire goes.
+        self.mark_drag = self
+            .mark_drag
+            .filter(|(id, ..)| marks.iter().any(|mark| mark.id == *id));
+        if let (Some(point), true) = (mouse, down) {
+            if let Some((id, grab, base)) = self.mark_drag {
+                if let Some((mark, _)) = stood.iter().find(|(mark, _)| mark.id == id) {
+                    let offset = base + (mark.along(point) - grab);
+                    self.mark_offsets.insert(id, offset);
+                }
+            } else if clicked
+                && self.drag.is_none()
+                && self.choosing.is_none()
+                && let Some((mark, _)) = stood
+                    .iter()
+                    .find(|(_, at)| hit(mouse, at[0], at[1], MARK_HIT, MARK_HIT))
+            {
+                self.mark_drag = Some((
+                    mark.id,
+                    mark.along(point),
+                    self.mark_offsets.get(&mark.id).copied().unwrap_or_default(),
+                ));
+            }
+        } else {
+            self.mark_drag = None;
+        }
+        self.mark_offsets
+            .retain(|id, _| marks.iter().any(|mark| mark.id == *id));
+        // Hit-testing above is one frame behind on purpose: the frame that
+        // picks a circle up reports the position it was drawn at, which is the
+        // only position the operator had seen when they pressed.
         // The rack's own `OUT` card: it stands one column right of every
         // card in the rack, and its input stub carries the master meter.
         // Worked out before any of the wiring, and before the corner
@@ -2265,8 +2643,8 @@ impl Process for RackUi {
                 // away, and the two bars drawn dead-centre on the junction
                 // make the `+` — set as type it rides the font's math axis
                 // and sat low inside the ring.
-                ctx.circle(merge, layout.flow, 8.5, wire, 0.15);
-                ctx.circle(merge, layout.flow, 6.3, rgb(23, 18, 38), 0.16);
+                ctx.circle(merge, layout.flow, MIXER_RING, wire, 0.15);
+                ctx.circle(merge, layout.flow, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
                 ctx.line(
                     merge - 4.0,
                     layout.flow,
@@ -2346,6 +2724,11 @@ impl Process for RackUi {
                         if broke
                             && bypass_target.is_none()
                             && pause_target.is_none()
+                            // A circle standing on the wire is not a wire to
+                            // break: it is the mark of a conversion, and it
+                            // never sits over a stub box, so nothing else
+                            // loses its click to it.
+                            && !on_mark
                             && !self.runtime.bypassed(slot.id.0)
                             && wire_hit(mouse, from, to, slot.y, bx)
                         {
@@ -2454,6 +2837,11 @@ impl Process for RackUi {
         if broke
             && bypass_target.is_none()
             && pause_target.is_none()
+            // As with a card's own wires: a circle parked on the master wire
+            // is a mark, not a link to break. Only the card's face and the
+            // card's stub can mute the output from here, and a circle is kept
+            // clear of both.
+            && !on_mark
             && ((out_visible && out_hover) || wire_hit(mouse, mfrom, mto, layout.flow, out_stub))
         {
             self.toggle_wire(MASTER_WIRE_KEY, false);
@@ -2473,6 +2861,37 @@ impl Process for RackUi {
             // whose tail is any other width, map aside.
             route.output.count().clamp(1, 2),
         );
+        // The conversions themselves, drawn last among the wires so a circle
+        // always reads as the thing standing on a wire and never as a wire
+        // passing under it. The ring is the collar the mixer's join already
+        // uses for the same reason — a crossing is hard to see against the
+        // strokes it cuts — and the pins are the proof of what it does: as
+        // many strokes as the wire carries, on the side it carries them on,
+        // pointing with the signal. The count is read off the compiled graph,
+        // so the number of pins can only ever be the number the engine wired.
+        for mark in &marks {
+            let [x, y] = mark.centre(&self.mark_offsets);
+            let color = if hit(mouse, x, y, MARK_HIT, MARK_HIT) {
+                MARK_HOVER
+            } else {
+                wire
+            };
+            ctx.circle(x, y, MARK_RADIUS, color, 0.15);
+            ctx.circle(x, y, MARK_RADIUS - 2.0, rgb(23, 18, 38), 0.16);
+            // The pins start just inside the ring and run past it, onto the
+            // wire they count, so a pin and the lane it belongs to meet.
+            for (pins, ahead) in [(mark.inputs, -mark.forward), (mark.outputs, mark.forward)] {
+                let (root, tip) = (4.0 * ahead, (MARK_RADIUS + 2.0) * ahead);
+                for lane in 0..pins.clamp(1, 2) {
+                    let offset = lane_offset(lane, pins);
+                    if mark.vertical {
+                        ctx.line(x + offset, y + root, x + offset, y + tip, color, 1.8, 0.22);
+                    } else {
+                        ctx.line(x + root, y + offset, x + tip, y + offset, color, 1.8, 0.22);
+                    }
+                }
+            }
+        }
         // The `OUT` card's face is also its way into the device page: a
         // left-click opens the playback half of it, exactly as the `IN`
         // card opens the capture half. The two corners of the face keep
@@ -4187,6 +4606,361 @@ mod tests {
         }
         assert_drawn_alike(&[&[2]], &[&[1], &[1]]);
         assert_drawn_alike(&[&[3]], &[&[1], &[1], &[1]]);
+    }
+
+    use crate::routing::Channels;
+    use std::collections::BTreeMap;
+    /// The layout the draw pass gives a rack in a 496 × 580 canvas: the rack's
+    /// own `IN` card where [`in_x`] says it stands, the first stage one column
+    /// right of it, and the line signals flow at 30 below the middle.
+    fn frame(groups: &[Vec<Vec<NodeId>>]) -> Geometry {
+        geometry(groups, 496.0, 580.0, 0.0, 0.0)
+    }
+    /// The same groups flattened the way the draw pass flattens them: one
+    /// list of cards per stage, in the order the trunk walks them.
+    fn flatten(groups: &[Vec<Vec<NodeId>>]) -> Vec<Vec<NodeId>> {
+        groups
+            .iter()
+            .map(|stage| stage.iter().flatten().copied().collect::<Vec<_>>())
+            .collect()
+    }
+    /// A layout and the stages it was laid out from, which is everything
+    /// [`width_marks`] asks for.
+    fn placed(groups: &[Vec<Vec<NodeId>>]) -> (Geometry, Vec<Vec<NodeId>>) {
+        (frame(groups), flatten(groups))
+    }
+    /// One width conversion, as the engine wired it. A `to` of no card is the
+    /// hand-off to the rack's `OUT` card; a `to` of an id no stage holds is a
+    /// wire landing on a join ring, which is not a card and so has no place in
+    /// the layout.
+    fn conversion(
+        id: u64,
+        inputs: Channels,
+        outputs: Channels,
+        from: Option<u64>,
+        to: Option<u64>,
+    ) -> Junction {
+        Junction {
+            id: NodeId(id),
+            inputs,
+            outputs,
+            from: from.map(NodeId),
+            to: to.map(NodeId),
+        }
+    }
+    /// A circle is only drawn where it was told it fits: its middle inside
+    /// the stretch of wire its seat was offered, and the stretch not empty.
+    fn fits_on_its_wire(mark: &WidthMark) -> bool {
+        let [x, y] = mark.centre(&BTreeMap::new());
+        let along = if mark.vertical { y } else { x };
+        mark.lo <= mark.hi && along >= mark.lo && along <= mark.hi
+    }
+    #[test]
+    fn a_split_at_the_head_of_the_chain_is_seated_on_the_wire_after_the_input_card() {
+        // A mono device feeding a stereo card is mapped at the head of the
+        // chain, and the only wire that conversion has to stand on is the
+        // short one between the rack's own `IN` card and the card. The `IN`
+        // card carries no stub box and is treated as though it did, so its
+        // wire ends 103 px from the card's centre — exactly where the card's
+        // own box faces it back. 18 px of drawn wire, 2 px more than a circle
+        // and its click area need, which is why it sits dead centre on it.
+        let (frame, stages) = placed(&[vec![vec![NodeId(1)]]]);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Mono,
+                Channels::Stereo,
+                None,
+                Some(1),
+            )],
+            &stages,
+            &frame,
+        );
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let mark = &marks[0];
+        assert_eq!((mark.inputs, mark.outputs), (1, 2));
+        assert!(!mark.vertical, "this wire runs across the canvas");
+        assert_eq!(mark.forward, 1.0, "the signal runs into the card");
+        assert_eq!(mark.cross, frame.flow, "the card stands on the line");
+        assert_eq!(mark.centre(&BTreeMap::new()), [137.0, 30.0]);
+        assert!(fits_on_its_wire(mark));
+    }
+    #[test]
+    fn a_split_before_a_card_hanging_off_the_flow_line_is_seated_on_its_riser() {
+        // A branch that hangs off the line signals flow at is fed by a riser
+        // out of the trunk, and the conversion belongs on the riser: the
+        // column it drops out of carries no card at this height, so nothing
+        // crowds it. Its pins point along the riser, the way the signal does.
+        let (frame, stages) = placed(&[
+            vec![vec![NodeId(1)]],
+            vec![vec![NodeId(3)], vec![NodeId(5)]],
+        ]);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Mono,
+                Channels::Stereo,
+                Some(1),
+                Some(5),
+            )],
+            &stages,
+            &frame,
+        );
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let mark = &marks[0];
+        assert!(mark.vertical);
+        assert_eq!(mark.cross, card_x(1) - 105.0, "the column it drops out of");
+        assert_eq!(
+            mark.forward, -1.0,
+            "this branch hangs below the line, so the signal runs down it"
+        );
+        // Down the riser from the line at 30 to the card's row at −40, shrunk
+        // by the click area at both ends: a seat of −32 to 22, on −5.
+        assert_eq!(mark.centre(&BTreeMap::new()), [368.0, -5.0]);
+        assert_eq!(
+            mark.along([7.0, 99.0]),
+            99.0,
+            "a drag reads the coordinate running along the wire"
+        );
+        assert!(fits_on_its_wire(mark));
+    }
+    #[test]
+    fn a_branch_lifted_into_the_join_ring_is_seated_on_its_riser() {
+        // Before the ring gathers the branches, one that arrives narrower than
+        // the others is lifted to their width on a riser of its own, in the
+        // column the ring stands in. The signal travels that riser back down
+        // to the ring, whichever side of the line the branch hangs on.
+        let (frame, stages) = placed(&[
+            vec![vec![NodeId(1)]],
+            vec![vec![NodeId(3)], vec![NodeId(5)]],
+        ]);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Mono,
+                Channels::Stereo,
+                Some(3),
+                Some(4096),
+            )],
+            &stages,
+            &frame,
+        );
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let mark = &marks[0];
+        assert!(mark.vertical);
+        assert_eq!(
+            mark.cross,
+            card_x(1) + 105.0,
+            "the column the ring stands in"
+        );
+        assert_eq!(mark.forward, -1.0, "the signal runs back down to the ring");
+        // Up the riser from the card's row at 100 to the edge of the ring just
+        // off the line, at 30 + 8.5 + 1: a seat of 47.5 to 92.
+        assert_eq!(mark.centre(&BTreeMap::new()), [578.0, 69.75]);
+        assert!(fits_on_its_wire(mark));
+    }
+    #[test]
+    fn a_join_onto_the_master_wire_beside_the_join_ring_gets_no_seat_at_all() {
+        // The ring hands the joined trunk to the `OUT` card, and there is
+        // barely any wire between them: one column step of 224, less the 105
+        // to the ring's column, less 8.5 of ring, less the 103 to the face of
+        // the card's stub box — 7.5. No circle fits, none is floated off drawn
+        // wire, and the ring above it already says the same thing.
+        let (frame, stages) = placed(&[vec![vec![NodeId(1)], vec![NodeId(3)]]]);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Stereo,
+                Channels::Mono,
+                Some(3),
+                None,
+            )],
+            &stages,
+            &frame,
+        );
+        assert!(marks.is_empty(), "{marks:?}");
+    }
+    #[test]
+    fn a_join_onto_the_master_wire_gets_the_gutter_before_the_output_card() {
+        // The same join after a stage running no branches has a whole gutter
+        // to itself: 224, less the 105 to the merge column, less the 103 to
+        // the face of the card's stub box, is 16 — a circle fits exactly, and
+        // has nowhere to be dragged to.
+        let (frame, stages) = placed(&[vec![vec![NodeId(1)]]]);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Stereo,
+                Channels::Mono,
+                Some(1),
+                None,
+            )],
+            &stages,
+            &frame,
+        );
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let mark = &marks[0];
+        assert_eq!((mark.inputs, mark.outputs), (2, 1));
+        assert_eq!(mark.lo, mark.hi, "16 of wire leaves no slack");
+        assert_eq!(mark.centre(&BTreeMap::new()), [card_x(0) + 113.0, 30.0]);
+        assert!(fits_on_its_wire(mark));
+    }
+    #[test]
+    fn an_empty_rack_still_shows_the_box_it_needs_to_play_back() {
+        // Mono in, stereo out, nothing in between: the engine still maps one
+        // channel to two, and the circle stands in the open wire the two
+        // endpoint cards share — the only wire there is to stand on.
+        let (frame, stages) = placed(&[]);
+        let marks = width_marks(
+            &[conversion(9, Channels::Mono, Channels::Stereo, None, None)],
+            &stages,
+            &frame,
+        );
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let mark = &marks[0];
+        assert_eq!((mark.inputs, mark.outputs), (1, 2));
+        assert_eq!(mark.centre(&BTreeMap::new()), [in_x() + 110.0, 30.0]);
+        assert!(fits_on_its_wire(mark));
+    }
+    #[test]
+    fn a_branch_already_on_the_flow_line_lets_the_join_ring_speak_for_it() {
+        // The middle branch of a three-deep stage lies exactly on the line
+        // signals flow at, so the riser that would lift it to the ring has no
+        // length at all — and the 2.5 of wire its output run does have is
+        // drawn under the ring. No seat, so no circle.
+        let groups = [
+            vec![vec![NodeId(1)]],
+            vec![vec![NodeId(3)], vec![NodeId(4)], vec![NodeId(5)]],
+        ];
+        let frame = geometry(&groups, 496.0, 700.0, 0.0, 0.0);
+        let stages = flatten(&groups);
+        assert_eq!(
+            stages[1][1],
+            NodeId(4),
+            "the middle row is the one on the line"
+        );
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Mono,
+                Channels::Stereo,
+                Some(4),
+                Some(4096),
+            )],
+            &stages,
+            &frame,
+        );
+        assert!(marks.is_empty(), "{marks:?}");
+    }
+    #[test]
+    fn three_parallel_branches_are_each_seated_where_their_own_wire_runs() {
+        // Three mono cards in parallel on a mono device: the engine splits the
+        // trunk for each branch and lifts each branch again before the ring.
+        // The two outer branches hang off the line and ride their risers, on
+        // the split side and the merge side of the stage; the middle one is on
+        // the line, so its split is seated in the gutter the trunk drops out
+        // of, and its lift belongs to the ring.
+        let groups = [vec![vec![NodeId(1)], vec![NodeId(2)], vec![NodeId(3)]]];
+        let frame = geometry(&groups, 496.0, 700.0, 0.0, 0.0);
+        let stages = flatten(&groups);
+        let marks = width_marks(
+            &[
+                conversion(11, Channels::Mono, Channels::Stereo, None, Some(1)),
+                conversion(12, Channels::Mono, Channels::Stereo, None, Some(2)),
+                conversion(13, Channels::Mono, Channels::Stereo, None, Some(3)),
+                conversion(14, Channels::Mono, Channels::Stereo, Some(1), Some(4096)),
+                conversion(15, Channels::Mono, Channels::Stereo, Some(2), Some(4096)),
+                conversion(16, Channels::Mono, Channels::Stereo, Some(3), Some(4096)),
+            ],
+            &stages,
+            &frame,
+        );
+        for mark in &marks {
+            assert!(fits_on_its_wire(mark), "{mark:?}");
+        }
+        // Five, because the branch on the line has no riser of its own.
+        assert_eq!(marks.len(), 5, "{marks:?}");
+        assert!(marks.iter().all(|mark| mark.id != NodeId(15)), "{marks:?}");
+        let seated = |id: u64| {
+            marks
+                .iter()
+                .find(|mark| mark.id == NodeId(id))
+                .unwrap_or_else(|| panic!("{id}: {marks:?}"))
+        };
+        let split = card_x(0) - 105.0;
+        let merge = card_x(0) + 105.0;
+        for (id, forward) in [(11, 1.0), (13, -1.0)] {
+            let mark = seated(id);
+            assert!(mark.vertical, "{id} rides a riser");
+            assert_eq!(mark.cross, split, "{id} rides the stage's split column");
+            assert_eq!(mark.forward, forward, "{id} points with the signal");
+        }
+        for (id, forward) in [(14, -1.0), (16, 1.0)] {
+            let mark = seated(id);
+            assert!(mark.vertical, "{id} rides a riser");
+            assert_eq!(mark.cross, merge, "{id} rides the ring's own column");
+            assert_eq!(mark.forward, forward, "{id} points back at the ring");
+        }
+        let middle = seated(12);
+        assert!(!middle.vertical, "the line runs across the canvas");
+        assert_eq!(middle.cross, frame.flow);
+        assert_eq!(
+            middle.centre(&BTreeMap::new()),
+            [in_x() + 111.0, frame.flow],
+            "in the gutter, clear of both stub boxes and the split column"
+        );
+        // And no two circles are drawn on top of one another: several ride the
+        // same column, but each a different row of its riser.
+        for (left, right) in marks
+            .iter()
+            .enumerate()
+            .flat_map(|(index, left)| marks[index + 1..].iter().map(move |right| (left, right)))
+        {
+            let [left_x, left_y] = left.centre(&BTreeMap::new());
+            let [right_x, right_y] = right.centre(&BTreeMap::new());
+            let apart = (left_x - right_x).abs() > 2.0 * MARK_RADIUS
+                || (left_y - right_y).abs() > 2.0 * MARK_RADIUS;
+            assert!(apart, "{left:?} and {right:?} overlap");
+        }
+    }
+    #[test]
+    fn dragging_a_circle_parks_it_on_its_wire_and_never_past_it() {
+        // The offset a drag leaves behind is remembered per conversion and
+        // clamped to the stretch its seat was offered, so a circle pulled off
+        // the end of its wire stays on the wire — and the conversion itself
+        // never moved, only its mark.
+        let (frame, stages) = placed(&[vec![vec![NodeId(1)]]]);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Mono,
+                Channels::Stereo,
+                None,
+                Some(1),
+            )],
+            &stages,
+            &frame,
+        );
+        let mark = marks.first().expect("the split has a seat").to_owned();
+        let mut offsets = BTreeMap::new();
+        offsets.insert(mark.id, -500.0);
+        assert_eq!(mark.centre(&offsets), [mark.lo, mark.cross]);
+        offsets.insert(mark.id, 500.0);
+        assert_eq!(mark.centre(&offsets), [mark.hi, mark.cross]);
+        // 18 of wire is 2 of slack, one each way.
+        offsets.insert(mark.id, 1.0);
+        assert_eq!(mark.centre(&offsets), [138.0, 30.0]);
+        offsets.insert(mark.id, -1.0);
+        assert_eq!(mark.centre(&offsets), [136.0, 30.0]);
+        // A conversion that went away takes its offset with it: nothing here
+        // moves because of an id another graph handed out.
+        let other = conversion(10, Channels::Mono, Channels::Stereo, None, Some(1));
+        let moved = width_marks(&[other], &stages, &frame);
+        assert_eq!(
+            moved.first().map(|mark| mark.centre(&offsets)),
+            Some([137.0, 30.0]),
+            "a stranger's nudge moves nothing"
+        );
     }
 }
 

@@ -779,6 +779,16 @@ impl Runtime {
     pub fn route(&self) -> Route {
         Route::of(self.live_settings.as_ref().unwrap_or(&self.applied))
     }
+    /// The width conversions the engine makes for the cards as they are
+    /// arranged right now, read back off the graph `chain` builds rather than
+    /// guessed at from the cards. The canvas draws one circle per entry, so an
+    /// arrangement that refuses to wire — a card on a wire too narrow for it —
+    /// answers with no circles at all instead of a half-drawn rack.
+    pub fn junctions(&self) -> Option<Vec<Junction>> {
+        chain(&self.cards, self.route())
+            .ok()
+            .map(|(graph, _)| junctions(&graph))
+    }
     pub fn busy(&self) -> bool {
         self.action.is_some() || self.opening.is_some() || self.closing
     }
@@ -1769,6 +1779,51 @@ mod tests {
                 .all(|kind| !matches!(kind, NodeKind::ChannelMap { .. }))
         );
         graph.compile().expect("the stereo chain is a legal graph");
+    }
+    /// The shape of the one mono-input bundle this repo ships: it takes the
+    /// capture's single channel and answers with two. On a stereo playback
+    /// side that is the whole route met at both ends, so the card stands
+    /// alone between the cards with no circle anywhere. Put it on a mono
+    /// playback side and the rack still runs its mono in — only the way out
+    /// is joined, and the join names the card it reads.
+    #[test]
+    fn a_card_wide_at_one_end_only_meets_the_route_it_was_given() {
+        let mono = Channels::Mono;
+        let stereo = Channels::Stereo;
+        let wide_out = &[vec![vec![(NodeId(2), mono, stereo)]]][..];
+        let graph = plan(wide_out, Route::default()).expect("the card meets both ends");
+        assert!(
+            junctions(&graph).is_empty(),
+            "a mono input and a stereo output are already what the card wants"
+        );
+        assert_eq!(
+            graph
+                .connections
+                .iter()
+                .map(|c| (c.from, c.to))
+                .collect::<Vec<_>>(),
+            vec![(NodeId(0), NodeId(2)), (NodeId(2), NodeId(u64::MAX))],
+            "both of its wires are bare"
+        );
+        graph.compile().expect("the wide card is a legal graph");
+
+        let narrow = Route {
+            output: mono,
+            ..Route::default()
+        };
+        let graph = plan(wide_out, narrow).expect("a narrow playback still takes the card");
+        assert_eq!(
+            junctions(&graph),
+            vec![Junction {
+                id: NodeId(u64::MAX - 1),
+                inputs: stereo,
+                outputs: mono,
+                from: Some(NodeId(2)),
+                to: None,
+            }],
+            "the join sits behind the card, on the way to the output card"
+        );
+        graph.compile().expect("the joined card is a legal graph");
     }
     /// Between two cards the wire is one conductor with nothing in the middle
     /// of it, so a card that wants another width there is refused and named
