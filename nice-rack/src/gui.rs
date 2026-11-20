@@ -1288,6 +1288,29 @@ fn ahead_of_split(
     (heads.len() > 1 && heads.contains(&target.card)).then_some(heads)
 }
 
+/// The mirror of `ahead_of_split` for the merge end: when a right-edge drop
+/// would land behind the whole fork rather than in one lane — the hovered
+/// card trails a lane, and once the dragged card has left its own lane the
+/// stage is still split. Returns the surviving tail card of every lane so
+/// the preview can span the fork with one tick.
+fn behind_merge(
+    stages: &[Vec<Vec<NodeId>>],
+    drag: Option<NodeId>,
+    target: &Target,
+) -> Option<Vec<NodeId>> {
+    if target.side != Side::Right {
+        return None;
+    }
+    let stage = stages
+        .iter()
+        .find(|stage| stage.iter().any(|lane| lane.contains(&target.card)))?;
+    let tails: Vec<NodeId> = stage
+        .iter()
+        .filter_map(|lane| lane.iter().copied().rev().find(|id| Some(*id) != drag))
+        .collect();
+    (tails.len() > 1 && tails.contains(&target.card)).then_some(tails)
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3318,21 +3341,25 @@ impl Process for RackUi {
                     .find(|slot| slot.id == target.card)
                     .unwrap();
                 let parallel = matches!(target.side, Side::Above | Side::Below);
-                // Mirrors `place`: a left drop on a lane's leading card
-                // lands ahead of the whole fork once the dragged card has
-                // left its source lane.
+                // Mirrors `place`: a drop on a fork's outer edge belongs to
+                // the whole fork once the dragged card has left its source
+                // lane — left of a lane's head lands ahead of the split,
+                // right of a lane's tail lands behind the merge.
                 let ahead_heads = ahead_of_split(&groups, self.drag, &target);
+                let behind_tails = behind_merge(&groups, self.drag, &target);
                 let before_split = ahead_heads.is_some();
+                let after_merge = behind_tails.is_some();
+                let span = ahead_heads.or(behind_tails);
                 match target.side {
                     Side::Left | Side::Right => {
-                        // A drop ahead of the split belongs to the whole
-                        // fork, so its tick spans every lane instead of
-                        // marking one lane's wire like a chain would.
-                        let ys: Vec<f32> = match ahead_heads.as_ref().map(|heads| {
+                        // A drop at the fork's edge spans every lane with
+                        // one tick instead of marking a single lane's wire
+                        // like a chain would.
+                        let ys: Vec<f32> = match span.as_ref().map(|cards| {
                             layout
                                 .slots
                                 .iter()
-                                .filter(|slot| heads.contains(&slot.id))
+                                .filter(|slot| cards.contains(&slot.id))
                                 .map(|slot| slot.y)
                                 .collect::<Vec<f32>>()
                         }) {
@@ -3381,6 +3408,8 @@ impl Process for RackUi {
                         &self.font,
                         if before_split {
                             "Ahead of the split"
+                        } else if after_merge {
+                            "After the merge"
                         } else if parallel {
                             "Parallel branch"
                         } else {
@@ -3889,6 +3918,41 @@ mod tests {
         // A lone lane is no fork to stand ahead of.
         let chain = vec![vec![vec![NodeId(1), NodeId(3)]]];
         assert_eq!(ahead_of_split(&chain, None, &left(1)), None);
+    }
+    #[test]
+    fn a_right_drop_on_a_lane_tail_names_the_whole_fork() {
+        let stages = vec![
+            vec![vec![NodeId(1)]],
+            vec![vec![NodeId(3), NodeId(4)], vec![NodeId(5)]],
+            vec![vec![NodeId(7)]],
+        ];
+        let right = |card: u64| Target {
+            card: NodeId(card),
+            side: Side::Right,
+        };
+        // Hovering either lane's trailing card claims the whole fork…
+        assert_eq!(
+            behind_merge(&stages, None, &right(4)),
+            Some(vec![NodeId(4), NodeId(5)])
+        );
+        assert_eq!(
+            behind_merge(&stages, None, &right(5)),
+            Some(vec![NodeId(4), NodeId(5)])
+        );
+        // …while a lane's middle is just a chain, and dragging one lane
+        // away leaves a single chain to chain into.
+        assert_eq!(behind_merge(&stages, None, &right(3)), None);
+        assert_eq!(behind_merge(&stages, Some(NodeId(5)), &right(4)), None);
+        // A lane whose tail is being dragged still counts its survivor:
+        // the fork stays split and the drop lands behind it.
+        let split = vec![vec![vec![NodeId(2), NodeId(4)], vec![NodeId(3)]]];
+        assert_eq!(
+            behind_merge(&split, Some(NodeId(4)), &right(2)),
+            Some(vec![NodeId(2), NodeId(3)])
+        );
+        // A lone lane is no fork to step out behind.
+        let chain = vec![vec![vec![NodeId(1), NodeId(3)]]];
+        assert_eq!(behind_merge(&chain, None, &right(3)), None);
     }
     #[test]
     fn internal_and_external_drops_use_the_same_four_zones() {
