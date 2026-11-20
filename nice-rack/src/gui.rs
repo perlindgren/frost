@@ -616,8 +616,13 @@ fn watch_wires(
         // The master jack is one wire — the rack's output. It has no
         // input side to meter: whatever feeds the jack is whatever the
         // mixer summed, and the jack's own meter reads the result.
+        // The input jack is one wire too — the capture as it enters the
+        // rack, after its trim — and it has no output side: the cards
+        // downstream carry their own input meters from there.
         let sides: &[bool] = if id == MASTER_WIRE_KEY {
             &[false]
+        } else if id == INPUT_JACK.0 {
+            &[true]
         } else {
             &[false, true]
         };
@@ -718,8 +723,9 @@ const COLUMN_STEP: f32 = 224.0;
 /// names its own two jacks `NodeId(0)` and `NodeId(u64::MAX)`; the second is
 /// the master wire the canvas already keys by [`MASTER_WIRE_KEY`], and this
 /// is the first — which the canvas now draws as a card, so it needs the id
-/// in its own terms. Nothing on the rack side is measured at it, so it has no
-/// meter, no trim and no switch.
+/// in its own terms. It carries one metered wire, keyed `(0, true)`: the
+/// capture trimmed as it enters the rack, with a trim corner of its own and
+/// no break switch — the capture either flows or the rack is not running.
 const INPUT_JACK: NodeId = NodeId(0);
 /// How an endpoint card says the rate it was opened at: kilohertz, the way
 /// the device page spells it, and a dash where the rack has never opened a
@@ -1061,7 +1067,8 @@ enum MeterPos {
     MasterIn,
     /// One card's input (`!side`) or output (`side`) wire meter, or —
     /// keyed `(u64::MAX, false)` — the master output meter standing on
-    /// the OUT jack.
+    /// the OUT jack, or — keyed `(0, true)` — the capture trim meter
+    /// standing on the IN jack.
     Wire(u64, bool),
     /// The rack's own output meter: downstream of every card. The canvas
     /// face of the same reading is the master output meter, and the two
@@ -1235,7 +1242,16 @@ fn target_at(
     let dx = x - slot.x;
     let dy = y - slot.y;
     let side = if dx.abs() > 60.0 {
-        if dx < 0.0 { Side::Left } else { Side::Right }
+        // Past the card's face, sideways pull only wins when it also
+        // out-reaches the vertical one; a card flung well below a row's side
+        // was meant for a parallel row, not a silent chain.
+        if dy.abs() > dx.abs() && dy.abs() > 12.0 {
+            if dy > 0.0 { Side::Above } else { Side::Below }
+        } else if dx < 0.0 {
+            Side::Left
+        } else {
+            Side::Right
+        }
     } else if dy.abs() > 12.0 {
         if dy > 0.0 { Side::Above } else { Side::Below }
     } else if dx < 0.0 {
@@ -1569,6 +1585,11 @@ impl RackUi {
         let route = self.runtime.route();
         if id == MASTER_WIRE_KEY {
             return route.output.count().clamp(1, 2);
+        }
+        // The `IN` jack carries the capture itself: however many channels
+        // the device delivers, and no card arithmetic in between.
+        if id == INPUT_JACK.0 {
+            return route.input.count().clamp(1, 2);
         }
         self.runtime
             .cards
@@ -1978,13 +1999,15 @@ impl Process for RackUi {
         // audio has run a block.
         watch_wires(
             &mut self.wire_meters,
-            // The cards' wires, and the master output's: the jack keyed
-            // `u64::MAX` gets its meter here too, born knowing the saved
-            // output trim like any card wire knows its own.
+            // The cards' wires, and the two jacks' own: the input keyed
+            // `0` and the output keyed `u64::MAX` get their meters here
+            // too, born knowing the saved trim like any card wire knows
+            // its own.
             self.runtime
                 .cards
                 .iter()
                 .map(|card| card.id.0)
+                .chain(std::iter::once(INPUT_JACK.0))
                 .chain(std::iter::once(MASTER_WIRE_KEY)),
             |id, side| self.runtime.trim(id, side),
             |key| self.runtime.wires.gain_of(key),
@@ -2449,6 +2472,15 @@ impl Process for RackUi {
                             (out_visible && hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H))
                                 .then_some((MASTER_WIRE_KEY, false))
                         })
+                        // And so is the `IN` card's output corner — the
+                        // capture trim, the mirror of the master's.
+                        .or_else(|| {
+                            let input = layout.input;
+                            let [gx, gy] = gain_center(input.x, layout.flow, true);
+                            (visible(&input, layout.top, layout.bottom, w)
+                                && hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H))
+                            .then_some((INPUT_JACK.0, true))
+                        })
                 } else {
                     None
                 };
@@ -2465,10 +2497,14 @@ impl Process for RackUi {
         // exactly like the `OUT` card: what the device actually delivers
         // here, rate and channel count, nothing invented. It is not a card
         // in the rack's sense — nothing is dropped on it, nothing drags off
-        // it, and nothing on the rack's side of it is measured, so it has no
-        // stub, no trim and no meter. The face is where the input half of
-        // the device page is opened, because the capture is the one thing
-        // about it an operator can change.
+        // it. It does carry one wire's meter: the capture as it enters the
+        // rack, trimmed, measured on the stub at its right edge — the twin
+        // of the master meter at the far end, and the reason the cable
+        // leaving this card starts at a stub you can see. It has no break
+        // switch: the capture either flows or the rack is not running. The
+        // face is where the input half of the device page is opened,
+        // because the capture is the one thing about it an operator can
+        // change.
         let input = layout.input;
         let in_visible = visible(&input, layout.top, layout.bottom, w);
         let in_hover = in_visible
@@ -2512,7 +2548,15 @@ impl Process for RackUi {
                 0.21,
             );
         }
-        if clicked && in_hover && self.drag.is_none() {
+        // The trim corner at the card's right edge keeps its own clicks,
+        // exactly like the `OUT` card's: without this veto, opening the
+        // dB editor would also grab the face and open the device page.
+        let [in_gain_x, in_gain_y] = gain_center(input.x, layout.flow, true);
+        if clicked
+            && in_hover
+            && self.drag.is_none()
+            && !hit(mouse, in_gain_x, in_gain_y, GAIN_HALF_W, GAIN_HALF_H)
+        {
             self.settings_page = true;
             self.settings_scope = PageScope::Input;
             self.settings = None;
@@ -2535,8 +2579,48 @@ impl Process for RackUi {
         // One gate for the whole rack, read once a frame: every stub box on
         // every wire is measured against the same number.
         let gate = self.runtime.meter_gate();
-        // The wire arrives from the rack's `IN` card, which carries no
-        // switch of its own, so it starts at that card's own edge. The run
+        // The capture's own stub, at the `IN` card's right edge: the near
+        // end of every cable in the rack, and the meter the input trim is
+        // set against. A click folds the track open or away like any other
+        // stub; there is no right-hand switch here — the capture has no
+        // circuit to break, only a gain to trim, and the meter reads the
+        // signal after it, so what the first card will see is what shows.
+        let in_stub = wire_box_x(layout.input.x, true);
+        let input_key = (INPUT_JACK.0, true);
+        if in_visible
+            && clicked
+            && self.choosing.is_none()
+            && self.drag.is_none()
+            && hit(mouse, in_stub, layout.flow, STUB_HALF, STUB_TALL)
+        {
+            // `watch_wires` has run for this frame, so the entry is
+            // there; the insert arm only keeps the click from being
+            // swallowed in some state where it is not.
+            let meter = self.wire_meters.entry(input_key).or_insert_with(|| {
+                let gain_db = remembered_trim(
+                    self.runtime.trim(INPUT_JACK.0, true),
+                    wire_slot_key(INPUT_JACK.0, true)
+                        .and_then(|key| self.runtime.wires.gain_of(key)),
+                );
+                WireMeter {
+                    open_circuit: false,
+                    ..new_wire_meter(gain_db, now())
+                }
+            });
+            meter.open = !meter.open;
+            self.acknowledge_clip(MeterPos::Wire(INPUT_JACK.0, true));
+        }
+        if in_visible {
+            ctx.rectangle(
+                in_stub,
+                layout.flow,
+                STUB_HALF,
+                STUB_TALL,
+                stub_color(self.wire_meters.get(&input_key), gate, wire),
+                0.25,
+            );
+        }
+        // The wire arrives from the rack's `IN` card's own stub. The run
         // into the `OUT` card is the master wire, whoever it last passed
         // through: its switch sits on the card's own stub, and a right-click
         // anywhere on the card, its wire or its stub mutes the output, meter
@@ -3318,7 +3402,11 @@ impl Process for RackUi {
         // with the layout.
         if let Some((id, side)) = self.gain_edit {
             let master = id == MASTER_WIRE_KEY;
-            let gone = !master && !layout.slots.iter().any(|slot| slot.id.0 == id);
+            // The `IN` jack's corner is the same story as the master's:
+            // no card is keyed `0`, so the card never goes — the field
+            // belongs to a fixed corner of the canvas.
+            let input_jack = !master && id == INPUT_JACK.0 && side;
+            let gone = !master && !input_jack && !layout.slots.iter().any(|slot| slot.id.0 == id);
             if ctx.key_down(frost::KeyCode::Escape) || self.overlay.is_some() || gone {
                 self.gain_edit = None;
                 self.gain_input.set_focus(false);
@@ -3326,6 +3414,11 @@ impl Process for RackUi {
                 let inside = if master {
                     let [gx, gy] = gain_center(out.x, layout.flow, false);
                     out_visible && hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
+                } else if input_jack {
+                    let input = layout.input;
+                    let [gx, gy] = gain_center(input.x, layout.flow, true);
+                    visible(&input, layout.top, layout.bottom, w)
+                        && hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
                 } else {
                     layout
                         .slots
@@ -3424,6 +3517,23 @@ impl Process for RackUi {
                 false,
                 [out_stub, layout.flow],
                 gain_center(out.x, layout.flow, false),
+                false,
+            );
+        }
+        // The `IN` card carries its twin for the capture entering the
+        // rack — same meter, same trim gestures, no switch behind it.
+        if in_visible {
+            self.paint_wire_meter(
+                ctx,
+                dt,
+                mouse,
+                down,
+                clicked,
+                gain_reset,
+                INPUT_JACK.0,
+                true,
+                [in_stub, layout.flow],
+                gain_center(layout.input.x, layout.flow, true),
                 false,
             );
         }
@@ -3711,6 +3821,15 @@ mod tests {
             ([100.0, 0.0], Side::Right),
             ([0.0, 75.0], Side::Above),
             ([0.0, -75.0], Side::Below),
+            // Flung well past a card's side but deeper still vertically,
+            // the drop reads as the row it reaches for, not a chain.
+            ([110.0, 130.0], Side::Above),
+            ([-110.0, 130.0], Side::Above),
+            ([-110.0, -130.0], Side::Below),
+            ([110.0, -130.0], Side::Below),
+            // A shallow diagonal beside the card still means chain.
+            ([110.0, 40.0], Side::Right),
+            ([-110.0, -40.0], Side::Left),
         ] {
             assert_eq!(
                 target_at(Some(point), &slots, None, 200.0, -150.0, 1000.0),
@@ -4190,6 +4309,31 @@ mod tests {
             (meters[&(MASTER_WIRE_KEY, false)].gain_db + 12.0412).abs() < 0.02,
             "the jack's meter is born at the gain its wire carries: {:?}",
             meters[&(MASTER_WIRE_KEY, false)].gain_db
+        );
+    }
+    #[test]
+    fn the_input_jack_is_watched_on_one_side_only() {
+        use std::collections::BTreeMap;
+        // The IN stub is one wire too — the capture as it enters the rack,
+        // after its trim — and id 0 must not conjure a phantom second meter
+        // on the card's other face, where no stub is drawn at all. Like the
+        // master's, its meter is born at the gain its wire carries, which is
+        // the engine key the capture trims under.
+        let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
+        watch_wires(
+            &mut meters,
+            [INPUT_JACK.0, 3],
+            |_, _| None,
+            |key| (Some(key) == card_wire_key(INPUT_JACK.0, true)).then_some(0.5),
+            |_, _| false,
+            0,
+        );
+        let keys: Vec<(u64, bool)> = meters.keys().copied().collect();
+        assert_eq!(keys, vec![(INPUT_JACK.0, true), (3, false), (3, true)]);
+        assert!(
+            (meters[&(INPUT_JACK.0, true)].gain_db + 6.0206).abs() < 0.02,
+            "the capture meter is born at the trim already in force: {:?}",
+            meters[&(INPUT_JACK.0, true)].gain_db
         );
     }
     #[test]

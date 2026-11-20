@@ -598,6 +598,11 @@ pub struct Runtime {
     /// too. This is only what `persist` compares against to know the master
     /// trim moved.
     saved_output_gain_db: f32,
+    /// The IN jack's trim the file was last written with, for the same reason
+    /// [`Runtime::saved_output_gain_db`] exists. The live copy rides in
+    /// [`Runtime::trims`] under `(0, true)` — the capture node's id and its
+    /// output side, the one side of that wire the engine meters.
+    saved_input_gain_db: f32,
     worker: Option<JoinHandle<Endpoints>>,
     io: Option<DeviceStreams>,
     /// The rings of `io` while no worker owns them. `spawn_dsp` returns them
@@ -703,7 +708,9 @@ impl Runtime {
             // stage at the level it was left at. A file written before the
             // stage existed says 0 dB, which is what such a rack was already
             // running, and a hand-edited number is clamped and read the way
-            // `remembered_trims` reads a card's.
+            // `remembered_trims` reads a card's. The IN jack's trim rides the
+            // same map under the capture node's own id — 0 — with the input
+            // half of the wire left unclaimed, exactly as the engine leaves it.
             trims: {
                 let mut trims = remembered_trims(&settings.preferences.plugins);
                 if settings.preferences.output_gain_db.is_finite() {
@@ -712,6 +719,15 @@ impl Runtime {
                         settings
                             .preferences
                             .output_gain_db
+                            .clamp(-crate::TRIM_DB, crate::TRIM_DB),
+                    );
+                }
+                if settings.preferences.input_gain_db.is_finite() {
+                    trims.insert(
+                        (0, true),
+                        settings
+                            .preferences
+                            .input_gain_db
                             .clamp(-crate::TRIM_DB, crate::TRIM_DB),
                     );
                 }
@@ -740,6 +756,7 @@ impl Runtime {
             // (or a `NaN` it had to ignore) is one `persist` writes back
             // proper, and once written the comparison rests.
             saved_output_gain_db: settings.preferences.output_gain_db,
+            saved_input_gain_db: settings.preferences.input_gain_db,
             last_save: Instant::now(),
             persistence_path: None,
             worker: None,
@@ -1348,18 +1365,20 @@ impl Runtime {
             .collect();
         // One write covers every preference the rack keeps changing under the
         // operator's hands: the cards with their trims and breaks, the gate
-        // the stub boxes are coloured against, and the OUT jack's trim. Any
-        // of them moving is enough to rewrite the file, because a settings
-        // file holds one snapshot of all and cannot be brought half up to
-        // date. A break needs no extra comparison of its own: it travels on
-        // the card it belongs to, so a wire thrown open makes the cards
-        // differ from the last thing written. The output trim needs none
-        // either beyond its own number: it is one value, read from the same
-        // map the cards' trims were just read out of.
+        // the stub boxes are coloured against, and the two jack trims on the
+        // ends of the rack. Any of them moving is enough to rewrite the file,
+        // because a settings file holds one snapshot of all and cannot be
+        // brought half up to date. A break needs no extra comparison of its
+        // own: it travels on the card it belongs to, so a wire thrown open
+        // makes the cards differ from the last thing written. The jack trims
+        // need none either beyond their own numbers: each is one value, read
+        // from the same map the cards' trims were just read out of.
         let output_gain_db = self.trim(u64::MAX, false).unwrap_or_default();
+        let input_gain_db = self.trim(0, true).unwrap_or_default();
         if plugins != self.saved_plugins
             || self.meter_gate_db != self.saved_meter_gate_db
             || output_gain_db != self.saved_output_gain_db
+            || input_gain_db != self.saved_input_gain_db
         {
             let (mut settings, warning) = Settings::load_from(&path);
             if let Some(warning) = warning {
@@ -1369,14 +1388,17 @@ impl Runtime {
             settings.preferences.plugins = plugins.clone();
             settings.preferences.meter_gate_db = self.meter_gate_db;
             settings.preferences.output_gain_db = output_gain_db;
+            settings.preferences.input_gain_db = input_gain_db;
             match settings.save_to(&path) {
                 Ok(()) => {
                     self.applied.preferences.plugins = plugins.clone();
                     self.applied.preferences.meter_gate_db = self.meter_gate_db;
                     self.applied.preferences.output_gain_db = output_gain_db;
+                    self.applied.preferences.input_gain_db = input_gain_db;
                     self.saved_plugins = plugins;
                     self.saved_meter_gate_db = self.meter_gate_db;
                     self.saved_output_gain_db = output_gain_db;
+                    self.saved_input_gain_db = input_gain_db;
                 }
                 Err(error) => self.message = error,
             }
@@ -2612,6 +2634,60 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(Runtime::new(wild).trim(u64::MAX, false), None);
+    }
+    /// The IN jack's trim, kept the same way one jack over: it rides the card
+    /// trims' map under the capture node's id, comes back out of the file on
+    /// resume, clamps at the ends of the track and takes no `NaN` record —
+    /// the same four rules [`Runtime`] already keeps for the master trim,
+    /// checked here without a single card or backend.
+    #[test]
+    fn the_input_trim_comes_back_with_the_rack() {
+        let file = frost::scratch::claim("rack-input-gain").join("nice-rack-settings.ron");
+        let _ = std::fs::remove_file(&file);
+
+        let mut runtime = Runtime::new(Settings::default());
+        settle(&mut runtime);
+        assert_eq!(
+            runtime.trim(0, true),
+            Some(0.0),
+            "every file states an input gain, defaulted or not, so even a \
+             rack as new as this file holds its capture record, at unity"
+        );
+        runtime.persistence_path = Some(file.clone());
+
+        // The same ordinary debounce as the master's: nothing else about the
+        // rack moved, so it is the input trim alone that rewrites the file.
+        runtime.set_trim(0, true, 3.0);
+        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.tick();
+        let (saved, warning) = Settings::load_from(&file);
+        assert_eq!(warning, None);
+        assert!(saved.preferences.plugins.is_empty(), "no cards, still");
+        assert_eq!(saved.preferences.input_gain_db, 3.0);
+        assert_eq!(saved.preferences.output_gain_db, 0.0, "one jack moved");
+
+        // A resume: the number comes out of the file and into the same map a
+        // card's trim arrives in, under the capture's own key.
+        let resumed = Runtime::new(saved);
+        assert_eq!(resumed.trim(0, true), Some(3.0));
+
+        // And the same two rules as everywhere else on the track.
+        let wild = Settings {
+            preferences: crate::RackPreferences {
+                input_gain_db: -900.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(Runtime::new(wild).trim(0, true), Some(-crate::TRIM_DB));
+        let wild = Settings {
+            preferences: crate::RackPreferences {
+                input_gain_db: f32::NAN,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(Runtime::new(wild).trim(0, true), None);
     }
     /// What a remembered break is made of, checked without a plugin: the file
     /// says which of a card's two cables it left broken, and the controller

@@ -260,6 +260,19 @@ pub fn card_wire_key(id: u64, side: bool) -> Option<u64> {
     }
 }
 
+/// The wire key of the rack's input jack.
+///
+/// The plan's single `NodeKind::Input` node is the capture side of the rack,
+/// and the rack addresses it `NodeId(0)`, so its output side lands on key 1 of
+/// [`card_wire_key`] — a key no card reaches, since card ids start at 1. The
+/// node's *input* side gets no slot: the device stream before the rack has
+/// touched it is not this wire's story. The slot carries the rack's input
+/// trim, and its meter reads the signal as it enters the rack, after that
+/// trim, so an operator dialing capture gain trims to what the meter shows.
+/// Unlike a card wire it has no break switch: the capture either flows or the
+/// rack is not running.
+pub const INPUT_WIRE_KEY: u64 = 1;
+
 /// Lock-free wire observations shared between the audio thread and the UI.
 /// A control thread registers wires through [`PreparedRack::attach_wire_levels`]
 /// before the plan crosses to the audio thread; from then on the audio thread
@@ -791,7 +804,10 @@ impl PreparedRack {
     /// input buffer, the output side its processed output. The primary
     /// `Output` node registers one more key, [`MASTER_WIRE_KEY`], whose
     /// `wire_in` carries the rack's master output trim, a break switch, and
-    /// a meter reading the summed signal about to leave for the DAC.
+    /// a meter reading the summed signal about to leave for the DAC. The
+    /// single `Input` node registers one too — [`INPUT_WIRE_KEY`] on its
+    /// `wire_out` — carrying the rack's input trim and a meter reading the
+    /// capture as it enters the rack.
     pub fn attach_wire_levels(&mut self, levels: Arc<WireLevels>) {
         // Control-thread allocation is fine here; `process` stays
         // allocation-free.
@@ -804,6 +820,14 @@ impl PreparedRack {
             .collect();
         if self.master_output_index().is_some() {
             keys.push(MASTER_WIRE_KEY);
+        }
+        if let Some(key) = self
+            .nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Input(_)))
+            .and_then(|node| card_wire_key(node.id.0, true))
+        {
+            keys.push(key);
         }
         levels.reset(&keys);
         self.reset_metering();
@@ -823,6 +847,12 @@ impl PreparedRack {
                 node.wire_out = levels.attach(base | 1);
             } else if master == Some(index) {
                 node.wire_in = levels.attach(MASTER_WIRE_KEY);
+            } else if matches!(node.kind, NodeKind::Input(_)) {
+                // The capture jack's trim and meter sit on the node's
+                // output side — the signal as it enters the rack — and the
+                // input side stays unmetred: what the device sent before
+                // the rack trimmed it is not this wire's story.
+                node.wire_out = card_wire_key(node.id.0, true).and_then(|key| levels.attach(key));
             }
         }
         self.wires = levels;
@@ -900,6 +930,18 @@ impl PreparedRack {
                 NodeKind::Input(_) => {
                     for (source, destination) in input.iter().zip(&mut node.output.0) {
                         destination[..frames].copy_from_slice(&source[..frames]);
+                    }
+                    // The capture jack's trim sits on the wire leaving the
+                    // node, so every card downstream shares the level the
+                    // meter shows — the same shape as the master output
+                    // stage, mirrored to the front of the rack. The meter
+                    // reads the trimmed signal, because that is the signal
+                    // the rack feeds itself. There is no break here: the
+                    // capture either flows or the rack is not running.
+                    if let Some(slot) = node.wire_out {
+                        apply_gain(&mut node.output, frames, wires.gain(slot));
+                        let level = wire_level(&node.output, frames, &mut node.tp_out);
+                        wires.publish(slot, level);
                     }
                 }
                 NodeKind::Plugin { .. } => {

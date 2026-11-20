@@ -391,7 +391,7 @@ fn prepared_processing_delay_and_reset_do_not_allocate() {
     )
     .unwrap();
     // Metering is attached too: publishing must stay allocation-free.
-    rack.attach_wire_levels(Arc::new(WireLevels::new(4)));
+    rack.attach_wire_levels(Arc::new(WireLevels::new(5)));
     rack.attach_processing_times(Arc::new(ProcessingTimes::new(2)), 48_000.0);
     let mut output = [0.0; 4];
     let allocations = allocation_counter::measure(|| {
@@ -455,7 +455,7 @@ fn attached_wires_publish_each_plugins_input_and_output() {
         4,
     )
     .unwrap();
-    let levels = Arc::new(WireLevels::new(4));
+    let levels = Arc::new(WireLevels::new(5));
     rack.attach_wire_levels(Arc::clone(&levels));
     let mut output = [0.0; 4];
     let block = [1.0, -1.0, 0.5, 0.0];
@@ -504,6 +504,10 @@ fn card_keys_stay_clear_of_the_master_key() {
     // larger ids shift outright; neither can be a card.
     assert_eq!(card_wire_key(u64::MAX >> 1, true), None);
     assert_eq!(card_wire_key(u64::MAX, true), None);
+    // Id 0 belongs to the capture, never a card: its output side is exactly
+    // the input jack's key, clear of the free slot 0 and every card wire.
+    assert_eq!(card_wire_key(0, true), Some(INPUT_WIRE_KEY));
+    assert_eq!(INPUT_WIRE_KEY, 1);
 }
 #[test]
 fn master_output_trim_scales_and_meters_the_summed_signal() {
@@ -588,17 +592,18 @@ fn wire_registration_resets_and_declines_wires_beyond_capacity() {
         4,
     )
     .unwrap();
-    let first = Arc::new(WireLevels::new(3));
+    let first = Arc::new(WireLevels::new(4));
     rack.attach_wire_levels(Arc::clone(&first));
-    // Registration follows the deterministic plan order, so the third slot
-    // truncates the second card: its output is declined, not overwritten.
+    // Registration follows the deterministic plan order, and the capture
+    // wire claims the first slot, so the fourth slot truncates the second
+    // card: its output is declined, not overwritten.
     assert!(first.sample(NodeId(1).0 << 1).is_some());
     assert!(first.sample(NodeId(1).0 << 1 | 1).is_some());
     assert!(first.sample(NodeId(2).0 << 1).is_some());
     assert_eq!(first.sample(NodeId(2).0 << 1 | 1), None);
     // A rebuild re-attaches onto a fresh table: cleared keys never block the
     // new registration, and the old table is left alone.
-    let second = Arc::new(WireLevels::new(4));
+    let second = Arc::new(WireLevels::new(5));
     rack.attach_wire_levels(Arc::clone(&second));
     assert!(second.sample(NodeId(2).0 << 1 | 1).is_some());
     assert_eq!(second.sample(NodeId(0).0), None);
@@ -615,7 +620,7 @@ fn wire_trims_scale_the_signal_and_its_meter_together() {
         4,
     )
     .unwrap();
-    let levels = Arc::new(WireLevels::new(4));
+    let levels = Arc::new(WireLevels::new(5));
     rack.attach_wire_levels(Arc::clone(&levels));
     // Half gain on card 1's input wire, quadruple on card 2's output wire.
     // The input trim lands before the processor, so plugin, meter and the
@@ -700,8 +705,63 @@ fn the_master_switch_silences_the_jack_without_blinding_its_meter() {
     assert_eq!(output, [1.0; 4]);
 }
 #[test]
+fn the_input_jack_trims_and_meters_the_capture_as_it_enters() {
+    // The rack's own input wire: the single `Input` node is addressed
+    // `INPUT_WIRE_KEY`, its trim scales the capture before any card reads
+    // it, and its meter shows the signal after the trim — what the rack
+    // carries on. There is no break: the capture flows while the rack runs.
+    let mut rack = PreparedRack::prepare(
+        &graph(),
+        [
+            (NodeId(1), slot(1.0, false, false)),
+            (NodeId(2), slot(1.0, false, false)),
+        ]
+        .into(),
+        4,
+    )
+    .unwrap();
+    let levels = Arc::new(WireLevels::new(5));
+    rack.attach_wire_levels(Arc::clone(&levels));
+    assert_eq!(levels.gain_of(INPUT_WIRE_KEY), Some(1.0));
+    levels.set_gain(INPUT_WIRE_KEY, 0.5);
+    let mut output = [0.0; 4];
+    let block = [1.0, -1.0, 0.5, 0.0];
+    // Half a capture at the door: every branch reads the trimmed signal, so
+    // the summed output is the block whole rather than doubled.
+    rack.process(&[&block], &mut [&mut [&mut output[..]][..]], 4)
+        .unwrap();
+    rack.process(&[&block], &mut [&mut [&mut output[..]][..]], 4)
+        .unwrap();
+    assert_eq!(output, block);
+    // The jack's meter reads after its trim: on the second block the
+    // repeating pattern settles at rms 0.375 with a crest of 0.5 (see
+    // `attached_wires_publish_each_plugins_input_and_output`).
+    assert_eq!(levels.sample(INPUT_WIRE_KEY), Some((0.375, 0.5)));
+    // And downstream agrees: card 1's input wire carries the same trimmed
+    // capture the jack meter shows, nothing doubled or missing.
+    assert_eq!(levels.sample(NodeId(1).0 << 1), Some((0.375, 0.5)));
+    // A rebuild re-registers the jack's key, so the trim the operator set
+    // survives the plan swap instead of silently reverting to unity.
+    let mut rebuilt = PreparedRack::prepare(
+        &graph(),
+        [
+            (NodeId(1), slot(1.0, false, false)),
+            (NodeId(2), slot(1.0, false, false)),
+        ]
+        .into(),
+        4,
+    )
+    .unwrap();
+    rebuilt.attach_wire_levels(Arc::clone(&levels));
+    assert_eq!(levels.gain_of(INPUT_WIRE_KEY), Some(0.5));
+    rebuilt
+        .process(&[&block], &mut [&mut [&mut output[..]][..]], 4)
+        .unwrap();
+    assert_eq!(output, block);
+}
+#[test]
 fn a_rebuild_keeps_live_trims_and_retires_cards_that_left() {
-    let levels = Arc::new(WireLevels::new(4));
+    let levels = Arc::new(WireLevels::new(5));
     let mut rack = PreparedRack::prepare(
         &graph(),
         [
@@ -933,7 +993,7 @@ fn live_bypass_is_unity_keeps_processing_and_preserves_untrimmed_latency_history
         4,
     )
     .unwrap();
-    let wires = Arc::new(WireLevels::new(2));
+    let wires = Arc::new(WireLevels::new(3));
     rack.attach_wire_levels(wires.clone());
     wires.set_gain(2, 4.0);
     wires.set_gain(3, 2.0);
@@ -1033,7 +1093,7 @@ fn live_bypass_supports_mono_stereo_conversion_and_keeps_parallel_branches() {
             4,
         )
         .unwrap();
-        let wires = Arc::new(WireLevels::new(2));
+        let wires = Arc::new(WireLevels::new(3));
         rack.attach_wire_levels(wires.clone());
         wires.set_bypassed(NodeId(1), true);
         let mut left = [0.0; 4];
@@ -1133,7 +1193,7 @@ fn pause_mutes_audio_and_output_meter_but_can_be_bypassed_independently() {
         64,
     )
     .unwrap();
-    let wires = Arc::new(WireLevels::new(2));
+    let wires = Arc::new(WireLevels::new(3));
     rack.attach_wire_levels(wires.clone());
     wires.set_gain(2, 2.0);
     wires.set_gain(3, 2.0);
@@ -1220,7 +1280,7 @@ fn bypass_does_not_replay_old_history_and_tracks_input_while_bypassed() {
             4,
         )
         .unwrap();
-        let wires = Arc::new(WireLevels::new(2));
+        let wires = Arc::new(WireLevels::new(3));
         rack.attach_wire_levels(wires.clone());
         let mut output = [0.0; 4];
         rack.process(&[&[1.0]], &mut [&mut [&mut output[..]][..]], 1)

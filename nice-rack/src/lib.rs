@@ -34,6 +34,13 @@ pub struct RackPreferences {
     /// and a file written before the output stage existed names none, which
     /// is 0 dB — the gain such a rack was already running.
     pub output_gain_db: f32,
+    /// The trim on the input jack wire in dB — the gain the IN card applies
+    /// to the captured signal before any card in the rack sees it. This is
+    /// the stage that sets what the rack is fed, so the input meter reads the
+    /// signal after it. Stored the way the output trim is, and a file written
+    /// before the input stage existed names none, which is 0 dB — the gain
+    /// such a rack was already running.
+    pub input_gain_db: f32,
 }
 
 /// Written by hand rather than derived, so the one preference that does not
@@ -47,6 +54,7 @@ impl Default for RackPreferences {
             plugins: Vec::new(),
             meter_gate_db: METER_GATE_DEFAULT_DB,
             output_gain_db: 0.0,
+            input_gain_db: 0.0,
         }
     }
 }
