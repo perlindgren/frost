@@ -203,12 +203,17 @@ cargo test -p nice-rack --lib -- --ignored `
   runtime::tests::a_refused_opening_keeps_the_chain_it_was_started_with
 ```
 
-Nine tests wait on that variable. Seven of them need no device, and all seven
-pass on Windows as written above. The two left over open this machine's real
-audio devices, so they stay a deliberate run rather than a line in a script.
-What the nine are not is a cover for the rest: the rack's other 23 tests now
-run by name in `.githooks/pre-push`, on the machine doing the pushing, as the
-gate has run them on both runners since pull request 31.
+Nine rack tests stand aside. Six wait on that variable — two of them also open
+this machine's real audio devices, so they stay a deliberate run rather than a
+line in a script, and one wants a live X server besides. One refuses only when
+`NICE_RACK_TEST_CLAP_WIDE` names a stereo-in, stereo-out export and
+`NICE_RACK_TEST_CLAP_NARROW` a single-input one; the bundles' `Nice Pi-Fase`
+and `Nice NAM` serve. Two more want a live X server and nothing else. All
+nine passed on the Linux machine this mono rework was made on, under a
+headless X server, the two device tests included. What the nine are not is a
+cover for the rest: the rack's seventy-five other tests now run by name in
+`.githooks/pre-push`, on the machine doing the pushing, as the gate has run
+them on both runners since pull request 31.
 
 The UI embeds frost's Fira Code and the same Fluent settings font as nice-tuner.
 Distributable packaging must include their existing license notices.

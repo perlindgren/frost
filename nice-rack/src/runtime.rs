@@ -2300,35 +2300,38 @@ mod tests {
     /// as the mono plugin it is, and the rack's own split goes away.
     ///
     /// The two exports have to disagree about width, which is what
-    /// `NICE_RACK_TEST_CLAP_NARROW` is for: in this repository that is
-    /// `Nice NAM.clap`, the one bundle with a single input. Unset, there is
+    /// `NICE_RACK_TEST_CLAP_WIDE` and `NICE_RACK_TEST_CLAP_NARROW` are
+    /// for: in this repository those are `Nice Pi-Fase.clap`, the one
+    /// bundle that takes stereo and answers in stereo, and `Nice NAM.clap`,
+    /// the one bundle with a single input. Either one unset, there is
     /// nothing to refuse and the test declines rather than assert nothing.
     /// The accepted half builds one NAM instance, so the unload race
     /// documented on [`a_dropped_plugin_is_saved_before_audio_has_ever_run`]
     /// can kill the process after every assertion here has passed.
     #[test]
-    #[ignore = "requires NICE_RACK_TEST_CLAP, and NICE_RACK_TEST_CLAP_NARROW to witness the refusal"]
+    #[ignore = "requires NICE_RACK_TEST_CLAP_WIDE, and NICE_RACK_TEST_CLAP_NARROW to witness the refusal"]
     #[allow(unsafe_code)]
     fn a_mono_card_dropped_on_a_stereo_wire_is_refused_where_it_stands() {
-        let path = PathBuf::from(
-            std::env::var_os("NICE_RACK_TEST_CLAP").expect("Set NICE_RACK_TEST_CLAP"),
-        );
+        let Some(wide_path) = std::env::var_os("NICE_RACK_TEST_CLAP_WIDE").map(PathBuf::from)
+        else {
+            return;
+        };
         let Some(narrow_path) = std::env::var_os("NICE_RACK_TEST_CLAP_NARROW").map(PathBuf::from)
         else {
             return;
         };
         // SAFETY: explicit test opt-in to this repository's own plugin export.
-        let wide_entry = unsafe { nice_clap_host::Entry::load(&path).unwrap() };
+        let wide_entry = unsafe { nice_clap_host::Entry::load(&wide_path).unwrap() };
         let wide_class = wide_entry
             .descriptors()
             .unwrap()
             .first()
-            .expect("the test export contains at least one plugin")
+            .expect("the wide test export contains at least one plugin")
             .id
             .clone();
         let wide = Card::new(
             NodeId(2),
-            path,
+            wide_path,
             wide_entry,
             wide_class,
             "Stereo card".into(),
@@ -2359,7 +2362,7 @@ mod tests {
         assert_eq!(
             (wide.inputs, wide.outputs),
             (Channels::Stereo, Channels::Stereo),
-            "NICE_RACK_TEST_CLAP should name a stereo-in, stereo-out export"
+            "NICE_RACK_TEST_CLAP_WIDE should name a stereo-in, stereo-out export, Nice Pi-Fase"
         );
         assert_eq!(
             (narrow.inputs, narrow.outputs),

@@ -313,12 +313,17 @@ cargo test -p nice-clone -p nice-dist || fail 'cargo test -p nice-clone -p nice-
 # gate in pull request 31 and only the gate. Its tests have run on runners ever
 # since and on no machine at the other end of a push — the adapter compiled
 # here for the first time while this line was being tried, which is the whole
-# argument for the line. Ten more stand aside behind `NICE_RACK_TEST_CLAP`,
-# which names a freshly built plugin export, and two of those open this
-# machine's real audio devices; a hook that grabs your speakers is a hook you
-# start skipping, so the export build stays out of a push. The eight that need
-# no device pass here on Windows, against the same build's
-# `nice_tuner.dll`.
+# argument for the line. Twenty more stand aside on Linux — thirteen behind
+# `NICE_RACK_TEST_CLAP`, which names a freshly built plugin export, two of those
+# opening this machine's real audio devices and one wanting a live X server
+# besides; one behind `NICE_RACK_TEST_CLAP_WIDE` and `NICE_RACK_TEST_CLAP_NARROW`
+# together, the pair naming a stereo and a narrow export; one behind
+# `NICE_CLONE_TEST_CLAP`; two wanting only an X server; three printing cost
+# tables — and a few fewer on Windows, where the X-server-gated ones do not
+# exist. A hook that grabs your speakers is a hook you start skipping, so the
+# export build stays out of a push. Every one of them that needs no X server
+# passed on the Linux machine this mono rework was made on, the two device
+# tests included, against the bundled exports.
 printf 'pre-push: running `cargo test -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input`...\n'
 cargo test -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input \
     || fail 'cargo test -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input'

@@ -20,12 +20,12 @@ fn repository_tuner_processes_audio_and_round_trips_state() {
         .unwrap();
     assert_eq!(
         (report.inputs, report.outputs, report.frames, report.latency),
-        (2, 2, 256, 0)
+        (1, 1, 256, 0)
     );
     assert!(report.state_supported);
     assert!(report.state_bytes_after.unwrap() > 0);
     assert_eq!(report.state_roundtrip_matches, Some(true));
-    assert_eq!(report.audio.len(), 2);
+    assert_eq!(report.audio.len(), 1);
     for channel in report.audio {
         assert_eq!(channel.len(), 256);
         assert!(channel.iter().all(|&sample| sample == 0.125));
@@ -51,8 +51,8 @@ fn repository_plugins_render_serial_and_parallel_graphs_and_recover_from_setup_e
     // SAFETY: explicitly supplied build of this repository's own nice-tuner.
     let entry = unsafe { nice_clap_host::Entry::load(std::path::Path::new(&path)).unwrap() };
     let plugin = NodeKind::Plugin {
-        inputs: Channels::Stereo,
-        outputs: Channels::Stereo,
+        inputs: Channels::Mono,
+        outputs: Channels::Mono,
     };
     let classes: BTreeMap<_, _> = [
         (NodeId(1), "com.nice-tuner.nice-tuner".into()),
@@ -63,18 +63,17 @@ fn repository_plugins_render_serial_and_parallel_graphs_and_recover_from_setup_e
         (0..513)
             .map(|i| if i % 2 == 0 { 0.125 } else { -0.25 })
             .collect::<Vec<f32>>(),
-        vec![0.0625; 513],
     ];
     for parallel in [false, true] {
         let mut nodes: BTreeMap<_, _> = [
-            (NodeId(0), NodeKind::Input(Channels::Stereo)),
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
             (NodeId(1), plugin.clone()),
             (NodeId(2), plugin.clone()),
-            (NodeId(4), NodeKind::Output(Channels::Stereo)),
+            (NodeId(4), NodeKind::Output(Channels::Mono)),
         ]
         .into();
         let routes = if parallel {
-            nodes.insert(NodeId(3), NodeKind::Mixer(Channels::Stereo));
+            nodes.insert(NodeId(3), NodeKind::Mixer(Channels::Mono));
             vec![(0, 1), (0, 2), (1, 3), (2, 3), (3, 4)]
         } else {
             vec![(0, 1), (1, 2), (2, 4)]
@@ -124,7 +123,7 @@ fn repository_plugins_render_serial_and_parallel_graphs_and_recover_from_setup_e
         let mut rejected = graph.clone();
         rejected
             .nodes
-            .insert(NodeId(9), NodeKind::Output(Channels::Stereo));
+            .insert(NodeId(9), NodeKind::Output(Channels::Mono));
         rejected.connections.push(Connection {
             from: NodeId(2),
             to: NodeId(9),
@@ -153,15 +152,15 @@ fn live_graph_stops_at_a_block_boundary_then_reconfigures_and_resumes() {
     let entry = unsafe { nice_clap_host::Entry::load(std::path::Path::new(&path)).unwrap() };
     let graph = RackGraph {
         nodes: [
-            (NodeId(0), NodeKind::Input(Channels::Stereo)),
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
             (
                 NodeId(1),
                 NodeKind::Plugin {
-                    inputs: Channels::Stereo,
-                    outputs: Channels::Stereo,
+                    inputs: Channels::Mono,
+                    outputs: Channels::Mono,
                 },
             ),
-            (NodeId(2), NodeKind::Output(Channels::Stereo)),
+            (NodeId(2), NodeKind::Output(Channels::Mono)),
         ]
         .into(),
         connections: [
@@ -186,32 +185,21 @@ fn live_graph_stops_at_a_block_boundary_then_reconfigures_and_resumes() {
         std::thread::scope(|scope| {
             let (ready, receive) = sync_channel(1);
             let job = scope.spawn(move || {
-                let mut left = [0.0; 128];
-                let mut right = [0.0; 128];
+                let mut mono = [0.0; 128];
                 assert_eq!(
                     audio
-                        .process(
-                            &[&[0.125; 128], &[-0.25; 128]],
-                            &mut [&mut [&mut left[..], &mut right[..]][..]],
-                            37
-                        )
+                        .process(&[&[0.125; 128]], &mut [&mut [&mut mono[..]][..]], 37)
                         .unwrap(),
                     LiveStatus::Running
                 );
-                assert!(left[..37].iter().all(|&sample| sample == 0.125));
-                assert!(right[..37].iter().all(|&sample| sample == -0.25));
+                assert!(mono[..37].iter().all(|&sample| sample == 0.125));
                 ready.send(()).unwrap();
                 loop {
                     let status = audio
-                        .process(
-                            &[&[0.125; 128], &[-0.25; 128]],
-                            &mut [&mut [&mut left[..], &mut right[..]][..]],
-                            37,
-                        )
+                        .process(&[&[0.125; 128]], &mut [&mut [&mut mono[..]][..]], 37)
                         .unwrap();
                     if status == LiveStatus::Stopped {
-                        assert_eq!(left[..37], [0.0; 37]);
-                        assert_eq!(right[..37], [0.0; 37]);
+                        assert_eq!(mono[..37], [0.0; 37]);
                         break;
                     }
                     std::thread::yield_now();
@@ -246,15 +234,15 @@ fn generic_mute_controls_and_native_state_are_independent_per_instance() {
     let entry = unsafe { Entry::load(std::path::Path::new(&path)).unwrap() };
     let graph = RackGraph {
         nodes: [
-            (NodeId(0), NodeKind::Input(Channels::Stereo)),
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
             (
                 NodeId(1),
                 NodeKind::Plugin {
-                    inputs: Channels::Stereo,
-                    outputs: Channels::Stereo,
+                    inputs: Channels::Mono,
+                    outputs: Channels::Mono,
                 },
             ),
-            (NodeId(2), NodeKind::Output(Channels::Stereo)),
+            (NodeId(2), NodeKind::Output(Channels::Mono)),
         ]
         .into(),
         connections: vec![
@@ -291,17 +279,11 @@ fn generic_mute_controls_and_native_state_are_independent_per_instance() {
     std::thread::scope(|scope| {
         scope
             .spawn(|| {
-                let mut left = [0.0; 32];
-                let mut right = [0.0; 32];
+                let mut mono = [0.0; 32];
                 audio
-                    .process(
-                        &[&[0.25; 32], &[-0.5; 32]],
-                        &mut [&mut [&mut left[..], &mut right[..]][..]],
-                        32,
-                    )
+                    .process(&[&[0.25; 32]], &mut [&mut [&mut mono[..]][..]], 32)
                     .unwrap();
-                assert_eq!(left, [0.0; 32]);
-                assert_eq!(right, [0.0; 32]);
+                assert_eq!(mono, [0.0; 32]);
             })
             .join()
             .unwrap();

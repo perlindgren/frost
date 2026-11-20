@@ -12,15 +12,15 @@ fn clone_oversampling_is_visible_editable_and_saved_through_clap() {
     let entry = unsafe { Entry::load(std::path::Path::new(&path)).unwrap() };
     let graph = RackGraph {
         nodes: [
-            (NodeId(0), NodeKind::Input(Channels::Stereo)),
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
             (
                 NodeId(1),
                 NodeKind::Plugin {
-                    inputs: Channels::Stereo,
-                    outputs: Channels::Stereo,
+                    inputs: Channels::Mono,
+                    outputs: Channels::Mono,
                 },
             ),
-            (NodeId(2), NodeKind::Output(Channels::Stereo)),
+            (NodeId(2), NodeKind::Output(Channels::Mono)),
         ]
         .into(),
         connections: vec![

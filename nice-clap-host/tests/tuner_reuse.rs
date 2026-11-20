@@ -13,15 +13,15 @@ const BLOCK: usize = 32;
 fn chain() -> RackGraph {
     RackGraph {
         nodes: [
-            (NodeId(0), NodeKind::Input(Channels::Stereo)),
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
             (
                 NodeId(1),
                 NodeKind::Plugin {
-                    inputs: Channels::Stereo,
-                    outputs: Channels::Stereo,
+                    inputs: Channels::Mono,
+                    outputs: Channels::Mono,
                 },
             ),
-            (NodeId(2), NodeKind::Output(Channels::Stereo)),
+            (NodeId(2), NodeKind::Output(Channels::Mono)),
         ]
         .into(),
         connections: [
@@ -58,18 +58,13 @@ fn stop(session: &mut LiveSession, audio: LiveAudio) {
 
 /// One block through a chain's audio side, on a thread of its own as the rack's
 /// DSP worker runs it, and the audio side back again.
-fn block(mut audio: LiveAudio) -> (LiveAudio, [f32; BLOCK], [f32; BLOCK]) {
+fn block(mut audio: LiveAudio) -> (LiveAudio, [f32; BLOCK]) {
     std::thread::spawn(move || {
-        let mut left = [0.0; BLOCK];
-        let mut right = [0.0; BLOCK];
+        let mut mono = [0.0; BLOCK];
         audio
-            .process(
-                &[&[0.25; BLOCK], &[-0.5; BLOCK]],
-                &mut [&mut [&mut left[..], &mut right[..]][..]],
-                BLOCK,
-            )
+            .process(&[&[0.25; BLOCK]], &mut [&mut [&mut mono[..]][..]], BLOCK)
             .unwrap();
-        (audio, left, right)
+        (audio, mono)
     })
     .join()
     .unwrap()
@@ -131,12 +126,11 @@ fn a_rebuilt_chain_keeps_the_instance_the_edit_did_not_touch() {
         1.0,
         "the plugin this edit did not touch should still be the plugin it was"
     );
-    let (audio, left, right) = block(audio);
+    let (audio, mono) = block(audio);
     assert_eq!(
-        left, [0.0; BLOCK],
+        mono, [0.0; BLOCK],
         "the new chain should be processing the instance it inherited, which is the one that is muted"
     );
-    assert_eq!(right, [0.0; BLOCK]);
     stop(&mut carried, audio);
 
     // The same edit with nothing to carry, which is every rebuild before this one:
@@ -149,11 +143,10 @@ fn a_rebuilt_chain_keeps_the_instance_the_edit_did_not_touch() {
         0.0,
         "a plugin built from nothing but the saved state should be a fresh one"
     );
-    let (audio, left, right) = block(audio);
+    let (audio, mono) = block(audio);
     assert_eq!(
-        left, [0.25; BLOCK],
+        mono, [0.25; BLOCK],
         "and the tuner should be passing the block through, mute and all"
     );
-    assert_eq!(right, [-0.5; BLOCK]);
     stop(&mut replaced, audio);
 }

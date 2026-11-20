@@ -55,8 +55,11 @@ fn native_rack_edits_and_device_independent_shutdown() {
     let rendered = entry
         .render_graph(&parallel_graph, &classes, &samples, 48000.0, 16)
         .unwrap();
-    assert!(rendered.audio[0].iter().all(|&sample| sample == 0.25));
-    assert!(rendered.audio[1].iter().all(|&sample| sample == -0.5));
+    // The tuner is a mono card on a stereo route: the route hands it the
+    // averaged pair, (L + R) * 0.5 = -0.0625, the two cards sum at unity
+    // on the mono wire to -0.125, and the route answers on both lanes.
+    assert!(rendered.audio[0].iter().all(|&sample| sample == -0.125));
+    assert!(rendered.audio[1].iter().all(|&sample| sample == -0.125));
     let serial = nice_rack::runtime::arrange(
         parallel.clone(),
         NodeId(3),
@@ -70,7 +73,11 @@ fn native_rack_edits_and_device_independent_shutdown() {
     let rendered = entry
         .render_graph(&serial_graph, &classes, &samples, 48000.0, 16)
         .unwrap();
-    assert_eq!(rendered.audio, samples);
+    // In series the two mono cards pass one another's output untouched, so
+    // the signal is the route's own down-mix (L + R) * 0.5 = -0.0625,
+    // neither summed nor split — and the stereo answer repeats it.
+    assert!(rendered.audio[0].iter().all(|&sample| sample == -0.0625));
+    assert!(rendered.audio[1].iter().all(|&sample| sample == -0.0625));
     let reduced = parallel
         .into_iter()
         .filter(|card| card.id != NodeId(1))
@@ -113,7 +120,9 @@ fn native_rack_edits_and_device_independent_shutdown() {
     }
     let _ = worker.join().unwrap();
     assert_eq!(session.service().unwrap(), LiveStatus::Stopped);
-    assert_eq!(monitor.pop().unwrap().0, [0.125, -0.25]);
+    // Same route maths as the rendered graphs above: the live serial chain
+    // answers the device's stereo frame with its down-mix on both lanes.
+    assert_eq!(monitor.pop().unwrap().0, [-0.0625, -0.0625]);
     assert_eq!(session.snapshot().unwrap().len(), 2);
     let mut runtime = Runtime::new(nice_rack::Settings::default());
     settle(&mut runtime);

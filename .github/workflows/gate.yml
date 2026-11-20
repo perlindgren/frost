@@ -619,16 +619,22 @@ jobs:
           cargo test --no-fail-fast -p nice-clone -p nice-dist
           cargo test --no-fail-fast -p nice-clone -p nice-dist --features standalone
 
-      # The rack's suites. Nine tests stand aside, every one of them naming
-      # `NICE_RACK_TEST_CLAP` — this repository's own freshly built nice-tuner
-      # export, a plugin the runner could build and has no reason to load into its
-      # own process — and two of those name real audio devices as well. `cargo
-      # test` does not run ignored tests unless asked, so what runs here is the
-      # routing graph and its cycle rules, the live graph's block boundary, the
-      # drop zones and stage layout, the instance-state and editor-geometry round
-      # trip, and the controller's stop, retry and rollback paths: none of them
-      # opens a device, a window or a plugin. The same nine stand aside in the
-      # Windows twin below, for the same reasons.
+      # The rack's suites. `cargo test` does not run ignored tests unless asked,
+      # so what runs here is the routing graph and its cycle rules, the live
+      # graph's block boundary, the drop zones and stage layout, the
+      # instance-state and editor-geometry round trip, and the controller's stop,
+      # retry and rollback paths: none of them opens a device, a window or a
+      # plugin. What stands aside opts in by naming a variable, twenty of them on
+      # this Linux machine. Thirteen name `NICE_RACK_TEST_CLAP` — this
+      # repository's own freshly built nice-tuner export, a plugin the runner
+      # could build and has no reason to load into its own process — two of those
+      # name real audio devices as well and one wants a live X server on top. One
+      # refuses only with `NICE_RACK_TEST_CLAP_WIDE` naming a stereo-in,
+      # stereo-out export and `NICE_RACK_TEST_CLAP_NARROW` a single-input one.
+      # One names `NICE_CLONE_TEST_CLAP`, two want only a live X server, and
+      # three print cost tables rather than asserting. The same opt-ins stand
+      # aside in the Windows twin below, for the same reasons; the X-server-gated
+      # ones are Linux-only, so the Windows totals run a little lower.
       - name: Tests, the rack and its host adapter
         if: needs.plan.outputs.rack == 'true'
         run: cargo test --no-fail-fast -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input
@@ -923,19 +929,22 @@ jobs:
         if: needs.plan.outputs.clone == 'true'
         run: cargo test --no-fail-fast -p nice-clone -p nice-dist --features standalone
 
-      # The rack, on the platform its binary ships on. Twenty-three tests run and
-      # nine stand aside: each of the nine names `NICE_RACK_TEST_CLAP`, a native
-      # CLAP export this runner could build and has no business loading into its
-      # own process, and two of those name real audio devices as well — the pair
-      # being the rack's only tests that would open this platform's driver, which
-      # is exactly the pair a runner with no hardware could not settle either way.
-      # What does run here is the routing graph, the live graph's block boundary,
-      # the drop zones, the instance-state round trip, and the controller's stop,
-      # retry and rollback paths, so the driver this platform's audio rests on
-      # stays covered by the shared crate's driver-free tests above rather than by
-      # a promise about this machine.
-      #
-      # Both numbers measured here first: twenty-three passing, nine skipped.
+      # The rack, on the platform its binary ships on. This step passes no
+      # `--ignored` either, so the opt-ins listed on the Linux twin above stand
+      # aside here too: the set naming `NICE_RACK_TEST_CLAP`, a native CLAP
+      # export this runner could build and has no business loading into its own
+      # process — two of them name real audio devices as well, the pair being
+      # the rack's only tests that would open this platform's driver, which is
+      # exactly the pair a runner with no hardware could not settle either way —
+      # plus the refusal witness that wants `NICE_RACK_TEST_CLAP_WIDE` and
+      # `NICE_RACK_TEST_CLAP_NARROW` together, the Clone test naming
+      # `NICE_CLONE_TEST_CLAP`, and the cost tables. The X-server-gated tests are
+      # Linux-only and never appear on this platform. What does run here is the
+      # routing graph, the live graph's block boundary, the drop zones, the
+      # instance-state round trip, and the controller's stop, retry and rollback
+      # paths, so the driver this platform's audio rests on stays covered by the
+      # shared crate's driver-free tests above rather than by a promise about
+      # this machine.
       - name: Tests, the rack and its host adapter
         if: needs.plan.outputs.rack == 'true'
         run: cargo test --no-fail-fast -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input
