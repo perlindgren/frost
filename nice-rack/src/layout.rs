@@ -8,7 +8,10 @@ pub enum Side {
     Right,
     Above,
     Below,
-    /// The join ring a split stage draws where its lanes merge: dropping on
+    /// The ring a fork draws where its trunk fans out into lanes: dropping
+    /// on it lands the card in a stage of its own ahead of that whole fork.
+    Split,
+    /// The ring a split stage draws where its lanes merge: dropping on
     /// it lands the card in a stage of its own behind the whole fork.
     Join,
 }
@@ -20,13 +23,12 @@ pub struct Target {
 
 /// Moves an existing card, or a new card already appended as a stage and a
 /// branch of its own. IDs are retained, and empty branches and stages
-/// collapse. Dropping on the right of a card chains the moving card into
-/// that card's branch after the target, whichever lane of a split it is;
-/// dropping on the left chains it before the target, except at the leading
-/// card of a split, where the card lands in a new stage ahead of the whole
-/// fork; dropping above or below puts it in a branch of its own alongside
-/// the target's branch; dropping on a stage's join ring lands the card in a
-/// new stage behind the whole fork.
+/// collapse. Dropping on either side of a card chains the moving card into
+/// that card's branch at that position, whichever lane of a split it is and
+/// whether or not it is the lane's head; dropping above or below puts it in
+/// a branch of its own alongside the target's branch; dropping on a fork's
+/// front ring lands the card in a new stage ahead of that whole fork, and
+/// on its rear ring behind it.
 pub fn place(
     stages: &[Vec<Vec<NodeId>>],
     moving: NodeId,
@@ -45,22 +47,20 @@ pub fn place(
     result.retain(|stage| !stage.is_empty());
     let (column, branch, row) = find(&result, target.card).ok_or("Drop target no longer exists")?;
     match target.side {
-        // The left edge of a split is the split itself: dropping to the
-        // left of any lane's leading card lands the card ahead of the
-        // whole fork, in a stage of its own. Deeper into a lane, or in a
-        // stage that has become a single chain, left still chains.
-        Side::Left if row == 0 && result[column].len() > 1 => {
-            result.insert(column, vec![vec![moving]])
-        }
+        // A ring is the fork's own door, not a lane's: the card steps out
+        // of the trunk into a stage of its own, ahead of the fan-out or
+        // behind the merge, whatever lane the ring's anchor stands in. A
+        // stage that is no longer a fork merely gains its next stage here —
+        // the same column a chain would have grown.
+        Side::Split => result.insert(column, vec![vec![moving]]),
+        Side::Join => result.insert(column + 1, vec![vec![moving]]),
+        // Every other drop belongs to the hovered lane: beside any card,
+        // head included, the moving card joins or leaves that chain at the
+        // position it was aimed at.
         Side::Left => result[column][branch].insert(row, moving),
         Side::Right => result[column][branch].insert(row + 1, moving),
         Side::Above => result[column].insert(branch, vec![moving]),
         Side::Below => result[column].insert(branch + 1, vec![moving]),
-        // The join ring is the fork's back door: the card steps out of the
-        // merge into a stage of its own, whatever lane the ring's anchor
-        // stands in. A stage that is not a fork at all merely gains its
-        // next stage here — the same column a chain would have grown.
-        Side::Join => result.insert(column + 1, vec![vec![moving]]),
     }
     Ok(result)
 }
@@ -146,34 +146,93 @@ mod tests {
         assert_eq!(chained, vec![vec![vec![NodeId(1), NodeId(3), NodeId(2)]]]);
     }
     #[test]
-    fn a_card_dropped_before_a_split_lands_ahead_of_the_fork() {
-        // S feeds a split, and card 7 arrives from the plugin list.
+    fn left_of_a_split_lane_head_prepends_inside_that_lane() {
+        // S feeds a split, and card 7 arrives from the plugin list. The
+        // fork keeps every lane it had; the card steps into the lane it
+        // was aimed at, ahead of that lane's head.
         let original = vec![
             vec![vec![NodeId(1)]],
             vec![vec![NodeId(3)], vec![NodeId(5)]],
             vec![vec![NodeId(7)]],
         ];
-        let expected = vec![
+        assert_eq!(
+            place(
+                &original,
+                NodeId(7),
+                Target {
+                    card: NodeId(3),
+                    side: Side::Left
+                }
+            )
+            .unwrap(),
+            vec![
+                vec![vec![NodeId(1)]],
+                vec![vec![NodeId(7), NodeId(3)], vec![NodeId(5)]]
+            ]
+        );
+        assert_eq!(
+            place(
+                &original,
+                NodeId(7),
+                Target {
+                    card: NodeId(5),
+                    side: Side::Left
+                }
+            )
+            .unwrap(),
+            vec![
+                vec![vec![NodeId(1)]],
+                vec![vec![NodeId(3)], vec![NodeId(7), NodeId(5)]]
+            ]
+        );
+    }
+    #[test]
+    fn a_card_dropped_on_a_split_ring_lands_ahead_of_the_fork() {
+        // The ring belongs to the stage, not the lane: whichever card it
+        // is anchored to, the card steps in front of the whole fan-out,
+        // between the stage before the fork and the fork itself.
+        let original = vec![
             vec![vec![NodeId(1)]],
-            vec![vec![NodeId(7)]],
             vec![vec![NodeId(3)], vec![NodeId(5)]],
+            vec![vec![NodeId(7)]],
         ];
-        // Aimed at either lane's leading card, the fork keeps its shape and
-        // the card stands before the whole stage.
-        for head in [NodeId(3), NodeId(5)] {
+        for anchor in [NodeId(3), NodeId(5)] {
             assert_eq!(
                 place(
                     &original,
-                    NodeId(7),
+                    NodeId(1),
                     Target {
-                        card: head,
-                        side: Side::Left
+                        card: anchor,
+                        side: Side::Split
                     }
                 )
                 .unwrap(),
-                expected
+                vec![
+                    vec![vec![NodeId(1)]],
+                    vec![vec![NodeId(3)], vec![NodeId(5)]],
+                    vec![vec![NodeId(7)]]
+                ]
             );
         }
+        // A lane head pulled onto its own stage's front ring steps out
+        // ahead of the fork too: the emptied lane collapses first, and the
+        // card stands as a stage of its own right before the fork.
+        let forked = vec![vec![vec![NodeId(3), NodeId(1)], vec![NodeId(5)]]];
+        assert_eq!(
+            place(
+                &forked,
+                NodeId(1),
+                Target {
+                    card: NodeId(3),
+                    side: Side::Split
+                }
+            )
+            .unwrap(),
+            vec![
+                vec![vec![NodeId(1)]],
+                vec![vec![NodeId(3)], vec![NodeId(5)]]
+            ]
+        );
     }
     #[test]
     fn left_of_a_lane_middles_or_a_single_lane_still_chains() {
