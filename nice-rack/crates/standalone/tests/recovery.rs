@@ -35,6 +35,7 @@ fn native_rack_edits_and_device_independent_shutdown() {
         cards.clone(),
         NodeId(3),
         nice_rack::layout::Target {
+            scope: None,
             card: NodeId(1),
             side: nice_rack::layout::Side::Below,
         },
@@ -64,6 +65,7 @@ fn native_rack_edits_and_device_independent_shutdown() {
         parallel.clone(),
         NodeId(3),
         nice_rack::layout::Target {
+            scope: None,
             card: NodeId(1),
             side: nice_rack::layout::Side::Right,
         },
@@ -129,8 +131,17 @@ fn native_rack_edits_and_device_independent_shutdown() {
     runtime.edit(cards);
     settle(&mut runtime);
     assert_eq!(runtime.cards.len(), 2);
-    let mut reordered = runtime.cards.clone();
-    reordered.swap(0, 1);
+    // Vector order is presentation/roster order, no longer a wiring edit.
+    let reordered = nice_rack::runtime::arrange(
+        runtime.cards.clone(),
+        NodeId(3),
+        nice_rack::layout::Target {
+            scope: None,
+            card: NodeId(1),
+            side: nice_rack::layout::Side::Left,
+        },
+    )
+    .unwrap();
     runtime.edit(reordered);
     settle(&mut runtime);
     assert_eq!(

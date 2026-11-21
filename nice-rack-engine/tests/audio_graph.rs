@@ -709,7 +709,7 @@ fn the_input_jack_trims_and_meters_the_capture_as_it_enters() {
     // The rack's own input wire: the single `Input` node is addressed
     // `INPUT_WIRE_KEY`, its trim scales the capture before any card reads
     // it, and its meter shows the signal after the trim — what the rack
-    // carries on. There is no break: the capture flows while the rack runs.
+    // carries on. The outgoing switch can cut the capture after this source meter.
     let mut rack = PreparedRack::prepare(
         &graph(),
         [
@@ -754,6 +754,21 @@ fn the_input_jack_trims_and_meters_the_capture_as_it_enters() {
     .unwrap();
     rebuilt.attach_wire_levels(Arc::clone(&levels));
     assert_eq!(levels.gain_of(INPUT_WIRE_KEY), Some(0.5));
+    rebuilt
+        .process(&[&block], &mut [&mut [&mut output[..]][..]], 4)
+        .unwrap();
+    assert_eq!(output, block);
+    levels.set_open(INPUT_WIRE_KEY, true);
+    for _ in 0..16 {
+        rebuilt
+            .process(&[&block], &mut [&mut [&mut output[..]][..]], 4)
+            .unwrap();
+    }
+    assert_eq!(output, [0.0; 4]);
+    assert!(levels.sample(INPUT_WIRE_KEY).unwrap().0 > 0.0);
+    assert_eq!(levels.sample(NodeId(1).0 << 1), Some((0.0, 0.0)));
+    assert_eq!(levels.sample(NodeId(2).0 << 1), Some((0.0, 0.0)));
+    levels.set_open(INPUT_WIRE_KEY, false);
     rebuilt
         .process(&[&block], &mut [&mut [&mut output[..]][..]], 4)
         .unwrap();

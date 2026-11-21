@@ -22,6 +22,8 @@ use std::{
 const BLOCK: usize = 1024;
 #[derive(Clone)]
 pub struct Card {
+    /// Shared authoritative routing, retained across roster edits and undo.
+    pub routing: Option<Arc<crate::layout::Flow>>,
     pub id: NodeId,
     pub stage: u64,
     /// Which branch of its stage this card chains along, keyed by the branch's
@@ -57,6 +59,7 @@ impl Card {
             .ok_or("Plugin class not found")?;
         let (inputs, outputs) = entry.main_channels(&class)?;
         Ok(Self {
+            routing: None,
             id,
             stage: id.0,
             branch: None,
@@ -143,51 +146,72 @@ pub fn branches(cards: &[Card]) -> Vec<Vec<Branch<'_>>> {
         })
         .collect()
 }
-pub fn arrange(
-    cards: Vec<Card>,
-    moving: NodeId,
-    target: crate::layout::Target,
-) -> Result<Vec<Card>, String> {
-    let layout = branches(&cards)
+/// Read the authoritative expression, importing old stage/lane files once.
+pub fn flow(cards: &[Card]) -> Result<crate::layout::Flow, String> {
+    if let Some(root) = cards.iter().find_map(|card| card.routing.as_ref()) {
+        return root.roster(&cards.iter().map(|card| card.id.0).collect::<Vec<_>>());
+    }
+    let lanes = branches(cards)
         .iter()
         .map(|stage| {
             stage
                 .iter()
-                .map(|branch| crate::layout::Lane {
-                    start: branch.start,
-                    end: branch.end,
-                    chain: branch.cards.iter().map(|card| card.id).collect(),
+                .map(|lane| crate::layout::Lane {
+                    start: lane.start,
+                    end: lane.end,
+                    chain: lane.cards.iter().map(|card| card.id).collect(),
                 })
                 .collect()
         })
-        .collect::<Vec<Vec<_>>>();
-    let layout = crate::layout::place(&layout, moving, target)?;
+        .collect::<Vec<_>>();
+    crate::layout::Flow::from_lanes(&lanes)
+}
+fn arrange_flow(cards: Vec<Card>, root: crate::layout::Flow) -> Result<Vec<Card>, String> {
+    root.validate()?;
+    let shared = Arc::new(root.clone());
     let mut cards = cards
         .into_iter()
         .map(|card| (card.id, card))
         .collect::<BTreeMap<_, _>>();
     let mut result = Vec::new();
-    for stage in layout {
-        let key = stage[0].chain[0];
+    for stage in root.lanes() {
+        let key = stage[0].chain[0].0;
         let width = stage.iter().map(|lane| lane.end).max().unwrap_or(1);
         for lane in stage {
-            // A lane of one is just a card on its own: the key only needs
-            // to exist to hold a chain together, and `arrange` has the whole
-            // picture, so it writes the cleanest labels it can — and a span
-            // is only worth keeping when the lane does not run the stage.
-            let branch_key = (lane.chain.len() > 1).then_some(lane.chain[0]);
+            let branch = (lane.chain.len() > 1).then_some(lane.chain[0].0);
             let span = (lane.start != 0 || lane.end != width)
                 .then_some((lane.start as u64, lane.end as u64));
             for id in lane.chain {
-                let mut card = cards.remove(&id).unwrap();
-                card.stage = key.0;
-                card.branch = branch_key.map(|head| head.0);
+                let mut card = cards
+                    .remove(&id)
+                    .ok_or("Routing refers to a missing plugin")?;
+                card.routing = Some(shared.clone());
+                card.stage = key;
+                card.branch = branch;
                 card.span = span;
                 result.push(card);
             }
         }
     }
+    if !cards.is_empty() {
+        return Err("Routing omitted a plugin".into());
+    }
     Ok(result)
+}
+pub fn arrange(
+    cards: Vec<Card>,
+    moving: NodeId,
+    target: crate::layout::Target,
+) -> Result<Vec<Card>, String> {
+    let root = flow(&cards)?.edit_scoped(
+        crate::layout::Edit::Move {
+            id: moving.0,
+            target: target.card.0,
+            placement: target.side.into(),
+        },
+        target.scope,
+    )?;
+    arrange_flow(cards, root)
 }
 /// One stage's worth of card shapes: lanes top lane down, each lane a serial
 /// chain of `(id, inputs, outputs)` running between the lane's own two
@@ -367,6 +391,21 @@ pub fn chain(
     cards: &[Card],
     route: Route,
 ) -> Result<(RackGraph, BTreeMap<NodeId, Binding>), WidthConflict> {
+    if cards.iter().any(|card| card.routing.is_some()) {
+        let root = flow(cards).expect("validated routing and roster");
+        let shapes = cards
+            .iter()
+            .map(|card| (card.id.0, (card.inputs, card.outputs)))
+            .collect();
+        let graph = plan_flow(&root, &shapes, route)?;
+        return Ok((
+            graph,
+            cards
+                .iter()
+                .map(|card| (card.id, card.binding.clone()))
+                .collect(),
+        ));
+    }
     let mut bindings = BTreeMap::new();
     let stages = branches(cards)
         .into_iter()
@@ -717,6 +756,78 @@ fn plan(stages: &[StagePlan], route: Route) -> Result<RackGraph, WidthConflict> 
     let rank = wiring.bear();
     wiring.graph.priority.insert(output, rank);
     Ok(wiring.graph)
+}
+/// Lower the same structured expression edited by drag/drop. Branches are
+/// born top-to-bottom; mixers are local to their Parallel expression.
+fn plan_flow(
+    root: &crate::layout::Flow,
+    shapes: &BTreeMap<u64, (Channels, Channels)>,
+    route: Route,
+) -> Result<RackGraph, WidthConflict> {
+    fn lower(
+        w: &mut Wiring,
+        root: &crate::layout::Flow,
+        shapes: &BTreeMap<u64, (Channels, Channels)>,
+        feed: (NodeId, Channels),
+        convert: bool,
+    ) -> Result<(NodeId, Channels), WidthConflict> {
+        use crate::layout::Flow;
+        match root {
+            Flow::Empty => Ok(feed),
+            Flow::Plugin(id) => {
+                let (inputs, outputs) = shapes[id];
+                let mut node = feed.0;
+                if inputs != feed.1 {
+                    if !convert {
+                        return Err(WidthConflict {
+                            card: NodeId(*id),
+                            wire: feed.1,
+                            wants: inputs,
+                        });
+                    }
+                    node = w.map(node, feed.1, inputs);
+                }
+                w.card(node, NodeId(*id), inputs, outputs);
+                Ok((NodeId(*id), outputs))
+            }
+            Flow::Series(children) => {
+                let mut value = feed;
+                for (i, child) in children.iter().enumerate() {
+                    value = lower(w, child, shapes, value, convert && i == 0)?;
+                }
+                Ok(value)
+            }
+            Flow::Parallel(children) => {
+                let feeds = children
+                    .iter()
+                    .map(|child| lower(w, child, shapes, feed, true))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(w.mixer(feeds))
+            }
+        }
+    }
+    let mut w = Wiring {
+        graph: RackGraph::default(),
+        born: 0,
+        next_id: u64::MAX - 1,
+    };
+    let input = NodeId(0);
+    let output = NodeId(u64::MAX);
+    w.graph.nodes.insert(input, NodeKind::Input(route.input));
+    let rank = w.bear();
+    w.graph.priority.insert(input, rank);
+    let (mut tail, width) = lower(&mut w, root, shapes, (input, route.input), true)?;
+    if width != route.output {
+        tail = w.map(tail, width, route.output);
+    }
+    w.graph.nodes.insert(output, NodeKind::Output(route.output));
+    w.graph.connections.push(Connection {
+        from: tail,
+        to: output,
+    });
+    let rank = w.bear();
+    w.graph.priority.insert(output, rank);
+    Ok(w.graph)
 }
 /// Master metering, published as f32 bits by the DSP thread and read by the
 /// window. `input`/`output` carry linear RMS; the peak fields carry linear
@@ -1081,6 +1192,13 @@ impl Runtime {
         if self.busy() {
             return;
         }
+        let cards = match flow(&cards).and_then(|root| arrange_flow(cards, root)) {
+            Ok(cards) => cards,
+            Err(error) => {
+                self.message = error;
+                return;
+            }
+        };
         if let Err(error) = refuse(chain(&cards, self.route()), &cards) {
             self.message = error;
             return;
@@ -1578,10 +1696,15 @@ impl Runtime {
                 }
             }
         }
+        // A legacy file with crossing spans can still be saved without
+        // inventing a structured interpretation or panicking during autosave.
+        let routing = flow(&self.cards).ok();
         let plugins: Vec<_> = self
             .cards
             .iter()
-            .map(|card| crate::SavedPlugin {
+            .enumerate()
+            .map(|(index, card)| crate::SavedPlugin {
+                routing: if index == 0 { routing.clone() } else { None },
                 id: card.id.0,
                 stage: card.stage,
                 branch: card.branch,
@@ -2770,6 +2893,7 @@ mod tests {
         assert_eq!(remembered.get(&(2, true)).copied(), Some(-6.0));
         assert_eq!(remembered.get(&(2, false)).copied(), Some(3.5));
         let wild = remembered_trims(&[crate::SavedPlugin {
+            routing: None,
             gain_in: 900.0,
             gain_out: f32::NAN,
             ..saved.preferences.plugins[0].clone()
@@ -2952,6 +3076,7 @@ mod tests {
     #[test]
     fn a_remembered_break_names_the_cable_and_not_the_card() {
         let saved = crate::SavedPlugin {
+            routing: None,
             id: 7,
             stage: 1,
             branch: None,
@@ -2976,6 +3101,7 @@ mod tests {
         // A file from before the feature names nothing, which is the empty set
         // and not a rack full of silent wires.
         let before = crate::SavedPlugin {
+            routing: None,
             open_in: false,
             ..saved
         };
@@ -3391,6 +3517,7 @@ mod card_mode_tests {
     }
     fn saved_card() -> crate::SavedPlugin {
         crate::SavedPlugin {
+            routing: None,
             id: 7,
             stage: 7,
             branch: None,
@@ -3407,5 +3534,184 @@ mod card_mode_tests {
             bypassed: true,
             paused: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod structural_graph_tests {
+    use super::*;
+    use crate::layout::{Edit, Flow, Placement};
+    fn n(id: u64) -> Flow {
+        Flow::Plugin(id)
+    }
+    fn s(c: Vec<Flow>) -> Flow {
+        Flow::series(c)
+    }
+    fn p(c: Vec<Flow>) -> Flow {
+        Flow::parallel(c)
+    }
+    fn compile(root: &Flow) -> RackGraph {
+        plan_flow(
+            root,
+            &root
+                .ids()
+                .into_iter()
+                .map(|id| (id, (Channels::Mono, Channels::Mono)))
+                .collect(),
+            Route {
+                input: Channels::Mono,
+                output: Channels::Mono,
+                ..Route::default()
+            },
+        )
+        .unwrap()
+    }
+    fn reaches(graph: &RackGraph, from: u64, to: u64) -> bool {
+        let mut stack = vec![NodeId(from)];
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            if id == NodeId(to) {
+                return true;
+            }
+            if seen.insert(id) {
+                stack.extend(
+                    graph
+                        .connections
+                        .iter()
+                        .filter(|e| e.from == id)
+                        .map(|e| e.to),
+                );
+            }
+        }
+        false
+    }
+    #[test]
+    fn independently_nested_branches_do_not_accidentally_mix_at_shared_columns() {
+        let root = p(vec![
+            s(vec![n(1), p(vec![n(2), n(3)]), n(4)]),
+            s(vec![n(5), n(6), n(7)]),
+        ]);
+        let graph = compile(&root);
+        for id in [2, 3, 4] {
+            assert!(reaches(&graph, 1, id));
+        }
+        for a in [1, 2, 3, 4] {
+            for b in [5, 6, 7] {
+                assert!(!reaches(&graph, a, b));
+                assert!(!reaches(&graph, b, a));
+            }
+        }
+        assert!(!reaches(&graph, 2, 3) && !reaches(&graph, 3, 2));
+        let order = graph
+            .compile()
+            .unwrap()
+            .order
+            .into_iter()
+            .filter(|id| matches!(graph.nodes[id], NodeKind::Plugin { .. }))
+            .map(|id| id.0)
+            .collect::<Vec<_>>();
+        assert_eq!(order, vec![1, 2, 3, 4, 5, 6, 7]);
+    }
+    #[test]
+    fn every_edit_still_compiles_to_a_dag_with_each_plugin_called_once() {
+        let original = p(vec![s(vec![n(1), n(2), n(3)]), s(vec![n(4), n(5)])]);
+        for id in 1..=5 {
+            for target in 1..=5 {
+                for placement in [
+                    Placement::Before,
+                    Placement::After,
+                    Placement::Above,
+                    Placement::Below,
+                    Placement::BeforeFork,
+                    Placement::AfterFork,
+                ] {
+                    let edited = original
+                        .edit(Edit::Move {
+                            id,
+                            target,
+                            placement,
+                        })
+                        .unwrap();
+                    let graph = compile(&edited);
+                    let order = graph.compile().unwrap().order;
+                    let called = order
+                        .iter()
+                        .filter(|id| matches!(graph.nodes[id], NodeKind::Plugin { .. }))
+                        .count();
+                    assert_eq!(called, 5);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod structural_audio_test {
+    use super::*;
+    use crate::layout::Flow;
+    use crate::routing::audio::{
+        AudioBuffer, PreparedRack, ProcessError, Processor, ProcessorSlot,
+    };
+    struct Gain(f32);
+    impl Processor for Gain {
+        fn process(
+            &mut self,
+            input: &AudioBuffer,
+            output: &mut AudioBuffer,
+            frames: usize,
+        ) -> Result<(), ProcessError> {
+            for (src, dst) in input
+                .channel(0, frames)
+                .iter()
+                .zip(output.channel_mut(0, frames))
+            {
+                *dst = *src * self.0;
+            }
+            Ok(())
+        }
+    }
+    #[test]
+    fn nested_routing_delivers_the_expected_audio_without_cross_branch_leakage() {
+        let n = Flow::Plugin;
+        let p = Flow::parallel;
+        let s = Flow::series;
+        let root = p(vec![
+            s(vec![n(1), p(vec![n(2), n(3)]), n(4)]),
+            s(vec![n(5), n(6), n(7)]),
+        ]);
+        let shapes = root
+            .ids()
+            .into_iter()
+            .map(|id| (id, (Channels::Mono, Channels::Mono)))
+            .collect();
+        let graph = plan_flow(
+            &root,
+            &shapes,
+            Route {
+                input: Channels::Mono,
+                output: Channels::Mono,
+                ..Route::default()
+            },
+        )
+        .unwrap();
+        let processors = root
+            .ids()
+            .into_iter()
+            .map(|id| {
+                (
+                    NodeId(id),
+                    ProcessorSlot {
+                        processor: Box::new(Gain(id as f32)),
+                        bypassed: false,
+                    },
+                )
+            })
+            .collect();
+        let mut rack = PreparedRack::prepare(&graph, processors, 16).unwrap();
+        let mut output = [0.0; 16];
+        rack.process(&[&[1.0; 16]], &mut [&mut [&mut output[..]][..]], 16)
+            .unwrap();
+        // First branch: 1 * (2 + 3) * 4 = 20; second: 5 * 6 * 7 = 210.
+        assert_eq!(output, [230.0; 16]);
     }
 }

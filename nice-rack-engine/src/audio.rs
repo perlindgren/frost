@@ -269,8 +269,8 @@ pub fn card_wire_key(id: u64, side: bool) -> Option<u64> {
 /// touched it is not this wire's story. The slot carries the rack's input
 /// trim, and its meter reads the signal as it enters the rack, after that
 /// trim, so an operator dialing capture gain trims to what the meter shows.
-/// Unlike a card wire it has no break switch: the capture either flows or the
-/// rack is not running.
+/// Its outgoing switch cuts the captured feed after metering, silencing every
+/// downstream branch while keeping the source visible.
 pub const INPUT_WIRE_KEY: u64 = 1;
 
 /// Lock-free wire observations shared between the audio thread and the UI.
@@ -434,10 +434,10 @@ impl WireLevels {
 
     /// Throw or close the switch on the wire `key`, from the UI thread, at
     /// any time. An open wire carries no signal past its stub, which is the
-    /// whole of what this does to the audio; the wire is still measured up to
-    /// the switch (see [`PreparedRack::process`]), so the meter on a broken
-    /// wire says what is arriving at the gap rather than that the gap is
-    /// silent. Unregistered keys are declined for the reason [`WireLevels::set_gain`]
+    /// whole of what this does to the audio. Input meters read after the
+    /// switch, so an open input reads silence; output meters read before
+    /// their outgoing switch and still show the source's signal.
+    /// Unregistered keys are declined for the reason [`WireLevels::set_gain`]
     /// gives: a UI that broke a wire while audio was stopped re-states the
     /// break once the wires are attached again.
     pub fn set_open(&self, key: u64, open: bool) {
@@ -936,12 +936,16 @@ impl PreparedRack {
                     // meter shows — the same shape as the master output
                     // stage, mirrored to the front of the rack. The meter
                     // reads the trimmed signal, because that is the signal
-                    // the rack feeds itself. There is no break here: the
-                    // capture either flows or the rack is not running.
+                    // the rack feeds itself, before its outgoing break switch.
                     if let Some(slot) = node.wire_out {
                         apply_gain(&mut node.output, frames, wires.gain(slot));
                         let level = wire_level(&node.output, frames, &mut node.tp_out);
                         wires.publish(slot, level);
+                        // Capture is metered at the source, then its outgoing
+                        // switch cuts the feed to every downstream branch.
+                        if wires.open_at(slot) {
+                            node.output.clear(frames);
+                        }
                     }
                 }
                 NodeKind::Plugin { .. } => {
@@ -961,19 +965,20 @@ impl PreparedRack {
                     if let Some(trim) = wire_in.filter(|_| !bypassed && !paused) {
                         apply_gain(&mut node.input, frames, wires.gain(trim));
                     }
-                    // An open circuit is measured before it is broken. The
-                    // stub on the switch then keeps reading the signal that
-                    // arrives at the gap, which is what tells an operator
-                    // chasing a fault that the far side of the break is alive;
-                    // what goes on past the gap is silence. A card
-                    // bypass ignores both saved breaks and trims, routing the
-                    // unmodified dry signal around this branch instead.
+                    // Input meters sit on the plugin side of the cable break.
+                    // Bypass ignores the break; otherwise both the processor and
+                    // its input meter receive silence. Reset reconstruction history
+                    // so a previously live wire cannot leak a stale peak past it.
+                    let input_broken = !bypassed && wire_in.is_some_and(|slot| wires.open_at(slot));
+                    if input_broken {
+                        node.input.clear(frames);
+                        for meter in &mut node.tp_in {
+                            meter.reset();
+                        }
+                    }
                     let arrival = wire_in
                         .is_some()
                         .then(|| wire_level(&node.input, frames, &mut node.tp_in));
-                    if !bypassed && wire_in.is_some_and(|slot| wires.open_at(slot)) {
-                        node.input.clear(frames);
-                    }
                     let processor = node.processor.as_mut().unwrap();
                     // Bypass changes routing, not time: keep the effect's
                     // history current with actual input. Only Pause suspends DSP.

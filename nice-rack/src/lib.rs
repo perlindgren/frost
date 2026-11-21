@@ -60,6 +60,9 @@ impl Default for RackPreferences {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedPlugin {
+    /// Structural routing stored once on the first entry; absent imports legacy lanes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<layout::Flow>,
     pub id: u64,
     pub stage: u64,
     /// Which branch of its stage this card chains onto, keyed by the branch's
@@ -192,6 +195,7 @@ mod tests {
             [(1, vec![0, 255, 1], 20, true), (3, vec![42, 8], 840, false)]
         {
             settings.preferences.plugins.push(SavedPlugin {
+                routing: None,
                 id,
                 stage: 1,
                 // One card carries a chain key and one does not, so the file
@@ -218,6 +222,10 @@ mod tests {
                 paused: id == 3,
             });
         }
+        settings.preferences.plugins[0].routing = Some(layout::Flow::parallel(vec![
+            layout::Flow::Plugin(1),
+            layout::Flow::Plugin(3),
+        ]));
         settings.save_to(&path).unwrap();
         let (loaded, warning) = Settings::load_from(&path);
         assert_eq!(warning, None);

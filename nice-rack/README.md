@@ -82,6 +82,9 @@ isolation or make an arbitrary third-party plugin safe.
   DSP 0.0% and separately identifies any remaining rack overhead.
   Both switches are saved with
   the rack. Right-clicking bare cable still toggles its existing wire break.
+- Right-click the wire or meter leaving IN to break the capture feed to all
+  branches. The IN meter keeps showing the source; downstream input meters
+  read silence. Right-click again to reconnect. This jack switch is session-only.
 - Input and output RMS/peak-hold meters sit at the bottom.
 - Every effect card has its own bottom-edge audio-budget meter. Muted purple
   fills from the left for time already spent before that card; green adds that
@@ -222,3 +225,14 @@ When the main rack window is occluded or minimized, its UI stops drawing.
 Audio continues independently, and the event loop services plugin callbacks,
 recovery and shutdown on a 20 ms maintenance wake. Restoring the window resumes
 rendering. This is an opt-in Frost policy; games keep their existing behavior.
+
+## Graph editing rules
+
+Drag editing uses an explicit serial/parallel routing expression. Left/right
+inserts in series; above/below creates a local fork around the targeted plugin.
+Moving a plugin closes its old position, then collapses empty and redundant
+split/join groups. The audio graph and the structural canvas use this same
+expression, including nested independent branches. Both internal drags and CLAP
+file drops use the same target resolver. See [graph-editing.md](docs/graph-editing.md)
+for the operations, normalization rules, complete worked sequence and RON
+compatibility behavior.

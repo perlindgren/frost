@@ -1,3 +1,4 @@
+mod flow_canvas;
 mod timing;
 use crate::{
     Settings,
@@ -222,17 +223,12 @@ const STUB_GAP: f32 = 6.0;
 /// leaves room for a card's own short run of wire between its stub box and
 /// the column its stage shares with the other cards in it, which is the only
 /// part of a parallel stage's wiring that belongs to that one card.
-const JUNCTION_GAP: f32 = 12.0;
+const JUNCTION_GAP: f32 = 32.0;
 /// How far above and below a wire a right-click still counts as aimed at it.
 /// The line itself is 2 px wide, so without some generosity here the operator
 /// would have to be exact about a target they cannot make much wider.
 const BREAK_HALF: f32 = 5.0;
-/// How far a broken wire's line pulls back from its stub box, on top of the
-/// box's own half-width. The box is 8 px across and sits between the card and
-/// the column its wire runs to, so stopping the line at the box's face would
-/// leave a gap barely wider than the mark inside it. This is the air that makes
-/// an open circuit read as a hole in the wire and not as a box painted a
-/// different colour.
+/// Fixed visible cable break length, measured from the meter face.
 const BREAK_GAP: f32 = 4.0;
 /// How much of a card's run is given up at an end that stands in a column more
 /// than one wire passes through. The risers of a parallel stage carry every card
@@ -266,15 +262,10 @@ const MIXER_RING: f32 = 8.5;
 /// itself plus enough air that a steady hand never has to thread the needle
 /// between it and the lane tails standing in the same column.
 const JOIN_HIT: f32 = MIXER_RING + 22.0;
-/// The air kept clear around a mixer's ring. Wires that meet the collar —
-/// the trunk running into it, the risers dropping out of it, the trunk
-/// starting off again — stop at its rim plus this much air rather than
-/// running under the disc, so the ring reads as a standing collar on the
-/// wire and not as a knot tied over it. The rim stands 12 px off a card's
-/// edge, so a lane on the flow line has no room for a run and a stub box
-/// inside the clearance at all; there the wire hands over to the collar
-/// itself and the stub folds away.
-const RING_CLEAR: f32 = MIXER_RING + 3.0;
+/// Distance from a junction centre to an attached wire endpoint. Match the
+/// visible outer radius: extra clearance makes connected wires look broken.
+/// The filled ring masks any branch leads drawn through its interior.
+const RING_CLEAR: f32 = MIXER_RING;
 fn wire_box_x(x: f32, side: bool) -> f32 {
     // Stub box centres for one card: `STUB_GAP` out from each vertical card
     // edge, on the input wire for `side == false` and the output wire
@@ -288,18 +279,7 @@ fn junction_x(x: f32, side: bool) -> f32 {
     let edge = CARD_WIDTH / 2.0 + JUNCTION_GAP;
     if side { x + edge } else { x - edge }
 }
-/// The run a lane standing on the flow line leaves to the merge ring when
-/// its chain stops short of the stage's deepest lane. It has no riser to
-/// climb anywhere — its signal runs on along the line itself, past the
-/// columns where its stub would have stood, and hands to the collar at the
-/// air gap. The fold at the collar holds all the same: no stub, no meter,
-/// and no break here — the wire is the stage's. A lane whose tail already
-/// stands at the merge column has nothing to draw: the rim stands a few
-/// pixels off its edge, inside the clearance, exactly as before.
-fn flow_to_ring(tail_x: f32, merge: f32) -> Option<(f32, f32)> {
-    (merge - junction_x(tail_x, true) > 0.5)
-        .then(|| (tail_x + CARD_WIDTH / 2.0, merge - RING_CLEAR))
-}
+
 /// The stretch of wire that belongs to one side of one card: the signal's
 /// whole journey between the card's edge and the junction it reaches, so that
 /// clicking anywhere along it means the same thing — this card's input, or
@@ -367,20 +347,51 @@ fn wire_click(x: f32, side: bool, shared: bool, fed: bool, feed: f32, out: f32) 
         )
     }
 }
-/// Where a stretch of wire stops when the switch on it is open: short of its
-/// stub box, with [`BREAK_GAP`] of air between the two. Closed, it runs to the
-/// column it was drawn to anyway.
-///
-/// The far side of the hole is simply not drawn, which is what makes a break
-/// read as an open circuit: a wire with nothing beyond it is the same inkless
-/// nothing as a wire nobody has connected, and the box standing alone in the
-/// gap says which of the two it is.
-fn wire_end(to: f32, box_x: f32, open: bool) -> f32 {
-    if open {
-        (box_x - STUB_HALF - BREAK_GAP).min(to)
+/// A fixed-length break on a horizontal cable, anchored at its meter face.
+#[derive(Clone, Copy, Debug)]
+struct WireGap {
+    start: f32,
+    end: f32,
+    y: f32,
+}
+fn meter_gap(x: f32, y: f32, output: bool) -> WireGap {
+    let face = x + if output { STUB_HALF } else { -STUB_HALF };
+    if output {
+        WireGap {
+            start: face,
+            end: face + BREAK_GAP,
+            y,
+        }
     } else {
-        to
+        WireGap {
+            start: face - BREAK_GAP,
+            end: face,
+            y,
+        }
     }
+}
+fn for_connected_run(from: f32, to: f32, y: f32, gaps: &[WireGap], mut draw: impl FnMut(f32, f32)) {
+    let mut cursor = from;
+    while cursor < to {
+        let next = gaps
+            .iter()
+            .filter(|gap| (gap.y - y).abs() < 0.5 && gap.end > cursor && gap.start < to)
+            .min_by(|a, b| a.start.total_cmp(&b.start));
+        let Some(gap) = next else {
+            draw(cursor, to);
+            break;
+        };
+        if gap.start > cursor {
+            draw(cursor, gap.start);
+        }
+        cursor = cursor.max(gap.end);
+    }
+}
+#[cfg(test)]
+fn connected_runs(from: f32, to: f32, y: f32, gaps: &[WireGap]) -> Vec<(f32, f32)> {
+    let mut runs = Vec::new();
+    for_connected_run(from, to, y, gaps, |a, b| runs.push((a, b)));
+    runs
 }
 /// The spacing between the parallel strokes that draw the channels of a
 /// stereo wire. Deliberately small: two lines close together read as one
@@ -401,13 +412,21 @@ fn lane_offset(lane: usize, lanes: usize) -> f32 {
 /// pair centred on the line its mono self would have been drawn on; the
 /// click targets in this file are still one per wire, lanes being a way
 /// of seeing a wire and not a way of holding it.
-fn wire_segment(ctx: &mut Context, from: f32, to: f32, y: f32, color: Color, lanes: usize) {
-    if from <= to {
+fn wire_segment(
+    ctx: &mut Context,
+    from: f32,
+    to: f32,
+    y: f32,
+    color: Color,
+    lanes: usize,
+    gaps: &[WireGap],
+) {
+    for_connected_run(from, to, y, gaps, |from, to| {
         for lane in 0..lanes.clamp(1, 2) {
             let y = y + lane_offset(lane, lanes);
             ctx.line(from, y, to, y, color, 2.0, 0.1);
         }
-    }
+    });
 }
 /// A riser: a vertical stretch of wire at `x` between two heights, spread
 /// into lanes the way [`wire_segment`] spreads a horizontal run. This is
@@ -747,16 +766,16 @@ fn layout_text_y(y: f32) -> f32 {
 /// two facing stub boxes is this step less the 103 px to each box's outer
 /// face, so it must leave real air — the wire run plus a whole conversion
 /// circle with its pins (18 px across) — for the circle between two cards
-/// to read as a circle on a wire and not as one piece of plumbing. At 248
-/// the gutter is 42 px of air, 24 of them wire.
-const COLUMN_STEP: f32 = 248.0;
+/// to read as a circle on a wire and not as one piece of plumbing. The wider
+/// step also leaves room between consecutive split/join columns.
+const COLUMN_STEP: f32 = 288.0;
 /// The capture jack the engine wires the rack's head against. The engine
 /// names its own two jacks `NodeId(0)` and `NodeId(u64::MAX)`; the second is
 /// the master wire the canvas already keys by [`MASTER_WIRE_KEY`], and this
 /// is the first — which the canvas now draws as a card, so it needs the id
 /// in its own terms. It carries one metered wire, keyed `(0, true)`: the
 /// capture trimmed as it enters the rack, with a trim corner of its own and
-/// no break switch — the capture either flows or the rack is not running.
+/// an outgoing break switch for the feed to the whole graph.
 const INPUT_JACK: NodeId = NodeId(0);
 /// How an endpoint card says the rate it was opened at: kilohertz, the way
 /// the device page spells it, and a dash where the rack has never opened a
@@ -779,6 +798,7 @@ struct Slot {
     x: f32,
     y: f32,
 }
+#[derive(Clone)]
 struct Geometry {
     slots: Vec<Slot>,
     /// The rack's own `IN` card, standing in the first column. Like `output`
@@ -1352,6 +1372,30 @@ fn acknowledged(from: MeterPos, stages: &[Vec<GuiLane>]) -> Vec<MeterPos> {
     out.extend([MeterPos::Wire(MASTER_WIRE_KEY, false), MeterPos::MasterOut]);
     out
 }
+fn structured_canvas(
+    cards: &[Card],
+    w: f32,
+    h: f32,
+    scroll: f32,
+    vertical: f32,
+    route: crate::runtime::Route,
+) -> Option<flow_canvas::Canvas> {
+    if !cards.iter().any(|card| card.routing.is_some()) {
+        return None;
+    }
+    let root = crate::runtime::flow(cards).ok()?;
+    let shapes = cards
+        .iter()
+        .map(|card| (card.id.0, (card.inputs.count(), card.outputs.count())))
+        .collect();
+    Some(flow_canvas::Canvas::new(
+        &root,
+        [w, h],
+        [scroll, vertical],
+        &shapes,
+        [route.input.count(), route.output.count()],
+    ))
+}
 fn geometry(groups: &[Vec<GuiLane>], w: f32, h: f32, scroll: f32, vertical: f32) -> Geometry {
     let top = h / 2.0 - 90.0;
     let bottom = -h / 2.0 + 150.0;
@@ -1434,6 +1478,7 @@ fn visible(slot: &Slot, top: f32, bottom: f32, w: f32) -> bool {
 /// which `place` removes before it looks for the anchor again.
 #[derive(Clone, Copy)]
 struct ForkMark {
+    scope: Option<usize>,
     anchor: NodeId,
     x: f32,
     y: f32,
@@ -1476,6 +1521,7 @@ fn fork_marks(
                 .into_iter()
                 .filter(|(boundary, _)| *boundary == 0 || *boundary == width)
                 .map(|(boundary, _)| ForkMark {
+                    scope: None,
                     anchor,
                     x: ring_x(base, boundary, width),
                     y: flow,
@@ -1493,6 +1539,56 @@ fn fork_marks(
         .flatten()
         .collect()
 }
+/// Prefer the source meter for a direct meter-to-meter connection.
+fn wire_gaps(
+    groups: &[Vec<GuiLane>],
+    frame: &Geometry,
+    open: impl Fn(u64, bool) -> bool,
+) -> Vec<WireGap> {
+    let mut gaps = Vec::new();
+    let slot = |id: NodeId| frame.slots.iter().find(|slot| slot.id == id);
+    if open(INPUT_JACK.0, true) {
+        gaps.push(meter_gap(wire_box_x(frame.input.x, true), frame.flow, true));
+    }
+    let mut previous = Some(&frame.input);
+    for stage in groups {
+        for lane in stage {
+            let mut source = if stage.len() == 1 { previous } else { None };
+            for id in &lane.ids {
+                let Some(card) = slot(*id) else {
+                    continue;
+                };
+                if open(id.0, false) {
+                    gaps.push(
+                        if let Some(source) = source.filter(|s| (s.y - card.y).abs() < 0.5) {
+                            meter_gap(wire_box_x(source.x, true), card.y, true)
+                        } else {
+                            meter_gap(wire_box_x(card.x, false), card.y, false)
+                        },
+                    );
+                }
+                if open(id.0, true) {
+                    gaps.push(meter_gap(wire_box_x(card.x, true), card.y, true));
+                }
+                source = Some(card);
+            }
+        }
+        previous = if stage.len() == 1 {
+            stage[0].ids.last().and_then(|id| slot(*id))
+        } else {
+            None
+        };
+    }
+    if open(MASTER_WIRE_KEY, false) {
+        gaps.push(if let Some(source) = previous {
+            meter_gap(wire_box_x(source.x, true), frame.flow, true)
+        } else {
+            meter_gap(wire_box_x(frame.output.x, false), frame.flow, false)
+        });
+    }
+    gaps
+}
+
 /// One stretch of wire leaving a card toward the next card of its lane,
 /// seen as a drop zone: the shoulder of a lane's own run. A card held
 /// above or below that shoulder joins the lane's parallel, bracketed by
@@ -1552,6 +1648,15 @@ fn target_at(
     if y > top || y < bottom {
         return None;
     }
+    // Releasing on the original card is a cancellation, never a request
+    // to edit whichever neighbour happens to be nearest after excluding it.
+    if slots
+        .iter()
+        .any(|slot| Some(slot.id) == moving && hit(mouse, slot.x, slot.y, CARD_WIDTH / 2.0, 56.0))
+    {
+        return None;
+    }
+
     // A point on a card's face is the loudest intent there is. Held low on
     // the face the lane claims the drop — chain into it, head or not; held
     // high, up or down and clear of the middle, it asks for a fork of its
@@ -1577,6 +1682,7 @@ fn target_at(
             Side::Right
         };
         return Some(Target {
+            scope: None,
             card: slot.id,
             side,
         });
@@ -1601,6 +1707,7 @@ fn target_at(
     {
         let dy = y - slot.y;
         return Some(Target {
+            scope: None,
             card: slot.id,
             side: if dy > 0.0 { Side::Over } else { Side::Under },
         });
@@ -1618,6 +1725,7 @@ fn target_at(
         .filter(|mark| (x - mark.x).powi(2) + (y - mark.y).powi(2) <= JOIN_HIT * JOIN_HIT)
     {
         return Some(Target {
+            scope: mark.scope,
             card: mark.anchor,
             side: mark.side,
         });
@@ -1630,6 +1738,7 @@ fn target_at(
         run.x0 <= x && x <= run.x1 && (y - run.y).abs() > 14.0 && (y - run.y).abs() <= 50.0
     }) {
         return Some(Target {
+            scope: None,
             card: run.card,
             side: if y > run.y { Side::Above } else { Side::Below },
         });
@@ -1643,6 +1752,9 @@ fn target_at(
         })?;
     let dx = x - slot.x;
     let dy = y - slot.y;
+    if dx.abs() > CARD_WIDTH / 2.0 + 96.0 || dy.abs() > 140.0 {
+        return None;
+    }
     // In the wire space a fork's two rings sit on the trunk, so whichever
     // way the pull dominates decides: a vertical pull opens a parallel
     // lane beside the nearest card, a horizontal one chains into its lane.
@@ -1654,6 +1766,7 @@ fn target_at(
         Side::Right
     };
     Some(Target {
+        scope: None,
         card: slot.id,
         side,
     })
@@ -1720,6 +1833,40 @@ pub fn run(
             states.insert(NodeId(saved.id), bytes.clone());
         }
         next_id = next_id.max(saved.id + 2);
+    }
+    if let Some(root) = settings
+        .preferences
+        .plugins
+        .iter()
+        .find_map(|saved| saved.routing.clone())
+    {
+        root.validate()?;
+        let expected = cards
+            .iter()
+            .map(|c| c.id.0)
+            .collect::<std::collections::BTreeSet<_>>();
+        if root
+            .ids()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            != expected
+        {
+            return Err("Saved routing does not match the plugin roster".into());
+        }
+        let root = Arc::new(root);
+        for card in &mut cards {
+            card.routing = Some(root.clone());
+        }
+    }
+    // Import an unambiguous legacy layout before the first frame, so the
+    // diagram and drag targets do not switch representations after one edit.
+    if cards.iter().all(|card| card.routing.is_none())
+        && let Ok(root) = crate::runtime::flow(&cards)
+    {
+        let root = Arc::new(root);
+        for card in &mut cards {
+            card.routing = Some(root.clone());
+        }
     }
     let mut runtime = Runtime::new(settings);
     runtime.restore(cards, states);
@@ -2618,14 +2765,33 @@ impl Process for RackUi {
             && let Some(Dropped { path, point, .. }) = self.drops.pop_front()
         {
             let groups = groups(&self.runtime.cards);
-            let geometry = geometry(&groups, w, h, self.scroll, self.vertical);
+            let canvas = structured_canvas(
+                &self.runtime.cards,
+                w,
+                h,
+                self.scroll,
+                self.vertical,
+                self.runtime.route(),
+            );
+            let geometry = canvas
+                .as_ref()
+                .map(|c| c.frame.clone())
+                .unwrap_or_else(|| geometry(&groups, w, h, self.scroll, self.vertical));
+            let drop_forks = canvas
+                .as_ref()
+                .map(|c| c.fork_targets(None))
+                .unwrap_or_else(|| fork_marks(&groups, &geometry.slots, geometry.flow, None));
+            let drop_runs = canvas
+                .as_ref()
+                .map(|c| c.run_targets(None))
+                .unwrap_or_else(|| wire_runs(&groups, &geometry.slots, None));
             let placement = target_at(
                 point.or(mouse),
                 &geometry.slots,
                 None,
                 &DropZones {
-                    joins: &fork_marks(&groups, &geometry.slots, geometry.flow, None),
-                    runs: &wire_runs(&groups, &geometry.slots, None),
+                    joins: &drop_forks,
+                    runs: &drop_runs,
                 },
                 geometry.top,
                 geometry.bottom,
@@ -2706,8 +2872,21 @@ impl Process for RackUi {
         let groups = groups(&self.runtime.cards);
         // One column for every stage, plus one for the `IN` card and one for
         // the `OUT` card, which now stand on the canvas as cards themselves.
-        let max_scroll = ((groups.len() + 2) as f32 * COLUMN_STEP + 320.0 - w).max(0.0);
-        let previous = geometry(&groups, w, h, self.scroll, self.vertical);
+        let width = crate::runtime::flow(&self.runtime.cards).map_or_else(
+            |_| groups.iter().map(|g| stage_width(g)).sum(),
+            |root| root.width(),
+        );
+        let max_scroll = ((width + 2) as f32 * COLUMN_STEP + 320.0 - w).max(0.0);
+        let previous = structured_canvas(
+            &self.runtime.cards,
+            w,
+            h,
+            self.scroll,
+            self.vertical,
+            self.runtime.route(),
+        )
+        .map(|c| c.frame)
+        .unwrap_or_else(|| geometry(&groups, w, h, self.scroll, self.vertical));
         if self.drag.is_none() && self.overlay.is_none() {
             if previous.max_vertical > 0.0
                 && !ctx.key_down(frost::KeyCode::ShiftLeft)
@@ -2743,7 +2922,18 @@ impl Process for RackUi {
                 .clamp(0.0, previous.max_vertical);
         }
         self.scroll = self.scroll.clamp(0.0, max_scroll);
-        let layout = geometry(&groups, w, h, self.scroll, self.vertical);
+        let canvas = structured_canvas(
+            &self.runtime.cards,
+            w,
+            h,
+            self.scroll,
+            self.vertical,
+            self.runtime.route(),
+        );
+        let layout = canvas
+            .as_ref()
+            .map(|c| c.frame.clone())
+            .unwrap_or_else(|| geometry(&groups, w, h, self.scroll, self.vertical));
         // The route the rack is wired against, read once a frame like the
         // meter gate: it is what the two endpoint cards say, and it is how
         // wide the wire into the first card and out of the last one is
@@ -2798,7 +2988,10 @@ impl Process for RackUi {
         // be able to choose between the two, and the same frame that finds
         // the break has to know whether a circle is in the way.
         let marks = match self.runtime.junctions() {
-            Some(found) => width_marks(&found, &groups, &layout),
+            Some(found) => canvas
+                .as_ref()
+                .map(|c| c.marks(&found))
+                .unwrap_or_else(|| width_marks(&found, &groups, &layout)),
             None => Vec::new(),
         };
         // Where every circle stands this frame, read once: the break guards,
@@ -2917,8 +3110,8 @@ impl Process for RackUi {
         // it. It does carry one wire's meter: the capture as it enters the
         // rack, trimmed, measured on the stub at its right edge — the twin
         // of the master meter at the far end, and the reason the cable
-        // leaving this card starts at a stub you can see. It has no break
-        // switch: the capture either flows or the rack is not running. The
+        // leaving this card starts at a stub you can see. Its outgoing switch
+        // cuts the feed after metering. The
         // face is where the input half of the device page is opened,
         // because the capture is the one thing about it an operator can
         // change.
@@ -2996,12 +3189,7 @@ impl Process for RackUi {
         // One gate for the whole rack, read once a frame: every stub box on
         // every wire is measured against the same number.
         let gate = self.runtime.meter_gate();
-        // The capture's own stub, at the `IN` card's right edge: the near
-        // end of every cable in the rack, and the meter the input trim is
-        // set against. A click folds the track open or away like any other
-        // stub; there is no right-hand switch here — the capture has no
-        // circuit to break, only a gain to trim, and the meter reads the
-        // signal after it, so what the first card will see is what shows.
+        // The capture meter reads the source before its outgoing switch.
         let in_stub = wire_box_x(layout.input.x, true);
         let input_key = (INPUT_JACK.0, true);
         if in_visible
@@ -3028,6 +3216,15 @@ impl Process for RackUi {
             self.acknowledge_clip(MeterPos::Wire(INPUT_JACK.0, true));
         }
         if in_visible {
+            wire_segment(
+                ctx,
+                layout.input.x + CARD_WIDTH / 2.0,
+                in_stub,
+                layout.flow,
+                wire,
+                route.input.count().clamp(1, 2),
+                &[],
+            );
             ctx.rectangle(
                 in_stub,
                 layout.flow,
@@ -3042,243 +3239,238 @@ impl Process for RackUi {
         // through: its switch sits on the card's own stub, and a right-click
         // anywhere on the card, its wire or its stub mutes the output, meter
         // still reading what arrives.
-        let mut previous_x = wire_box_x(layout.input.x, true);
-        // How wide the trunk is on the flow line as it arrives at each
-        // stage. The trunk begins as wide as the device's capture, and past
-        // each stage the mixer — when there is one — has folded the branches
-        // down to the widest of their tails, so the trunk runs on at that
-        // width. This is the same arithmetic the rack applies to the graph
-        // itself when it builds one, for the same reason: nothing else
-        // changes a wire's channel count.
-        let mut incoming = route.input.count().clamp(1, 2);
-        // The stage's own columns, worked out once for the frame: the base
-        // is where its first column stands however the lanes are offset
-        // within it, and its split and merge are the rings at boundary `0`
-        // and boundary `width`.
-        let columns = stage_columns(&groups, &layout.slots, layout.input.x);
-        for (index, group) in groups.iter().enumerate() {
-            let stage_slots = layout
-                .slots
-                .iter()
-                .filter(|slot| {
-                    group
-                        .iter()
-                        .flat_map(|lane| lane.ids.iter())
-                        .any(|id| *id == slot.id)
-                })
-                .collect::<Vec<_>>();
-            // The stage's cards by lane, in the order the lanes run down: a
-            // lane's head stands at the ring its span opens on, not
-            // necessarily at the stage's own split.
-            let stage = group
-                .iter()
-                .map(|lane| {
-                    lane.ids
-                        .iter()
-                        .filter_map(|id| stage_slots.iter().copied().find(|slot| slot.id == *id))
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
-            let column = columns[index];
-            let base = column.base;
-            let width = column.width;
-            let x = base;
-            let shared = group.len() > 1;
-            // Whether the wire arriving here comes out of an earlier stage rather
-            // than out of the rack's `IN` jack, which decides whether the left end
-            // of this stage's input is a column somebody else's wire ends in.
-            let fed = index > 0;
-            let split = column.split;
-            // The merge column stands right of whichever lane's span reaches
-            // furthest — the risers gather every lane there.
-            let merge = column.merge;
-            // The trunk, up to the column this stage splits at, at the height
-            // signals flow at. A stage on its own sits on that very line, so its
-            // trunk is the connector an operator sees running between two meters,
-            // and it is that card's input: an open switch cuts it short of the
-            // stub box like any other wire. In a parallel stage the signals of
-            // every card in it pass down into the risers it feeds, so the trunk
-            // is the stage's and stays whole — like the risers themselves, which
-            // are nobody's to break.
-            //
-            // Drawn on the flow line wherever it is, and not only where a card is
-            // visible: a rack scrolled along its wiring still shows it running
-            // past the edge.
-            let feed_open = !shared && self.wire_open(stage_slots[0].id.0, false);
-            // A parallel stage's collar stands on the trunk, so the trunk
-            // stops at its air gap and starts off again beyond it; the ring
-            // is the crossing the wire runs through, not ink drawn over.
-            let feed_to = if shared {
-                split - RING_CLEAR
-            } else {
-                wire_end(split, wire_box_x(x, false), feed_open)
-            };
-            for (from, to, lanes) in width_runs(
-                previous_x,
-                feed_to,
-                incoming,
-                layout.flow,
-                &marks,
-                &self.mark_offsets,
-            ) {
-                wire_segment(ctx, from, to, layout.flow, wire, lanes);
+        let out_hover = hit(mouse, out.x, layout.flow, CARD_WIDTH / 2.0, TRACK_HALF);
+        if let Some(canvas) = &canvas {
+            let master_face = broke
+                && pause_target.is_none()
+                && bypass_target.is_none()
+                && out_visible
+                && out_hover;
+            if master_face {
+                self.toggle_wire(MASTER_WIRE_KEY, false);
             }
-            if shared {
-                // The risers, branch by branch: each one drops from the
-                // flow line into its head card carrying the width that
-                // head takes, and climbs into the merge column carrying
-                // the width its tail puts out. A branch that joins a
-                // stereo trunk down to a mono head therefore draws one
-                // riser, not two — its second conductor stays at the
-                // split column, because the join happens at that
-                // column's mixer and nowhere on the way down.
-                let row = |y: f32| y.max(layout.bottom).min(layout.top);
-                for (branch, lane) in stage.iter().zip(group) {
-                    // Every lane hands to its own rings: a lane that opens
-                    // or closes mid-stage drops and climbs at the boundary
-                    // its span stands on, not at the stage's outer collar.
-                    let head_ring = ring_x(base, lane.start, width);
-                    let tail_ring = ring_x(base, lane.end, width);
-                    if let (Some(head), Some(tail)) = (branch.first(), branch.last()) {
-                        // The riser starts outside the collar's air gap and
-                        // never runs under the disc; a branch standing on the
-                        // flow line itself has no riser to draw — its signal
-                        // simply runs on through the gap beside the ring.
-                        let drop = row(head.y) - layout.flow;
-                        if drop.abs() > RING_CLEAR {
-                            wire_riser(
-                                ctx,
-                                head_ring,
-                                layout.flow + drop.signum() * RING_CLEAR,
-                                row(head.y),
-                                wire,
-                                self.wire_lanes(head.id.0, false),
-                            );
-                        }
-                        let climb = row(tail.y) - layout.flow;
-                        if climb.abs() > RING_CLEAR {
-                            wire_riser(
-                                ctx,
-                                tail_ring,
-                                row(tail.y),
-                                layout.flow + climb.signum() * RING_CLEAR,
-                                wire,
-                                self.wire_lanes(tail.id.0, true),
-                            );
-                        } else if lane.end == width
-                            && let Some((from, to)) = flow_to_ring(tail.x, tail_ring)
-                        {
-                            // The lane on the line that stops short of the
-                            // merge column runs its signal along the line to
-                            // the collar; the fold at the ring stands, but
-                            // the handover cannot be missing. Like the
-                            // risers it is the stage's own wire — there is
-                            // no click here for anyone to break. A lane
-                            // that closes on an interior ring keeps its
-                            // tail's own metered lead instead, drawn a few
-                            // lines below.
-                            wire_segment(
-                                ctx,
-                                from,
-                                to,
-                                layout.flow,
-                                wire,
-                                self.wire_lanes(tail.id.0, true),
-                            );
+            canvas.paint(
+                self,
+                ctx,
+                flow_canvas::PaintInput {
+                    mouse,
+                    broke: broke
+                        && !master_face
+                        && pause_target.is_none()
+                        && bypass_target.is_none(),
+                    clicked,
+                    on_mark,
+                    gate,
+                },
+                &marks,
+            );
+        } else {
+            let mut previous_x = wire_box_x(layout.input.x, true);
+            // How wide the trunk is on the flow line as it arrives at each
+            // stage. The trunk begins as wide as the device's capture, and past
+            // each stage the mixer — when there is one — has folded the branches
+            // down to the widest of their tails, so the trunk runs on at that
+            // width. This is the same arithmetic the rack applies to the graph
+            // itself when it builds one, for the same reason: nothing else
+            // changes a wire's channel count.
+            let mut incoming = route.input.count().clamp(1, 2);
+            // The stage's own columns, worked out once for the frame: the base
+            // is where its first column stands however the lanes are offset
+            // within it, and its split and merge are the rings at boundary `0`
+            // and boundary `width`.
+            let columns = stage_columns(&groups, &layout.slots, layout.input.x);
+            let input_end = columns.first().map_or(wire_box_x(out.x, false), |column| {
+                column.split - if groups[0].len() > 1 { RING_CLEAR } else { 0.0 }
+            });
+            let input_wire_toggled = broke
+                && !on_mark
+                && bypass_target.is_none()
+                && pause_target.is_none()
+                && wire_hit(mouse, in_stub, input_end, layout.flow, in_stub);
+            if input_wire_toggled {
+                self.toggle_wire(INPUT_JACK.0, true);
+            }
+            // Consume this click before the destination card inspects its lead.
+            let broke = broke && !input_wire_toggled;
+            let gaps = wire_gaps(&groups, &layout, |id, side| self.wire_open(id, side));
+            for (index, group) in groups.iter().enumerate() {
+                let stage_slots = layout
+                    .slots
+                    .iter()
+                    .filter(|slot| {
+                        group
+                            .iter()
+                            .flat_map(|lane| lane.ids.iter())
+                            .any(|id| *id == slot.id)
+                    })
+                    .collect::<Vec<_>>();
+                // The stage's cards by lane, in the order the lanes run down: a
+                // lane's head stands at the ring its span opens on, not
+                // necessarily at the stage's own split.
+                let stage = group
+                    .iter()
+                    .map(|lane| {
+                        lane.ids
+                            .iter()
+                            .filter_map(|id| {
+                                stage_slots.iter().copied().find(|slot| slot.id == *id)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                let column = columns[index];
+                let base = column.base;
+                let width = column.width;
+                let shared = group.len() > 1;
+                // Whether the wire arriving here comes out of an earlier stage rather
+                // than out of the rack's `IN` jack, which decides whether the left end
+                // of this stage's input is a column somebody else's wire ends in.
+                let fed = index > 0;
+                let split = column.split;
+                // The merge column stands right of whichever lane's span reaches
+                // furthest — the risers gather every lane there.
+                let merge = column.merge;
+                // The trunk, up to the column this stage splits at, at the height
+                // signals flow at. A stage on its own sits on that very line, so its
+                // trunk is the connector an operator sees running between two meters,
+                // and it is that card's input: an open switch cuts a fixed gap at
+                // the source meter. In a parallel stage the signals of
+                // every card in it pass down into the risers it feeds, so the trunk
+                // is the stage's and stays whole — like the risers themselves, which
+                // are nobody's to break.
+                //
+                // Drawn on the flow line wherever it is, and not only where a card is
+                // visible: a rack scrolled along its wiring still shows it running
+                // past the edge.
+                // A parallel stage's collar stands on the trunk, so the trunk
+                // stops at its outer rim and starts off again at the opposite rim; the ring
+                // is the crossing the wire runs through, not ink drawn over.
+                let feed_to = if shared { split - RING_CLEAR } else { split };
+                for (from, to, lanes) in width_runs(
+                    previous_x,
+                    feed_to,
+                    incoming,
+                    layout.flow,
+                    &marks,
+                    &self.mark_offsets,
+                ) {
+                    wire_segment(ctx, from, to, layout.flow, wire, lanes, &gaps);
+                }
+                if shared {
+                    // The risers, branch by branch: each one drops from the
+                    // flow line into its head card carrying the width that
+                    // head takes, and climbs into the merge column carrying
+                    // the width its tail puts out. A branch that joins a
+                    // stereo trunk down to a mono head therefore draws one
+                    // riser, not two — its second conductor stays at the
+                    // split column, because the join happens at that
+                    // column's mixer and nowhere on the way down.
+                    let row = |y: f32| y.max(layout.bottom).min(layout.top);
+                    for (branch, lane) in stage.iter().zip(group) {
+                        // Every lane hands to its own rings: a lane that opens
+                        // or closes mid-stage drops and climbs at the boundary
+                        // its span stands on, not at the stage's outer collar.
+                        let head_ring = ring_x(base, lane.start, width);
+                        let tail_ring = ring_x(base, lane.end, width);
+                        if let (Some(head), Some(tail)) = (branch.first(), branch.last()) {
+                            // The riser starts outside the collar's air gap and
+                            // never runs under the disc; a branch standing on the
+                            // flow line itself has no riser to draw — its signal
+                            // simply runs on through the gap beside the ring.
+                            let drop = row(head.y) - layout.flow;
+                            if drop.abs() > RING_CLEAR {
+                                wire_riser(
+                                    ctx,
+                                    head_ring,
+                                    layout.flow + drop.signum() * RING_CLEAR,
+                                    row(head.y),
+                                    wire,
+                                    self.wire_lanes(head.id.0, false),
+                                );
+                            }
+                            let climb = row(tail.y) - layout.flow;
+                            if climb.abs() > RING_CLEAR {
+                                wire_riser(
+                                    ctx,
+                                    tail_ring,
+                                    row(tail.y),
+                                    layout.flow + climb.signum() * RING_CLEAR,
+                                    wire,
+                                    self.wire_lanes(tail.id.0, true),
+                                );
+                            }
                         }
                     }
                 }
-            }
-            for (branch, lane) in stage.iter().zip(group) {
-                // The rings this lane hands off on: a full-span lane's are
-                // the stage's own split and merge; one that opens or closes
-                // mid-stage reaches only the boundary its span stands on.
-                let head_ring = ring_x(base, lane.start, width);
-                let tail_ring = ring_x(base, lane.end, width);
-                for (position, slot) in branch.iter().copied().enumerate() {
-                    if !visible(slot, layout.top, layout.bottom, w) {
-                        continue;
-                    }
-                    // Where the card stands in its branch decides the wire it owns:
-                    // the head takes the ring its lane opens on, the tail feeds
-                    // the ring its lane closes on, and a card in between reaches
-                    // only the junctions its own chain runs through — the one the
-                    // signal came from, and the one it goes on to.
-                    let head = position == 0;
-                    let tail = position + 1 == branch.len();
-                    let x = slot.x;
-                    let chain_in = junction_x(branch[position.saturating_sub(1)].x, true);
-                    // A lane that opens mid-stage starts at the ring its
-                    // riser foot stands under — for a full-span lane that
-                    // ring is the stage's own split, and nothing moves.
-                    let lead_in = if head { head_ring } else { chain_in };
-                    let lead_out = if tail { tail_ring } else { junction_x(x, true) };
-                    let feed_in = if head { previous_x } else { chain_in };
-                    // A tail card hands its signal to the ring its lane
-                    // closes on even in the last stage: from there the run
-                    // into the `OUT` card is the master wire's own, cut
-                    // short only by the card's switch.
-                    let out_end = if !tail {
-                        junction_x(x, true)
-                    } else {
-                        tail_ring
-                    };
-                    if self.runtime.bypassed(slot.id.0) {
-                        let gap = stage_slots
-                            .iter()
-                            .filter(|other| other.y > slot.y)
-                            .map(|other| other.y - slot.y - 2.0 * TRACK_HALF)
-                            .fold(24.0, f32::min);
-                        let path = bypass_path(slot.x, slot.y, (gap / 2.0).min(12.0));
-                        for segment in path.windows(2) {
-                            ctx.line(
-                                segment[0][0],
-                                segment[0][1],
-                                segment[1][0],
-                                segment[1][1],
-                                nice_common::knob::AMBER,
-                                2.0,
-                                0.18,
-                            );
-                        }
-                    }
-                    for side in [false, true] {
-                        // The lane standing on the flow line of a parallel
-                        // stage hands its signal to the collar itself: the
-                        // ring's rim stands a few pixels off the card's edge,
-                        // leaving no room for a meter stub the disc does not
-                        // cut in half. That lane's wire ends at the air gap
-                        // beside the ring, and its stub folds away with the
-                        // meter — the wire, like the trunk feeding it, is
-                        // the stage's and nobody's to break here. Only the
-                        // stage's own collars are tight on the card like
-                        // that; an interior ring stands a whole air gap off
-                        // the junction, and the lane opening or closing on
-                        // it keeps its meter — the disc, painted after,
-                        // cuts the lead short where it passes.
-                        let on_collar = shared
-                            && (slot.y - layout.flow).abs() < 0.5
-                            && ((head && !side && lane.start == 0)
-                                || (tail && side && lane.end == width));
-                        if on_collar {
+                for (branch, lane) in stage.iter().zip(group) {
+                    // The rings this lane hands off on: a full-span lane's are
+                    // the stage's own split and merge; one that opens or closes
+                    // mid-stage reaches only the boundary its span stands on.
+                    let head_ring = ring_x(base, lane.start, width);
+                    let tail_ring = ring_x(base, lane.end, width);
+                    for (position, slot) in branch.iter().copied().enumerate() {
+                        if !visible(slot, layout.top, layout.bottom, w) {
                             continue;
                         }
-                        let bx = wire_box_x(x, side);
-                        let key = (slot.id.0, side);
-                        let open = self.wire_open(slot.id.0, side);
-                        // The whole stretch this side owns, narrowed to what a click
-                        // on it may claim; see [`wire_click`]. The wire is still drawn
-                        // in full, so an open one stays as easy to close as it was to
-                        // open.
-                        let (from, to) = wire_click(
-                            x,
-                            side,
-                            shared && (if side { tail } else { head }),
-                            fed || !head,
-                            feed_in,
-                            out_end,
-                        );
-                        if broke
+                        // Where the card stands in its branch decides the wire it owns:
+                        // the head takes the ring its lane opens on, the tail feeds
+                        // the ring its lane closes on, and a card in between reaches
+                        // only the junctions its own chain runs through — the one the
+                        // signal came from, and the one it goes on to.
+                        let head = position == 0;
+                        let tail = position + 1 == branch.len();
+                        let x = slot.x;
+                        let chain_in = junction_x(branch[position.saturating_sub(1)].x, true);
+                        // A lane that opens mid-stage starts at the ring its
+                        // riser foot stands under — for a full-span lane that
+                        // ring is the stage's own split, and nothing moves.
+                        let lead_in = if head { head_ring } else { chain_in };
+                        let lead_out = if tail { tail_ring } else { junction_x(x, true) };
+                        let feed_in = if head { previous_x } else { chain_in };
+                        // A tail card hands its signal to the ring its lane
+                        // closes on even in the last stage: from there the run
+                        // into the `OUT` card is the master wire's own, cut
+                        // short only by the card's switch.
+                        let out_end = if !tail {
+                            junction_x(x, true)
+                        } else {
+                            tail_ring
+                        };
+                        if self.runtime.bypassed(slot.id.0) {
+                            let gap = stage_slots
+                                .iter()
+                                .filter(|other| other.y > slot.y)
+                                .map(|other| other.y - slot.y - 2.0 * TRACK_HALF)
+                                .fold(24.0, f32::min);
+                            let path = bypass_path(slot.x, slot.y, (gap / 2.0).min(12.0));
+                            for segment in path.windows(2) {
+                                ctx.line(
+                                    segment[0][0],
+                                    segment[0][1],
+                                    segment[1][0],
+                                    segment[1][1],
+                                    nice_common::knob::AMBER,
+                                    2.0,
+                                    0.18,
+                                );
+                            }
+                        }
+                        for side in [false, true] {
+                            let bx = wire_box_x(x, side);
+                            let key = (slot.id.0, side);
+                            // The whole stretch this side owns, narrowed to what a click
+                            // on it may claim; see [`wire_click`]. The wire is still drawn
+                            // in full, so an open one stays as easy to close as it was to
+                            // open.
+                            let (from, to) = wire_click(
+                                x,
+                                side,
+                                shared && (if side { tail } else { head }),
+                                fed || !head,
+                                feed_in,
+                                out_end,
+                            );
+                            if broke
                             && bypass_target.is_none()
                             && pause_target.is_none()
                             // A circle standing on the wire is not a wire to
@@ -3288,135 +3480,130 @@ impl Process for RackUi {
                             && !on_mark
                             && !self.runtime.bypassed(slot.id.0)
                             && wire_hit(mouse, from, to, slot.y, bx)
-                        {
-                            // The wire as a whole is the target, not just its box:
-                            // the run between two meters is long, and an operator
-                            // points at it rather than at a terminal on it. Breaking
-                            // is the right hand's only job, so it takes no card and
-                            // starts no drag, and it leaves an expanded meter
-                            // expanded — a meter that is open can still be broken.
-                            self.toggle_wire(slot.id.0, side);
+                            {
+                                // The wire as a whole is the target, not just its box:
+                                // the run between two meters is long, and an operator
+                                // points at it rather than at a terminal on it. Breaking
+                                // is the right hand's only job, so it takes no card and
+                                // starts no drag, and it leaves an expanded meter
+                                // expanded — a meter that is open can still be broken.
+                                self.toggle_wire(slot.id.0, side);
+                            }
+                            if clicked
+                                && !self.runtime.bypassed(slot.id.0)
+                                && self.choosing.is_none()
+                                && hit(mouse, bx, slot.y, STUB_HALF, STUB_TALL)
+                            {
+                                // Toggle. The meter has been running since the
+                                // card appeared, so this only folds the track
+                                // away or brings it back and the peak-hold runs
+                                // straight through the collapse. The insert arm
+                                // is a fallback so a click can never be
+                                // swallowed, not the normal way in — but it asks
+                                // the same question `watch_wires` asks, so a meter
+                                // born here opens at the saved trim, and on a wire
+                                // remembered open.
+                                let meter = self.wire_meters.entry(key).or_insert_with(|| {
+                                    let gain_db = remembered_trim(
+                                        self.runtime.trim(slot.id.0, side),
+                                        wire_slot_key(slot.id.0, side)
+                                            .and_then(|key| self.runtime.wires.gain_of(key)),
+                                    );
+                                    WireMeter {
+                                        open_circuit: self.runtime.open_circuit(slot.id.0, side),
+                                        ..new_wire_meter(gain_db, now())
+                                    }
+                                });
+                                meter.open = !meter.open;
+                                // A click on the meter body is also the rack's
+                                // "yes, I saw it": a red meter here, and every
+                                // meter the clipped signal reached after it, go
+                                // back to their resting colours.
+                                self.acknowledge_clip(MeterPos::Wire(slot.id.0, side));
+                            }
+                            // This card's own row: in from the column feeding its chain
+                            // to the card's edge, and out from the edge to the column its
+                            // chain hands off to. These are the short pieces a branch
+                            // leaves to each of the cards in it; what an operator sees as
+                            // one long connector between two meters is the trunk above,
+                            // which runs on the flow line — the very row a solo card sits
+                            // on.
+                            let bypassed = self.runtime.bypassed(slot.id.0);
+                            let (inner, outer) = card_lead(x, side, lead_in, lead_out, bypassed);
+                            let lanes = self.wire_lanes(slot.id.0, side);
+                            for (from, to, width) in
+                                width_runs(inner, outer, lanes, slot.y, &marks, &self.mark_offsets)
+                            {
+                                wire_segment(ctx, from, to, slot.y, wire, width, &gaps);
+                            }
+                            // The stub box is the whole of a minimised meter's
+                            // face, so it carries everything the rack knows about
+                            // the wire: red for a clip nobody has acknowledged, amber
+                            // for a circuit somebody has opened, the meter's own level
+                            // green for a track that is expanded or is carrying signal
+                            // over the gate, and the plain wire colour while nothing is
+                            // passing.
+                            let stub_color = stub_color(self.wire_meters.get(&key), gate, wire);
+                            ctx.rectangle(bx, slot.y, STUB_HALF, STUB_TALL, stub_color, 0.25);
                         }
-                        if clicked
-                            && !self.runtime.bypassed(slot.id.0)
-                            && self.choosing.is_none()
-                            && hit(mouse, bx, slot.y, STUB_HALF, STUB_TALL)
-                        {
-                            // Toggle. The meter has been running since the
-                            // card appeared, so this only folds the track
-                            // away or brings it back and the peak-hold runs
-                            // straight through the collapse. The insert arm
-                            // is a fallback so a click can never be
-                            // swallowed, not the normal way in — but it asks
-                            // the same question `watch_wires` asks, so a meter
-                            // born here opens at the saved trim, and on a wire
-                            // remembered open.
-                            let meter = self.wire_meters.entry(key).or_insert_with(|| {
-                                let gain_db = remembered_trim(
-                                    self.runtime.trim(slot.id.0, side),
-                                    wire_slot_key(slot.id.0, side)
-                                        .and_then(|key| self.runtime.wires.gain_of(key)),
-                                );
-                                WireMeter {
-                                    open_circuit: self.runtime.open_circuit(slot.id.0, side),
-                                    ..new_wire_meter(gain_db, now())
-                                }
-                            });
-                            meter.open = !meter.open;
-                            // A click on the meter body is also the rack's
-                            // "yes, I saw it": a red meter here, and every
-                            // meter the clipped signal reached after it, go
-                            // back to their resting colours.
-                            self.acknowledge_clip(MeterPos::Wire(slot.id.0, side));
-                        }
-                        // This card's own row: in from the column feeding its chain
-                        // to the card's edge, and out from the edge to the column its
-                        // chain hands off to. These are the short pieces a branch
-                        // leaves to each of the cards in it; what an operator sees as
-                        // one long connector between two meters is the trunk above,
-                        // which runs on the flow line — the very row a solo card sits
-                        // on.
-                        let bypassed = self.runtime.bypassed(slot.id.0);
-                        let (inner, outer) = card_lead(x, side, lead_in, lead_out, bypassed);
-                        let outer = if bypassed {
-                            outer
+                    }
+                }
+                if shared {
+                    // The rings, boundary by boundary, in the order they run
+                    // across the stage: an upright bar where one trunk divides
+                    // or a lane peels off, a `+` where lanes gather back. The
+                    // outermost are the split and the merge they have always
+                    // been; an interior one stands in the air between the two
+                    // columns it divides, marking where a lane opens or closes.
+                    // Like the merge they are painted after every riser and
+                    // every lead that crosses here, cut away from under them —
+                    // a collar would just be a bead threaded onto its own
+                    // riser, and a lane running on past an interior ring shows
+                    // through the disc as signal passing a junction.
+                    for (boundary, bar) in stage_rings(group) {
+                        let x = ring_x(base, boundary, width);
+                        ctx.circle(x, layout.flow, MIXER_RING, wire, 0.15);
+                        ctx.circle(x, layout.flow, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
+                        if bar {
+                            ctx.line(x, layout.flow - 4.0, x, layout.flow + 4.0, wire, 2.0, 0.22);
                         } else {
-                            wire_end(outer, bx, open)
-                        };
-                        let lanes = self.wire_lanes(slot.id.0, side);
-                        for (from, to, width) in
-                            width_runs(inner, outer, lanes, slot.y, &marks, &self.mark_offsets)
-                        {
-                            wire_segment(ctx, from, to, slot.y, wire, width);
+                            ctx.line(x - 4.0, layout.flow, x + 4.0, layout.flow, wire, 2.0, 0.22);
+                            ctx.line(x, layout.flow - 4.0, x, layout.flow + 4.0, wire, 2.0, 0.22);
                         }
-                        // The stub box is the whole of a minimised meter's
-                        // face, so it carries everything the rack knows about
-                        // the wire: red for a clip nobody has acknowledged, amber
-                        // for a circuit somebody has opened, the meter's own level
-                        // green for a track that is expanded or is carrying signal
-                        // over the gate, and the plain wire colour while nothing is
-                        // passing.
-                        let stub_color = stub_color(self.wire_meters.get(&key), gate, wire);
-                        ctx.rectangle(bx, slot.y, STUB_HALF, STUB_TALL, stub_color, 0.25);
                     }
                 }
+                // Out of this stage the trunk carries whatever the join hands
+                // on: a single chain keeps its tail's width, and a parallel
+                // stage leaves on the mixer, which folds the branches to the
+                // widest of their tails — the same width the rack builds its
+                // graph at.
+                incoming = stage
+                    .iter()
+                    .filter_map(|branch| branch.last())
+                    .map(|tail| self.wire_lanes(tail.id.0, true))
+                    .max()
+                    .unwrap_or_else(|| route.output.count().clamp(1, 2));
+                // The next trunk hands over to the ring too: it starts where
+                // the collar's clearance ends, so no wire crosses the rim on
+                // its way out of a shared stage.
+                previous_x = if shared { merge + RING_CLEAR } else { merge };
             }
-            if shared {
-                // The rings, boundary by boundary, in the order they run
-                // across the stage: an upright bar where one trunk divides
-                // or a lane peels off, a `+` where lanes gather back. The
-                // outermost are the split and the merge they have always
-                // been; an interior one stands in the air between the two
-                // columns it divides, marking where a lane opens or closes.
-                // Like the merge they are painted after every riser and
-                // every lead that crosses here, cut away from under them —
-                // a collar would just be a bead threaded onto its own
-                // riser, and a lane running on past an interior ring shows
-                // through the disc as signal passing a junction.
-                for (boundary, bar) in stage_rings(group) {
-                    let x = ring_x(base, boundary, width);
-                    ctx.circle(x, layout.flow, MIXER_RING, wire, 0.15);
-                    ctx.circle(x, layout.flow, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
-                    if bar {
-                        ctx.line(x, layout.flow - 4.0, x, layout.flow + 4.0, wire, 2.0, 0.22);
-                    } else {
-                        ctx.line(x - 4.0, layout.flow, x + 4.0, layout.flow, wire, 2.0, 0.22);
-                        ctx.line(x, layout.flow - 4.0, x, layout.flow + 4.0, wire, 2.0, 0.22);
-                    }
-                }
-            }
-            // Out of this stage the trunk carries whatever the join hands
-            // on: a single chain keeps its tail's width, and a parallel
-            // stage leaves on the mixer, which folds the branches to the
-            // widest of their tails — the same width the rack builds its
-            // graph at.
-            incoming = stage
-                .iter()
-                .filter_map(|branch| branch.last())
-                .map(|tail| self.wire_lanes(tail.id.0, true))
-                .max()
-                .unwrap_or_else(|| route.output.count().clamp(1, 2));
-            // The next trunk hands over to the ring too: it starts where
-            // the collar's clearance ends, so no wire crosses the rim on
-            // its way out of a shared stage.
-            previous_x = if shared { merge + RING_CLEAR } else { merge };
-        }
-        // The master wire, drawn past the loop so it keeps running when
-        // the card it feeds has scrolled away. It ends at the `OUT`
-        // card's edge and its switch sits on the card's own stub: a
-        // right-click on the card's face, on the wire, or on the stub
-        // mutes the output, and the meter keeps reading what arrives
-        // while the circuit is open.
-        let (mfrom, mto) = wire_click(
-            out.x,
-            false,
-            false,
-            !groups.is_empty(),
-            previous_x,
-            out.x - CARD_WIDTH / 2.0,
-        );
-        let out_hover = hit(mouse, out.x, layout.flow, CARD_WIDTH / 2.0, TRACK_HALF);
-        if broke
+            // The master wire, drawn past the loop so it keeps running when
+            // the card it feeds has scrolled away. It ends at the `OUT`
+            // card's edge and its switch sits on the card's own stub: a
+            // right-click on the card's face, on the wire, or on the stub
+            // mutes the output, and the meter keeps reading what arrives
+            // while the circuit is open.
+            let (mfrom, mto) = wire_click(
+                out.x,
+                false,
+                false,
+                !groups.is_empty(),
+                previous_x,
+                out.x - CARD_WIDTH / 2.0,
+            );
+            let out_hover = hit(mouse, out.x, layout.flow, CARD_WIDTH / 2.0, TRACK_HALF);
+            if broke
             && bypass_target.is_none()
             && pause_target.is_none()
             // As with a card's own wires: a circle parked on the master wire
@@ -3425,28 +3612,25 @@ impl Process for RackUi {
             // clear of both.
             && !on_mark
             && ((out_visible && out_hover) || wire_hit(mouse, mfrom, mto, layout.flow, out_stub))
-        {
-            self.toggle_wire(MASTER_WIRE_KEY, false);
-        }
-        let out_head = wire_end(
-            out.x - CARD_WIDTH / 2.0,
-            out_stub,
-            self.wire_open(MASTER_WIRE_KEY, false),
-        );
-        for (from, to, lanes) in width_runs(
-            previous_x,
-            out_head,
-            // The master wire is what the rack hands the device, so it runs
-            // as wide as the playback side is: the engine refuses a graph
-            // whose tail is any other width, map aside. A conversion
-            // standing on the wire steps it down or up at its circle
-            // regardless — the mark's own widths say what each side carries.
-            route.output.count().clamp(1, 2),
-            layout.flow,
-            &marks,
-            &self.mark_offsets,
-        ) {
-            wire_segment(ctx, from, to, layout.flow, wire, lanes);
+            {
+                self.toggle_wire(MASTER_WIRE_KEY, false);
+            }
+            let out_head = out.x - CARD_WIDTH / 2.0;
+            for (from, to, lanes) in width_runs(
+                previous_x,
+                out_head,
+                // The master wire is what the rack hands the device, so it runs
+                // as wide as the playback side is: the engine refuses a graph
+                // whose tail is any other width, map aside. A conversion
+                // standing on the wire steps it down or up at its circle
+                // regardless — the mark's own widths say what each side carries.
+                route.output.count().clamp(1, 2),
+                layout.flow,
+                &marks,
+                &self.mark_offsets,
+            ) {
+                wire_segment(ctx, from, to, layout.flow, wire, lanes, &gaps);
+            }
         }
         // The conversions themselves, drawn last among the wires so a circle
         // always reads as the thing standing on a wire and never as a wire
@@ -3756,6 +3940,11 @@ impl Process for RackUi {
             self.runtime.edit(cards);
             self.drag = None;
         }
+        // Cancellation wins over a release delivered in the same frame.
+        if ctx.key_down(frost::KeyCode::Escape) {
+            self.drag = None;
+            self.press_origin = None;
+        }
         if self.drag.is_some()
             && let (Some(a), Some(b)) = (self.press_origin, mouse)
         {
@@ -3783,8 +3972,14 @@ impl Process for RackUi {
             mouse
         };
         if (self.drag.is_some() && self.moved) || self.external_drag {
-            let joins = fork_marks(&groups, &layout.slots, layout.flow, self.drag);
-            let runs = wire_runs(&groups, &layout.slots, self.drag);
+            let joins = canvas
+                .as_ref()
+                .map(|c| c.fork_targets(self.drag))
+                .unwrap_or_else(|| fork_marks(&groups, &layout.slots, layout.flow, self.drag));
+            let runs = canvas
+                .as_ref()
+                .map(|c| c.run_targets(self.drag))
+                .unwrap_or_else(|| wire_runs(&groups, &layout.slots, self.drag));
             let target = target_at(
                 preview_mouse,
                 &layout.slots,
@@ -3810,40 +4005,48 @@ impl Process for RackUi {
                 let fork_heads = fork_lanes(&groups, self.drag, &target);
                 match target.side {
                     Side::Split | Side::Join => {
-                        // The ring is the fork's front or back door, so its
-                        // tick spans the fork just outside where the wires
-                        // fan or close; the card itself stands a column
-                        // further out.
-                        let ys: Vec<f32> = match fork_heads.as_ref().map(|heads| {
-                            layout
-                                .slots
+                        if let Some(mark) = target.scope.and_then(|scope| {
+                            joins
                                 .iter()
-                                .filter(|slot| heads.contains(&slot.id))
-                                .map(|slot| slot.y)
-                                .collect::<Vec<f32>>()
+                                .find(|mark| mark.scope == Some(scope) && mark.side == target.side)
                         }) {
-                            Some(ys) if ys.len() > 1 => ys,
-                            _ => Vec::new(),
-                        };
-                        let (y, height) = if ys.len() > 1 {
-                            let low = ys.iter().copied().fold(f32::INFINITY, f32::min);
-                            let high = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                            ((low + high) * 0.5, high - low + 70.0)
+                            ctx.circle(mark.x, mark.y, MIXER_RING + 3.0, rgb(103, 237, 175), 0.5);
                         } else {
-                            (slot.y, 70.0)
-                        };
-                        let x = joins
-                            .iter()
-                            .find(|mark| mark.anchor == target.card && mark.side == target.side)
-                            .map_or(slot.x, |mark| {
-                                mark.x
-                                    + if target.side == Side::Split {
-                                        -25.0
-                                    } else {
-                                        25.0
-                                    }
-                            });
-                        ctx.rectangle(x, y, 2.0, height, rgb(103, 237, 175), 0.5);
+                            // The ring is the fork's front or back door, so its
+                            // tick spans the fork just outside where the wires
+                            // fan or close; the card itself stands a column
+                            // further out.
+                            let ys: Vec<f32> = match fork_heads.as_ref().map(|heads| {
+                                layout
+                                    .slots
+                                    .iter()
+                                    .filter(|slot| heads.contains(&slot.id))
+                                    .map(|slot| slot.y)
+                                    .collect::<Vec<f32>>()
+                            }) {
+                                Some(ys) if ys.len() > 1 => ys,
+                                _ => Vec::new(),
+                            };
+                            let (y, height) = if ys.len() > 1 {
+                                let low = ys.iter().copied().fold(f32::INFINITY, f32::min);
+                                let high = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                                ((low + high) * 0.5, high - low + 70.0)
+                            } else {
+                                (slot.y, 70.0)
+                            };
+                            let x = joins
+                                .iter()
+                                .find(|mark| mark.anchor == target.card && mark.side == target.side)
+                                .map_or(slot.x, |mark| {
+                                    mark.x
+                                        + if target.side == Side::Split {
+                                            -25.0
+                                        } else {
+                                            25.0
+                                        }
+                                });
+                            ctx.rectangle(x, y, 2.0, height, rgb(103, 237, 175), 0.5);
+                        }
                     }
                     Side::Left | Side::Right => ctx.rectangle(
                         slot.x
@@ -4383,6 +4586,7 @@ mod tests {
             spanning(&[&[7]]),
         ];
         let aim = |card: u64, side: Side| Target {
+            scope: None,
             card: NodeId(card),
             side,
         };
@@ -4468,6 +4672,7 @@ mod tests {
                     1000.0,
                 ),
                 Some(Target {
+                    scope: None,
                     card: NodeId(1),
                     side
                 })
@@ -4483,6 +4688,7 @@ mod tests {
                     1000.0
                 ),
                 Some(Target {
+                    scope: None,
                     card: NodeId(1),
                     side
                 })
@@ -4548,6 +4754,7 @@ mod tests {
                     1000.0,
                 ),
                 Some(Target {
+                    scope: None,
                     card: NodeId(3),
                     side
                 })
@@ -4569,6 +4776,7 @@ mod tests {
                 1000.0
             ),
             Some(Target {
+                scope: None,
                 card: NodeId(3),
                 side: Side::Right
             })
@@ -4611,6 +4819,7 @@ mod tests {
         assert_eq!(marks[3].x, junction_x(224.0, true));
         // The preview spans the fork at either door, one survivor per lane.
         let at = |card: u64, side: Side| Target {
+            scope: None,
             card: NodeId(card),
             side,
         };
@@ -4652,8 +4861,8 @@ mod tests {
         ];
         let marks = fork_marks(&groups, &slots, 0.0, None);
         let split = junction_x(224.0, false);
-        // This point lies well inside the split ring's reach…
-        assert!((135.0 - split).powi(2) + 24.0f32.powi(2) <= JOIN_HIT * JOIN_HIT);
+        // Junction clearance now keeps the ring away from the card face.
+        assert!((135.0 - split).powi(2) + 24.0f32.powi(2) > JOIN_HIT * JOIN_HIT);
         // …and on the near edge of the top lane's head, where it must read
         // as a chain into that lane, not a new stage ahead of the fork.
         assert_eq!(
@@ -4670,6 +4879,7 @@ mod tests {
                 1000.0
             ),
             Some(Target {
+                scope: None,
                 card: NodeId(3),
                 side: Side::Left
             })
@@ -4719,6 +4929,7 @@ mod tests {
         assert_eq!(
             pick([124.0, 30.0]),
             Some(Target {
+                scope: None,
                 card: NodeId(1),
                 side: Side::Above
             })
@@ -4726,6 +4937,7 @@ mod tests {
         assert_eq!(
             pick([124.0, -30.0]),
             Some(Target {
+                scope: None,
                 card: NodeId(1),
                 side: Side::Below
             })
@@ -4735,6 +4947,7 @@ mod tests {
         assert_eq!(
             pick([124.0, 8.0]),
             Some(Target {
+                scope: None,
                 card: NodeId(1),
                 side: Side::Right
             })
@@ -4745,6 +4958,7 @@ mod tests {
         assert_eq!(
             pick([40.0, 70.0]),
             Some(Target {
+                scope: None,
                 card: NodeId(1),
                 side: Side::Over
             })
@@ -5002,15 +5216,6 @@ mod tests {
                     let feed_in = if head { previous_x } else { chain_in };
                     let out_end = if !tail { junction_x(x, true) } else { merge };
                     for side in [false, true] {
-                        // The lane standing on the flow line of a shared
-                        // stage hands its signal to the collar: its wire is
-                        // the stage's, nobody's to break, so it owns no
-                        // click there — the mirror of the draw pass.
-                        let on_collar =
-                            shared && (y - flow).abs() < 0.5 && ((head && !side) || (tail && side));
-                        if on_collar {
-                            continue;
-                        }
                         let (from, to) = wire_click(
                             x,
                             side,
@@ -5519,28 +5724,34 @@ mod tests {
         );
     }
     #[test]
-    fn a_broken_wire_leaves_a_hole_its_own_box_cannot_fill() {
-        // The input wire of a card standing at the origin: the signal arrives
-        // from the left, the stub box sits 6 px inside the card's edge.
-        let to = -CARD_WIDTH / 2.0;
-        let box_x = wire_box_x(0.0, false);
-        assert_eq!(wire_end(to, box_x, false), to, "closed, it runs on anyway");
-        let open = wire_end(to, box_x, true);
-        assert_eq!(open, box_x - STUB_HALF - BREAK_GAP, "cut short of the box");
-        assert!(
-            to - open > 2.0 * STUB_HALF + BREAK_GAP,
-            "the hole is {hole} px for an {} px box, so the mark sits in air and \
-             not on a line",
-            2.0 * STUB_HALF,
-            hole = to - open,
-        );
-        // The cut only ever shortens a stretch. Where a wire stops before it even
-        // reaches its box, breaking it must not draw it further than it was going
-        // — that would hang a piece of wire past a column it never touched.
-        let short = box_x - 20.0;
-        assert!(short < open);
-        assert_eq!(wire_end(short, box_x, true), short);
-        assert!(wire_end(to, box_x, true) <= to);
+    fn breaks_are_fixed_size_at_the_meter_not_the_length_of_the_cable() {
+        for end in [30.0, 300.0, 3000.0] {
+            let gap = meter_gap(10.0, 0.0, true);
+            assert_eq!(gap.start, 10.0 + STUB_HALF);
+            assert_eq!(gap.end - gap.start, BREAK_GAP);
+            assert_eq!(
+                connected_runs(0.0, end, 0.0, &[gap]),
+                vec![(0.0, gap.start), (gap.end, end)]
+            );
+            assert_eq!(connected_runs(0.0, end, 20.0, &[gap]), vec![(0.0, end)]);
+        }
+        let gap = meter_gap(100.0, 0.0, false);
+        assert_eq!(gap.end, 100.0 - STUB_HALF);
+        assert_eq!(gap.end - gap.start, BREAK_GAP);
+    }
+    #[test]
+    fn a_meter_to_meter_break_begins_at_the_output_meter() {
+        let groups = [spanning(&[&[1, 3]])];
+        let frame = geometry(&groups, 1000.0, 700.0, 0.0, 0.0);
+        let source = frame
+            .slots
+            .iter()
+            .find(|slot| slot.id == NodeId(1))
+            .unwrap();
+        let gaps = wire_gaps(&groups, &frame, |id, side| id == 3 && !side);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].start, wire_box_x(source.x, true) + STUB_HALF);
+        assert_eq!(gaps[0].end - gaps[0].start, BREAK_GAP);
     }
     #[test]
     fn no_two_wires_ask_for_the_same_click() {
@@ -5741,7 +5952,7 @@ mod tests {
         assert!(!mark.vertical, "this wire runs across the canvas");
         assert_eq!(mark.forward, 1.0, "the signal runs into the card");
         assert_eq!(mark.cross, frame.flow, "the card stands on the line");
-        assert_eq!(mark.centre(&BTreeMap::new()), [149.0, 30.0]);
+        assert_eq!(mark.centre(&BTreeMap::new()), [169.0, 30.0]);
         assert!(fits_on_its_wire(mark));
     }
     #[test]
@@ -5765,14 +5976,18 @@ mod tests {
         assert_eq!(marks.len(), 1, "{marks:?}");
         let mark = &marks[0];
         assert!(mark.vertical);
-        assert_eq!(mark.cross, card_x(1) - 105.0, "the column it drops out of");
+        assert_eq!(
+            mark.cross,
+            junction_x(card_x(1), false),
+            "the column it drops out of"
+        );
         assert_eq!(
             mark.forward, -1.0,
             "this branch hangs below the line, so the signal runs down it"
         );
         // Down the riser from the line at 30 to the card's row at −40, shrunk
         // by the click area at both ends: a seat of −32 to 22, on −5.
-        assert_eq!(mark.centre(&BTreeMap::new()), [416.0, -5.0]);
+        assert_eq!(mark.centre(&BTreeMap::new()), [mark.cross, -5.0]);
         assert_eq!(
             mark.along([7.0, 99.0]),
             99.0,
@@ -5803,21 +6018,21 @@ mod tests {
         assert!(mark.vertical);
         assert_eq!(
             mark.cross,
-            card_x(1) + 105.0,
+            junction_x(card_x(1), true),
             "the column the ring stands in"
         );
         assert_eq!(mark.forward, -1.0, "the signal runs back down to the ring");
         // Up the riser from the card's row at 100 to the edge of the ring just
         // off the line, at 30 + 8.5 + 1: a seat of 47.5 to 92.
-        assert_eq!(mark.centre(&BTreeMap::new()), [626.0, 69.75]);
+        assert_eq!(mark.centre(&BTreeMap::new()), [mark.cross, 69.75]);
         assert!(fits_on_its_wire(mark));
     }
     #[test]
     fn a_join_onto_the_master_wire_beside_the_join_ring_gets_the_gutter_after_the_ring() {
         // The ring hands the joined trunk to the `OUT` card, and the gutter
-        // between them is one column step of 248, less the 105 to the ring's
+        // between them is one column step of 288, less the 125 to the ring's
         // column, less 8.5 of ring, less the 103 to the face of the card's
-        // stub box — 31.5. A circle and its click ring fit with 15.5 of slack,
+        // stub box — 51.5. A circle and its click ring fit with 35.5 of slack,
         // centred on the stretch: it stands clear of both the ring and the
         // stub box it runs to.
         let (frame, stages) = placed(&[spanning(&[&[1], &[3]])]);
@@ -5835,16 +6050,16 @@ mod tests {
         assert_eq!(marks.len(), 1, "{marks:?}");
         let mark = &marks[0];
         assert_eq!((mark.inputs, mark.outputs), (2, 1));
-        assert_eq!(mark.hi - mark.lo, 15.5, "31.5 of wire less 16 of circle");
-        assert_eq!(mark.centre(&BTreeMap::new()), [card_x(0) + 129.25, 30.0]);
+        assert_eq!(mark.hi - mark.lo, 35.5, "51.5 of wire less 16 of circle");
+        assert_eq!(mark.centre(&BTreeMap::new()), [card_x(0) + 159.25, 30.0]);
         assert!(fits_on_its_wire(mark));
     }
     #[test]
     fn a_join_onto_the_master_wire_gets_the_gutter_before_the_output_card() {
         // The same join after a stage running no branches has a whole gutter
-        // to itself: 248, less the 105 to the merge column, less the 103 to
-        // the face of the card's stub box, is 40 — a circle rides it centred,
-        // with 12 of wire showing on either side of its click ring.
+        // to itself: 288, less the 125 to the merge column, less the 103 to
+        // the face of the card's stub box, is 60 — a circle rides it centred,
+        // with 22 of wire showing on either side of its click ring.
         let (frame, stages) = placed(&[spanning(&[&[1]])]);
         let marks = width_marks(
             &[conversion(
@@ -5860,8 +6075,8 @@ mod tests {
         assert_eq!(marks.len(), 1, "{marks:?}");
         let mark = &marks[0];
         assert_eq!((mark.inputs, mark.outputs), (2, 1));
-        assert_eq!(mark.hi - mark.lo, 24.0, "40 of wire less 16 of circle");
-        assert_eq!(mark.centre(&BTreeMap::new()), [card_x(0) + 125.0, 30.0]);
+        assert_eq!(mark.hi - mark.lo, 44.0, "60 of wire less 16 of circle");
+        assert_eq!(mark.centre(&BTreeMap::new()), [card_x(0) + 155.0, 30.0]);
         assert!(fits_on_its_wire(mark));
     }
     #[test]
@@ -5878,7 +6093,7 @@ mod tests {
         assert_eq!(marks.len(), 1, "{marks:?}");
         let mark = &marks[0];
         assert_eq!((mark.inputs, mark.outputs), (1, 2));
-        assert_eq!(mark.centre(&BTreeMap::new()), [in_x() + 122.0, 30.0]);
+        assert_eq!(mark.centre(&BTreeMap::new()), [in_x() + 142.0, 30.0]);
         assert!(fits_on_its_wire(mark));
     }
     #[test]
@@ -5909,22 +6124,24 @@ mod tests {
         assert!(marks.is_empty(), "{marks:?}");
     }
     #[test]
-    fn a_lane_on_the_line_stops_its_wire_at_the_ring_and_never_short_of_it() {
-        // `IN → (Dist → Clone ∥ Tuner ∥ Ecomplex) → OUT` with Tuner on the
-        // line: its chain stops a column short of the deepest lane, and its
-        // collar fold leaves no stub of its own to carry the wire, so the
-        // stage must run the lane onto the ring itself — from the card's
-        // edge out to the air gap, no further.
-        let merge = junction_x(card_x(1), true);
-        assert_eq!(
-            flow_to_ring(card_x(0), merge),
-            Some((card_x(0) + CARD_WIDTH / 2.0, merge - RING_CLEAR)),
-            "the run starts at the card's own edge and stops beside the collar"
-        );
-        // A lane whose tail already stands at the merge column keeps the
-        // fold whole: the rim rests a hair off its edge and there is no
-        // gutter of wire to draw.
-        assert_eq!(flow_to_ring(card_x(1), merge), None);
+    fn centre_branch_keeps_both_meter_targets_clear_of_the_junctions() {
+        // Echo -> Dist -> Wah above Ecomplex above Tuner: the middle
+        // card must retain its input AND its long output lead.
+        let targets = wire_targets(&[&[3, 1, 1]]);
+        let centre: Vec<_> = targets.iter().filter(|target| target.card == 3).collect();
+        assert_eq!(centre.len(), 2);
+        for target in centre {
+            assert_eq!(target.y, 0.0);
+            let stub = wire_box_x(target.x, target.side);
+            assert!(stub - STUB_HALF > target.from.min(target.to));
+            assert!(stub + STUB_HALF < target.from.max(target.to));
+        }
+        // Even an expanded meter's grab/peak line (half-width 4.5)
+        // must stand clear of the ring, including on the flow line.
+        let x = card_x(0);
+        let gap = junction_x(x, true) - wire_box_x(x, true);
+        assert!(gap > MIXER_RING + 4.5 + BREAK_GAP);
+        assert!(junction_x(card_x(1), false) - junction_x(x, true) > 2.0 * MIXER_RING);
     }
     #[test]
     fn three_parallel_branches_are_each_seated_where_their_own_wire_runs() {
@@ -5961,8 +6178,8 @@ mod tests {
                 .find(|mark| mark.id == NodeId(id))
                 .unwrap_or_else(|| panic!("{id}: {marks:?}"))
         };
-        let split = card_x(0) - 105.0;
-        let merge = card_x(0) + 105.0;
+        let split = junction_x(card_x(0), false);
+        let merge = junction_x(card_x(0), true);
         for (id, forward) in [(11, 1.0), (13, -1.0)] {
             let mark = seated(id);
             assert!(mark.vertical, "{id} rides a riser");
@@ -5980,7 +6197,7 @@ mod tests {
         assert_eq!(middle.cross, frame.flow);
         assert_eq!(
             middle.centre(&BTreeMap::new()),
-            [in_x() + 123.0, frame.flow],
+            [in_x() + 133.0, frame.flow],
             "in the gutter, clear of both stub boxes and the split column"
         );
         // And no two circles are drawn on top of one another: several ride the
@@ -6023,16 +6240,16 @@ mod tests {
         assert_eq!(mark.centre(&offsets), [mark.hi, mark.cross]);
         // 42 of wire is 26 of slack, thirteen each way.
         offsets.insert(mark.id, 1.0);
-        assert_eq!(mark.centre(&offsets), [150.0, 30.0]);
+        assert_eq!(mark.centre(&offsets), [170.0, 30.0]);
         offsets.insert(mark.id, -1.0);
-        assert_eq!(mark.centre(&offsets), [148.0, 30.0]);
+        assert_eq!(mark.centre(&offsets), [168.0, 30.0]);
         // A conversion that went away takes its offset with it: nothing here
         // moves because of an id another graph handed out.
         let other = conversion(10, Channels::Mono, Channels::Stereo, None, Some(1));
         let moved = width_marks(&[other], &stages, &frame);
         assert_eq!(
             moved.first().map(|mark| mark.centre(&offsets)),
-            Some([149.0, 30.0]),
+            Some([169.0, 30.0]),
             "a stranger's nudge moves nothing"
         );
     }
