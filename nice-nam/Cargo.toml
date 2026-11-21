@@ -49,16 +49,33 @@ frost = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 # Rust File Dialog: model and cabinet pickers will run on the UI thread.
 rfd = "=0.17.2"
+# Single inference, mono duplicated to stereo; do not enable dual-mono.
+# Every target now needs it: it wraps the flush-to-zero window around the
+# engine's kernels, and the engine now runs on Windows too.
+audio-float = { path = "crates/audio-float" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-# Single inference, mono duplicated to stereo; do not enable dual-mono.
-audio-float = { path = "crates/audio-float" }
 nam_engine = { package = "NeuralAmpModeler-rs", version = "=2.0.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-# The Windows engine: no cabinet, and a model asking for another sample rate is
-# refused rather than run at the wrong one.
-nam_windows = { package = "nam-rs", version = "=0.4.0" }
+# The same engine the other platforms run, from the branch its Windows backend
+# lives on. The 2.0.0 above predates it — the Win32 `MirroredBuffer`
+# (`VirtualAlloc2` + `MapViewOfFile3`) landed with 3.0.0, and 3.0.0 is not
+# published, so this is the only NAM engine this build can have on this platform
+# and it comes from git. `Cargo.lock` pins the commit (dc824177). The key cannot
+# be `nam_engine`: cargo refuses one dependency name resolving to two sources
+# across targets, which is what keeping macOS and Linux on the published 2.0.0
+# means. It also means the x86-64-v3 baseline the engine demands is now a Windows
+# build requirement, not only a Linux one.
+#
+# Remove this the moment the engine is released. When 3.0.0 (or anything after
+# it) reaches the registry, this section collapses back into `nam_engine` with a
+# version where the rev now stands, and what disappears with the second name is
+# the second version of one crate in `Cargo.lock`, the `cfg(windows)` seams in
+# `src/dsp.rs` and `tests/dsp.rs`, and the reason the Windows build is pinned to
+# a moving branch rather than to a number anyone can re-resolve. Until that
+# release exists, this commit is what a Windows build of this plugin is.
+nam_windows = { package = "NeuralAmpModeler-rs", git = "https://github.com/fabiohl/NeuralAmpModeler-rs", rev = "dc82417778ffdead48a4a69d5f4e90309ec4c28d", default-features = false }
 # No ASIO here, and none needed: the transport is `azo`, a `cfg(windows)`
 # dependency of nice-common that the `asio-host` alias switches on, scoped where
 # it is scoped and invisible to every other platform from there.

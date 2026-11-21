@@ -1,7 +1,7 @@
 //! Standalone Ecomplex preferences, kept in the same file as the audio
 //! settings.
 //!
-//! The seven controls are what the standalone remembers between runs. Each is
+//! The five controls are what the standalone remembers between runs. Each is
 //! an `Option`: `None` means the control was never moved and the parameter's
 //! own default answers, so the file records the player's moves rather than a
 //! second copy of the plugin that could drift from the first. Same arrangement
@@ -17,8 +17,6 @@ pub type Settings = nice_common::Settings<EcomplexPreferences>;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EcomplexPreferences {
-    pub mic_level: Option<f32>,
-    pub gtr_level: Option<f32>,
     pub color: Option<f32>,
     pub delay_time: Option<f32>,
     pub recount: Option<f32>,
@@ -31,9 +29,7 @@ impl nice_common::Preferences for EcomplexPreferences {
     const APP_NAME: &'static str = "nice-ecomplex";
 
     fn is_blank(&self) -> bool {
-        self.mic_level.is_none()
-            && self.gtr_level.is_none()
-            && self.color.is_none()
+        self.color.is_none()
             && self.delay_time.is_none()
             && self.recount.is_none()
             && self.timbre.is_none()
@@ -120,9 +116,7 @@ mod tests {
     #[test]
     fn every_saved_move_reads_as_a_move() {
         type Moved = fn(&mut EcomplexPreferences);
-        let moved: [(&str, Moved); 7] = [
-            ("mic_level", |p| p.mic_level = Some(0.5)),
-            ("gtr_level", |p| p.gtr_level = Some(0.5)),
+        let moved: [(&str, Moved); 5] = [
             ("color", |p| p.color = Some(0.5)),
             ("delay_time", |p| p.delay_time = Some(0.5)),
             ("recount", |p| p.recount = Some(0.5)),

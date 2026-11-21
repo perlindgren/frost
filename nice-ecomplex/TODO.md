@@ -6,53 +6,56 @@ head on one drum with the wow welded to the motor, a tone stage sitting in
 the feedback loop where the machine's tone control actually is, the Recount
 loop running away past its crossover but staying finite, and an Echo Volume
 that mixes against a dry which — pinned at bit level — never fades out. The
-member, the manifest and features, the seven parameters, the CLAP and VST3
+member, the manifest and features, the five parameters, the CLAP and VST3
 exports, the frost editor, the standalone host on `nice-common`'s transport
 and settings panel, and the gate and hook entries are all in place. What is
-left is the eight named assumptions the documents cannot settle — A-1
-through A-8, catalogued in the README — and the things a machine on a bench
+left is the seven named assumptions the documents cannot settle — A-1
+through A-7, catalogued in the README — and the things a machine on a bench
 would retire: the delay taper, the drum's true rate, the flutter's shape,
 repeat-to-repeat saturation, tape hiss, and the pitch smear the model
 currently declines to do.
 
 ## 1. Decided, and where the answer lives
 
-- **One drum, heard twice.** The hardware has one tape; the plugin has two
-  lanes. Both lanes read the same drum, because a mono tape machine is what
-  the machine is — but the *dry* keeps its own lane, because the dry is
-  whatever arrived at the input, not something the drum plays back.
-  `stereo_keeps_its_dry_lanes_and_shares_one_tape` pins both halves so the
-  simplification cannot quietly become a bug.
+- **Mono end to end.** The machine runs one tape path and hands out one
+  output; the model does the same. Its only DSP entry is one mono lane, its
+  only audio-IO layout is one mono input and one mono output, and the
+  standalone host folds the captured stereo frame at its own edge and
+  duplicates the answer back onto the device. Width is the host's work,
+  never the drum's — an earlier build kept two lanes reading one tape;
+  that reading bought nothing the machine does and has been retired.
 - **The dry is always present, and that is a fact, not a taste.** The
   machine's Echo Volume (its panel's "Volume") sets the repeats against a
   dry that never fades; there is no wet/dry crossfade and no dry-kill
   anywhere in the machine, and `echo_volume_zero_leaves_the_dry_untouched`
   asserts bit-identical dry at zero so no future "wet/dry knob" refactor
-  can erase the fact. The `² × 1.2` taper beside it (A-8) *is* a taste, and
+  can erase the fact. The `² × 1.2` taper beside it (A-7) *is* a taste, and
   is labelled.
-- **One bus stands in for two jacks (A-7).** The machine mixes its mic and
-  guitar inputs inside itself; a plugin has one input bus. The model feeds
-  both trims from the same arriving signal, exactly as one source run into
-  both jacks would, so the trims set *drive* — which is what they do on the
-  panel. A host with two mono feeds could eventually route them for real;
-  until then the behaviour is honest, not a placeholder.
+- **No trim in front of the tube (A-6).** The machine has two input jacks
+  and their trims; this model carries neither. The single mono input enters
+  the front end at unity, and Color is the one control deciding what the
+  tube sees — the drive of the stage, not a level before it. The trims'
+  *drive* reading survives as Color's job; their spans, deleted with them.
 - **Color is disclosed, not smuggled.** It is not a panel control; it is
-  this model's knob for a property the machine only lets you reach by
-  overlevelling the input (A-6). The parameter doc, the tooltip and the
+  this model's knob for the property the machine only lets you reach by
+  overlevelling a trim (A-6) — and since this model has no trim, it is also
+  its only input level control. The parameter doc, the tooltip and the
   README all say so, and `the_host_sees_exactly_the_parameters_we_promised`
-  keeps the id set honest about its seven members.
+  keeps the id set honest about its five members.
 - **There is no factory preset, so "default" is declared, not recalled.**
   A 1964 tape echo has nothing to recall; the resting place is named in
   `Controls::default` and pinned by
   `the_defaults_are_a_configuration_the_sources_describe`, which asserts
-  the plugin and the model agree — the mixer sums to unity, Recount sits
+  the plugin and the model agree — Color rests at its clean edge, the input
+  enters the front end at unity, Recount sits
   under the crossover, the dry is present.
 
 Still to decide:
 
 - **Whether Color should exist as a parameter at all.** Its effect is
-  reachable by pushing the trims (that *is* the machine's way), and a
-  purist port would offer only the seven panel knobs; the counter-case is
+  reachable by feeding the machine a hotter source (that *is* the machine's
+  way, trim or no trim), and a
+  purist port would offer only the panel knobs it kept; the counter-case is
   that a plugin's input level is the host's gain, not the player's hand,
   and the drive deserves a handle of its own. Both positions are defensible;
   the knob currently takes the second and says why. It should be *re-made*
@@ -82,9 +85,8 @@ Done, with the test that says so:
       repeats (A-5 as behaviour, `darker_timbre_thins_the_repeats`), and
       the fixed 90 Hz high-pass is a tilt, not a mute
       (`the_high_pass_is_a_tilt_not_a_mute`).
-- [x] The mix: Echo Volume zero leaves the dry bit-identical (A-8,
-      `echo_volume_zero_leaves_the_dry_untouched`); one drum in both lanes,
-      dry lanes kept separate (`stereo_keeps_its_dry_lanes_and_shares_one_tape`).
+- [x] The mix: Echo Volume zero leaves the dry bit-identical (A-7,
+      `echo_volume_zero_leaves_the_dry_untouched`).
 - [x] Zero allocations per block and per control sweep, in a test file that
       links without nice-plug and so runs on Windows too
       (`tests/no_alloc.rs`: `a_block_costs_nothing_to_the_allocator`,

@@ -20,6 +20,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "NeuralAmpModeler-rs"
+version = "3.0.0"
+source = "git+https://github.com/fabiohl/NeuralAmpModeler-rs?rev=dc82417778ffdead48a4a69d5f4e90309ec4c28d#dc82417778ffdead48a4a69d5f4e90309ec4c28d"
+dependencies = [
+ "anyhow",
+ "libc",
+ "log",
+ "loom",
+ "rtrb 0.4.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1938,17 +1954,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nam-rs"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cedc1ae256d0510dd48463bbd6df12a743bba06aa5a27270496c3d1d5b3bf886"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2119,7 +2124,8 @@ dependencies = [
 name = "nice-nam"
 version = "0.1.0"
 dependencies = [
- "NeuralAmpModeler-rs",
+ "NeuralAmpModeler-rs 2.0.0",
+ "NeuralAmpModeler-rs 3.0.0",
  "allocation-counter",
  "audio-float",
  "baseview",
@@ -2130,7 +2136,6 @@ dependencies = [
  "keyboard-types",
  "macos-frame-sync",
  "macos-metal-view",
- "nam-rs",
  "nice-common",
  "nice-plug",
  "plugin-buffer",

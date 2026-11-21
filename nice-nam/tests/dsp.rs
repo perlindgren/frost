@@ -1,5 +1,4 @@
 //! Isolated from nice-plug's debug allocator, as in nice-tuner's RT tests.
-#![cfg(not(windows))]
 #[path = "../src/dsp.rs"]
 mod dsp;
 #[allow(unused_imports)]
@@ -7,7 +6,7 @@ mod dsp;
 mod settings;
 use dsp::*;
 use settings::NamPreferences;
-#[cfg(all(test, not(windows)))]
+#[cfg(test)]
 mod tests {
     use super::*;
     struct Fixture(std::path::PathBuf);
@@ -20,7 +19,7 @@ mod tests {
         // Named after the test, so no two tests in this binary scan the same
         // `{tag}-{pid}-{n}` sequence: a directory one test is deleting answers the
         // next test's `CreateDirectory` with access denied, which `claim` reports
-        // as an unwritable machine. See `nice-nam/tests/dsp_windows.rs`.
+        // as an unwritable machine.
         let this_thread = std::thread::current();
         let who = this_thread
             .name()
@@ -78,6 +77,21 @@ mod tests {
         assert!(Chain::load(&paths, 48000).is_err());
     }
     #[test]
+    fn a_file_that_is_not_a_model_is_named_and_refused() {
+        // What a loader owes someone who pointed the picker at the wrong file: the
+        // name of it, and no chain. The reason is the engine's own words; the path
+        // is this build's, and the path is the half worth asserting here.
+        let root = fixture();
+        let path = root.0.join("not-a-model.nam");
+        std::fs::write(&path, b"nothing of a model here").unwrap();
+        let paths = NamPreferences {
+            model_path: Some(path),
+            ..Default::default()
+        };
+        let error = Chain::load(&paths, 48000).err().unwrap();
+        assert!(error.contains("not-a-model.nam"), "{error}");
+    }
+    #[test]
     fn cabinet_convolves_and_reports_its_latency_without_allocating() {
         let root = fixture();
         let mut paths = NamPreferences::default();
@@ -114,13 +128,16 @@ mod tests {
         assert_eq!(allocations.count_total, 0);
     }
     #[test]
-    fn the_derivation_the_windows_engine_uses_agrees_with_this_loader() {
-        // Windows has no loader to ask: it computes NAM's gain staging from the
-        // file's own numbers. This platform does have one, so hold both to the
-        // same file and require the same pair of multipliers. A change to the
-        // convention, or to either engine's reading of it, fails here rather than
-        // showing up as a level difference between two builds of one plugin.
+    fn the_derivation_kept_in_the_chain_agrees_with_the_loader() {
+        // Nothing at runtime uses this derivation: the chain takes the loader's
+        // own multipliers. It is kept, and held against the loader on the same
+        // file, so that the convention stays written down somewhere in this build
+        // and so that a change to either side of it fails here rather than
+        // showing up as a level difference nobody can point at.
+        #[cfg(not(windows))]
         use nam_engine::prelude::{LoadOptions, SystemSnapshot, load_and_build_model};
+        #[cfg(windows)]
+        use nam_windows::prelude::{LoadOptions, SystemSnapshot, load_and_build_model};
         let root = fixture();
         let path = root.0.join("calibrated.nam");
         let mut weights = vec![0.0f32; 70];

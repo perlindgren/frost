@@ -47,7 +47,8 @@ because the flag names an x86-64 target and the NAM engine does not support Inte
 Macs at all. It is an x86-64 spelling only: export it across the workspace and
 the `wasm32-unknown-unknown` half of a lint answers one line of *"not a recognized
 processor"* per crate and carries on without it, which is why the gate sets it on
-the three steps that build the model plugin or share its artefacts and nowhere
+the steps that build the model plugin or share its artefacts — on both platforms
+that build it — and nowhere
 else. On Windows, setting the variable *replaces* the `+crt-static` that
 `.cargo/config.toml` asks for on MSVC — the environment wins over `rustflags`
 there, as that file says — so name both if you want both, and read its note on

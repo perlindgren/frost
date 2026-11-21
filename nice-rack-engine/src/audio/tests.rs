@@ -1,11 +1,8 @@
 //! What a broken wire does to a running rack.
 //!
-//! The switch is the one part of the wire that changes what the graph *is*
-//! rather than how loud it is, so the tests below are about the two halves of
-//! that promise: nothing passes an open circuit, and the wire is still
-//! measured up to the gap. The second half is what makes the feature usable —
-//! a break that also killed its own meter would look exactly like a dead
-//! source, which is the thing an operator throws a switch to tell apart.
+//! An input meter measures the plugin side of its cable break; an output
+//! meter measures the source before its outgoing break. Both sides therefore
+//! show whether signal actually reaches their corresponding plugin terminal.
 //!
 //! The cards are the copy-everything `Through` of [`cost_bench`], so anything
 //! a test finds in a buffer was put there by a wire.
@@ -149,23 +146,23 @@ fn a_closed_wire_carries_and_an_open_one_does_not() {
     );
 }
 
-/// A break is measured before it is broken. The stub on the switch reads the
-/// signal arriving at the gap, so the operator can see the source alive on the
-/// far side of it; everything past the gap reads silence.
+/// An open input cable must not light the destination's input meter.
 #[test]
-fn a_broken_wire_still_reads_the_signal_arriving_at_it() {
+fn a_broken_input_reads_silence_while_its_source_remains_live() {
     let (left, right) = tone();
     let (mut prepared, levels) = rack(2);
     let (first, second) = (NodeId(1), NodeId(3));
     let key = |id: NodeId, side: bool| (id.0 << 1) | u64::from(side);
 
+    run(&mut prepared, &left, &right);
+    assert!(levels.sample(key(second, false)).unwrap().1 > 0.1);
     levels.set_open(key(second, false), true);
     run(&mut prepared, &left, &right);
 
     let (rms, peak) = levels.sample(key(second, false)).expect("attached");
     assert!(
-        rms > 0.1 && peak > 0.1,
-        "the wire into a break is measured up to the gap, not after it: {rms}, {peak}"
+        rms == 0.0 && peak == 0.0,
+        "no signal or reconstruction history may cross an open input: {rms}, {peak}"
     );
     let (rms, _) = levels.sample(key(first, true)).expect("attached");
     assert!(rms > 0.1, "and the wire it hangs off is still live: {rms}");
@@ -174,6 +171,9 @@ fn a_broken_wire_still_reads_the_signal_arriving_at_it() {
         rms == 0.0,
         "while the card past the break has nothing to send on: {rms}"
     );
+    levels.set_open(key(second, false), false);
+    run(&mut prepared, &left, &right);
+    assert!(levels.sample(key(second, false)).unwrap().0 > 0.1);
 }
 
 /// A card's output buffer is what every edge out of it reads, so one thrown

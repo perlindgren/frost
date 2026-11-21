@@ -457,11 +457,11 @@ pub struct Dist {
     requested: Oversampling,
     variant: Variant,
     requested_variant: Variant,
-    circuits: [Circuit; 2],
-    resamplers: [Resampler; 2],
+    circuit: Circuit,
+    resampler: Resampler,
     taps: [f64; TAPS],
     fade: f64,
-    off_delay: [[f64; 32]; 2],
+    off_delay: [f64; 32],
     cursor: usize,
 }
 impl Dist {
@@ -478,13 +478,11 @@ impl Dist {
             requested: mode,
             variant,
             requested_variant: variant,
-            circuits: std::array::from_fn(|_| {
-                Circuit::new(rate * mode.factor() as f64, values, variant)
-            }),
-            resamplers: std::array::from_fn(|_| Resampler::new()),
+            circuit: Circuit::new(rate * mode.factor() as f64, values, variant),
+            resampler: Resampler::new(),
             taps: fir(mode),
             fade: 1.0,
-            off_delay: [[0.0; 32]; 2],
+            off_delay: [0.0; 32],
             cursor: 0,
         }
     }
@@ -509,22 +507,23 @@ impl Dist {
             self.requested,
         );
     }
-    pub fn process(&mut self, input: [f32; 2]) -> [f32; 2] {
+    /// Push one sample of one signal through one circuit. The plugin hands
+    /// this the mono input directly; the pedal never folds channels together,
+    /// because width is the host's work, not the pedal's.
+    pub fn process(&mut self, input: f32) -> f32 {
         if self.requested != self.mode || self.requested_variant != self.variant {
             self.fade = (self.fade - 1.0 / 64.0).max(0.0);
             if self.fade == 0.0 {
                 self.mode = self.requested;
                 self.variant = self.requested_variant;
-                self.circuits = std::array::from_fn(|_| {
-                    Circuit::new(
-                        self.rate * self.mode.factor() as f64,
-                        self.controls,
-                        self.variant,
-                    )
-                });
-                self.resamplers = std::array::from_fn(|_| Resampler::new());
+                self.circuit = Circuit::new(
+                    self.rate * self.mode.factor() as f64,
+                    self.controls,
+                    self.variant,
+                );
+                self.resampler = Resampler::new();
                 self.taps = fir(self.mode);
-                self.off_delay = [[0.0; 32]; 2];
+                self.off_delay = [0.0; 32];
                 self.cursor = 0;
             }
         } else {
@@ -545,37 +544,29 @@ impl Dist {
                 }
             }
             if changed {
-                for circuit in &mut self.circuits {
-                    circuit.tune(self.controls);
-                }
+                self.circuit.tune(self.controls);
             }
             self.until_update = 16;
         }
         self.until_update -= 1;
-        let mut out = [0.0; 2];
-        for i in 0..2 {
-            let x = if input[i].is_finite() {
-                f64::from(input[i]).clamp(-64.0, 64.0)
-            } else {
-                0.0
-            };
-            let y = if self.mode == Oversampling::Off {
-                let y = self.circuits[i].tick(x);
-                let delayed = self.off_delay[i][self.cursor];
-                self.off_delay[i][self.cursor] = y;
-                delayed
-            } else {
-                self.resamplers[i].tick(
-                    x,
-                    &self.taps[..self.mode.taps()],
-                    self.mode.factor(),
-                    |x| self.circuits[i].tick(x),
-                )
-            };
-            out[i] = (y * self.fade) as f32;
-        }
+        let x = if input.is_finite() {
+            f64::from(input).clamp(-64.0, 64.0)
+        } else {
+            0.0
+        };
+        let y = if self.mode == Oversampling::Off {
+            let y = self.circuit.tick(x);
+            let delayed = self.off_delay[self.cursor];
+            self.off_delay[self.cursor] = y;
+            delayed
+        } else {
+            self.resampler
+                .tick(x, &self.taps[..self.mode.taps()], self.mode.factor(), |x| {
+                    self.circuit.tick(x)
+                })
+        };
         self.cursor = (self.cursor + 1) % 32;
-        out
+        (y * self.fade) as f32
     }
 }
 
@@ -600,11 +591,11 @@ mod tests {
                 },
                 mode,
             );
-            let mut delay = [[0.0; 2]; 32];
+            let mut delay = [0.0; 32];
             for i in 0..4096 {
                 let x = (i as f32 * 0.031).sin() * 0.3;
-                let actual = family.process([x, -x]);
-                let mut expected = original.process([x, -x]);
+                let actual = family.process(x);
+                let mut expected = original.process(x);
                 if mode == Oversampling::Off {
                     std::mem::swap(&mut expected, &mut delay[i % 32]);
                 }
@@ -678,21 +669,20 @@ mod tests {
         }
     }
     #[test]
-    fn reset_matches_fresh_and_stereo_remains_independent() {
+    fn reset_matches_fresh() {
         for mode in Oversampling::ALL {
             let c = Controls::default();
             for variant in Variant::ALL {
                 let mut effect = Dist::new(48000.0, &c, variant, mode);
                 for _ in 0..1000 {
-                    effect.process([0.5, -0.3]);
+                    effect.process(0.5);
                 }
                 effect.reset();
                 let mut fresh = Dist::new(48000.0, &c, variant, mode);
                 for _ in 0..512 {
-                    let out = effect.process([0.25, 0.0]);
-                    assert_eq!(out, fresh.process([0.25, 0.0]));
-                    assert_eq!(out[1], 0.0);
-                    assert!(out[0].is_finite());
+                    let out = effect.process(0.25);
+                    assert_eq!(out, fresh.process(0.25));
+                    assert!(out.is_finite());
                 }
                 assert_eq!(effect.latency(), 32);
             }
@@ -721,12 +711,8 @@ mod tests {
                     2 => -64.0,
                     _ => 0.2,
                 };
-                assert!(
-                    effect
-                        .process([input, -input])
-                        .iter()
-                        .all(|x| x.is_finite() && x.abs() < 16.0)
-                );
+                let output = effect.process(input);
+                assert!(output.is_finite() && output.abs() < 16.0);
             }
         }
     }
@@ -748,7 +734,7 @@ mod signal_tests {
         for i in 0..16384 {
             let t = i as f64 / 48000.0;
             let x = amplitude * (std::f64::consts::TAU * frequency * t).sin();
-            let y = f64::from(effect.process([x as f32, 0.0])[0]);
+            let y = f64::from(effect.process(x as f32));
             if i >= 8192 {
                 for (sum, f) in sums.iter_mut().zip(bins) {
                     let phase = std::f64::consts::TAU * f * t;

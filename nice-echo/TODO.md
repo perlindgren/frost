@@ -12,19 +12,20 @@ exports, the frost editor with its mode knob, the standalone host on
 are all in place. What is left is the twelve named assumptions the
 documents cannot settle — A-1 through A-12, catalogued in the README —
 and the things a machine on a bench would retire: the hiss and wear
-magnitudes, the driven record corner, the second lane, the footswitch,
+magnitudes, the driven record corner, the footswitch,
 and a taper.
 
 ## 1. Decided, and where the answer lives
 
-- **What one tape means for a stereo plugin input: one echo, heard twice.**
-  The hardware has one tape; the plugin has two lanes. Both lanes read the
-  same taps, because a mono-in, mono-out tape machine with a mono output
-  stage is what the sources describe, and `one_tape_is_heard_in_both_lanes`
-  pins the behaviour so the simplification cannot quietly become a bug.
-  Real RE-201s *can* be coaxed into stereo (two record paths on some
-  units' wiring, and players splice stereo heads in), which is §2's second
-  item — but the documented machine is one tape.
+- **The box is mono: one tape, one voice, one in, one out.** The hardware
+  has one tape and so does the plugin — there is no second lane reading
+  the same taps, because a mono-in, mono-out tape machine with a mono
+  output stage is what the sources describe. `one_tape_one_voice` pins
+  the behaviour two machines fed the same block must answer bit for bit,
+  so a stray second path cannot quietly become a bug. Real RE-201s *can*
+  be coaxed into stereo (two record paths on some units' wiring, and
+  players splice stereo heads in), but no source in the pile documents
+  one — width is the host's work, or a second plugin's.
 - **The panel number is the integer plus one.** The host's integer range is
   0–11, the labels are "1"…"12", and the test that pins it is
   `the_mode_dial_shows_the_panels_numbers` — because a mode table that
@@ -81,8 +82,8 @@ Done, with the test that says so:
       wear wander (A-11) — and never wider
       (`the_transport_wobbles_a_little_and_no_more`), and the free-loop
       argument for why the depths are modest is in the header, not folklore.
-- [x] The transport wanders on a minutes timescale, shared between the
-      lanes because one tape wanders once, bending tap spacing, wow depth
+- [x] The transport wanders on a minutes timescale, one tape wandering
+      once, bending tap spacing, wow depth
       and HF loss together inside a bound
       (`the_transport_wanders_slowly_and_stays_bounded`), and the hiss
       breathes with the wow (A-9, `the_hiss_breathes_with_the_wow`).
@@ -112,11 +113,14 @@ Left:
       retire: the comb lengths and gains are named (A-6), not measured;
       multiple taps per delay line and the growl that tracks input
       level are not modelled.
-- [ ] **One tape in both lanes (§1).** The cheap stereo read is two record
-      paths a few milliseconds apart writing two tapes — which is what
-      players report dual-head-wired machines do — but no source in the
-      pile documents a stereo RE-201, so it enters as another labelled
-      assumption, not a "fix".
+- [ ] **Stereo is the host's work, not the box's (§1).** The cheap stereo
+      read is two record paths a few milliseconds apart writing two
+      tapes — which is what players report dual-head-wired machines do —
+      but no source in the pile documents a stereo RE-201, and a rack
+      that wants width can put two of these in series or parallel, which
+      is what dual-head wiring actually is: a second machine, not a
+      second lane in this one. If stereo ever enters, it enters as a
+      documented machine, not as a "fix".
 - [ ] **The hiss floor (A-9) is a stability measure wearing a sound's
       clothes.** Its magnitude — ±1.5e-4 — exists first to kill the
       digital loop's silence fixed point and has never been compared

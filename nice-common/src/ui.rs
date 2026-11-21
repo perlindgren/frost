@@ -36,6 +36,49 @@ const AUDIO_ROWS: [(&str, Field); 11] = [
     ("Input sample rate", Field::Rate),
     ("Output sample rate", Field::OutputRate),
 ];
+/// Which half of a device's settings one page shows.
+///
+/// The rows belong to one `Settings` and one Apply, and the panel has always
+/// shown all of them. A rack's two endpoint cards each answer for one side of
+/// the route — the capture it is fed from, the playback it hands back — so
+/// each opens its own half of the same page, and the application's own
+/// settings control still opens the whole of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PageScope {
+    /// Every row, as the page has always shown them.
+    #[default]
+    All,
+    /// The capture side alone.
+    Input,
+    /// The playback side alone.
+    Output,
+}
+
+impl PageScope {
+    /// Whether this page shows `field`. The backend rides on both halves: it
+    /// is the one choice that decides which devices either side can name at
+    /// all, so a page without it could not reach a different device.
+    fn shows(self, field: Field) -> bool {
+        match self {
+            Self::All => true,
+            Self::Input => matches!(
+                field,
+                Field::Backend | Field::Input | Field::InputCh | Field::InputBuffer | Field::Rate
+            ),
+            Self::Output => matches!(
+                field,
+                Field::Backend
+                    | Field::Output
+                    | Field::OutputCh
+                    | Field::SecondDevice
+                    | Field::SecondOutput
+                    | Field::OutputBuffer
+                    | Field::OutputRate
+            ),
+        }
+    }
+}
+
 /// Application controls appended below the shared audio rows.
 #[derive(Clone)]
 pub struct ExtraRow {
@@ -67,6 +110,9 @@ pub struct AudioPanel<P> {
     pub note: Option<String>,
     pub live_frames: Option<u32>,
     pub cold: bool,
+    /// Which half of the device this page shows. Whole pages are the default,
+    /// so an application that never mentions it is unaffected.
+    pub scope: PageScope,
     pending: Option<Pending<P>>,
     open_dropdown: Option<Field>,
     list_scroll: f32,
@@ -114,6 +160,7 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             note: None,
             live_frames: None,
             cold,
+            scope: PageScope::default(),
             pending: None,
             open_dropdown: None,
             list_scroll: 0.0,
@@ -271,13 +318,17 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             .max()
             .filter(|&channels| channels > 0)
     }
-    /// The settings page as rows: the shared audio rows, with the two ASIO-only
-    /// copy rows only where they apply, then the application's own rows.
+    /// The settings page as rows: the shared audio rows this page's scope
+    /// covers, with the two ASIO-only copy rows only where they apply, then
+    /// the application's own rows.
     /// The second value is how many rows are audio, which is where the gap in
     /// front of the application rows belongs.
     fn page_rows(&self) -> (Vec<(String, Field)>, usize) {
         let mut rows: Vec<(String, Field)> = AUDIO_ROWS
             .iter()
+            // A scoped page asks about one side of the route only; the other
+            // side stays as it is, and stays out of this page's Apply label.
+            .filter(|(_, field)| self.scope.shows(*field))
             // The copy is an ASIO idea: no other backend shares one device
             // whose channels can be handed out twice, nor has a second driver
             // this host could load beside the first.
@@ -288,17 +339,30 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             .map(|(label, field)| (label.to_string(), *field))
             .collect();
         if self.backend() == "jack" {
-            rows[1].0 = "Input source".into();
-            rows[3].0 = "Output left / mono".into();
-            rows[4].0 = "Output right".into();
+            // JACK names its ports instead of numbering a device's channels,
+            // and a scoped page may be missing the rows around these.
+            for (label, field) in &mut rows {
+                match field {
+                    Field::Input => *label = "Input source".into(),
+                    Field::Output => *label = "Output left / mono".into(),
+                    Field::OutputCh => *label = "Output right".into(),
+                    _ => {}
+                }
+            }
         }
         let audio = rows.len();
-        rows.extend(
-            self.extras
-                .iter()
-                .enumerate()
-                .map(|(i, row)| (row.label.clone(), Field::Extra(i))),
-        );
+        // Application rows belong to the whole page: a card's page is about
+        // one of the device's two sides, not about the application. The
+        // indices stay the real `extras` indices on the whole page, which is
+        // the only page that can show them.
+        if self.scope == PageScope::All {
+            rows.extend(
+                self.extras
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| (row.label.clone(), Field::Extra(i))),
+            );
+        }
         (rows, audio)
     }
     fn sync_linked(&mut self) {
@@ -910,9 +974,14 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
         let ax = w / 2.0 - 32.0 * fit - aw;
         let back = !self.is_applying()
             && point_in(mouse, -w / 2.0 + 90.0 * fit, by, 65.0 * fit, 15.0 * fit);
-        let reset = !self.is_applying() && point_in(mouse, 0.0, by, 65.0 * fit, 15.0 * fit);
+        // Reset puts the whole page back to the saved file. On a scoped page
+        // that file holds the other card's half too, which this page never
+        // showed and so cannot vouch for: it has Back instead.
+        let scoped = self.scope != PageScope::All;
+        let reset =
+            !scoped && !self.is_applying() && point_in(mouse, 0.0, by, 65.0 * fit, 15.0 * fit);
         let apply = dirty && point_in(mouse, ax, by, aw, 15.0 * fit);
-        for (x, half, label, enabled, hover) in [
+        let mut buttons = vec![
             (
                 -w / 2.0 + 90.0 * fit,
                 65.0 * fit,
@@ -920,9 +989,12 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
                 !self.is_applying(),
                 back,
             ),
-            (0.0, 65.0 * fit, "RESET", !self.is_applying(), reset),
             (ax, aw, "APPLY", dirty, apply),
-        ] {
+        ];
+        if !scoped {
+            buttons.insert(1, (0.0, 65.0 * fit, "RESET", !self.is_applying(), reset));
+        }
+        for (x, half, label, enabled, hover) in buttons {
             ctx.rectangle(
                 x,
                 by,
@@ -1601,6 +1673,91 @@ mod tests {
         p.draft.asio_second_device = Some("First driver".into());
         p.same_driver_is_no_driver();
         assert_eq!(p.draft.asio_second_device, None);
+    }
+    #[test]
+    fn a_card_page_shows_one_side_of_the_route_with_its_own_labels() {
+        let mut p = panel();
+        p.draft.backend = Some("jack".into());
+        p.applied.backend = Some("jack".into());
+        p.extras.push(ExtraRow {
+            label: "Meter gate (dB)".into(),
+            options: vec![("-60".into(), "-60".into())],
+            default: "-60".into(),
+            current: None,
+        });
+        p.scope = PageScope::Input;
+        let (rows, audio) = p.page_rows();
+        assert_eq!(
+            rows.iter().map(|(_, f)| *f).collect::<Vec<_>>(),
+            vec![
+                Field::Backend,
+                Field::Input,
+                Field::InputCh,
+                Field::InputBuffer,
+                Field::Rate
+            ]
+        );
+        // The rewrite names JACK's ports, and it has to follow the rows here
+        // rather than the positions they hold on the whole page.
+        assert_eq!(
+            rows.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(),
+            vec![
+                "Backend",
+                "Input source",
+                "Input channel",
+                "Input buffer size",
+                "Input sample rate"
+            ]
+        );
+        // The application's own row is not about either card.
+        assert_eq!(audio, 5, "every row on a card page is an audio row");
+        p.scope = PageScope::Output;
+        let (rows, audio) = p.page_rows();
+        assert_eq!(
+            rows.iter().map(|(_, f)| *f).collect::<Vec<_>>(),
+            vec![
+                Field::Backend,
+                Field::Output,
+                Field::OutputCh,
+                Field::OutputBuffer,
+                Field::OutputRate
+            ]
+        );
+        assert_eq!(
+            rows.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(),
+            vec![
+                "Backend",
+                "Output left / mono",
+                "Output right",
+                "Output buffer size",
+                "Output sample rate"
+            ]
+        );
+        assert_eq!(audio, 5);
+    }
+    #[test]
+    fn the_whole_page_still_shows_every_row_and_the_copy_rows_where_they_apply() {
+        let mut p = panel();
+        p.extras.push(ExtraRow {
+            label: "Meter gate (dB)".into(),
+            options: vec![("-60".into(), "-60".into())],
+            default: "-60".into(),
+            current: None,
+        });
+        let (rows, audio) = p.page_rows();
+        // Nine, not eleven: the two copy rows are ASIO's own and a Core Audio
+        // page has no second driver to hand channels out to.
+        assert_eq!((audio, rows.len()), (9, 10));
+        assert_eq!(rows[audio], ("Meter gate (dB)".into(), Field::Extra(0)));
+        p.draft.backend = Some("asio".into());
+        let (rows, audio) = p.page_rows();
+        assert_eq!((audio, rows.len()), (11, 12));
+        // A scoped page drops them too: they belong to the whole device. The
+        // ASIO copy rows stay, since they route the playback side.
+        p.scope = PageScope::Output;
+        let (rows, audio) = p.page_rows();
+        assert_eq!((audio, rows.len()), (7, 7));
+        assert!(!rows.iter().any(|(_, f)| matches!(f, Field::Extra(_))));
     }
 }
 

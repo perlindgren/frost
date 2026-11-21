@@ -289,7 +289,7 @@ impl LiveSession {
                 let NodeKind::Plugin { inputs, outputs } = graph.nodes[&id] else {
                     unreachable!()
                 };
-                let (inputs, outputs) = (channel_count(inputs), channel_count(outputs));
+                let (inputs, outputs) = (inputs.count(), outputs.count());
                 // The instance in front of this card is only worth carrying if it
                 // still answers to it. Refused, it dies here with the rest of what
                 // this edit did not carry, its editor with it.

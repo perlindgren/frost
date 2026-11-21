@@ -166,11 +166,10 @@ impl Entry {
             if !port.flags.contains(AudioPortFlags::IS_MAIN) {
                 return Err("Plugin bus is not a main bus".into());
             }
-            match port.channel_count {
-                1 => Ok(nice_rack_engine::Channels::Mono),
-                2 => Ok(nice_rack_engine::Channels::Stereo),
-                _ => Err("Only mono/stereo effects are supported".into()),
-            }
+            u8::try_from(port.channel_count)
+                .ok()
+                .and_then(nice_rack_engine::Channels::new)
+                .ok_or_else(|| "Plugin main bus carries no usable channel count".into())
         };
         Ok((query(true)?, query(false)?))
     }

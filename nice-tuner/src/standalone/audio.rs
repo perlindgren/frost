@@ -460,7 +460,7 @@ fn open_asio(settings: &Settings, plugin: Arc<Mutex<TunerPlugin>>) -> Result<Asi
             let mut instance = plugin
                 .lock()
                 .map_err(|_| "The plugin audio state is unavailable")?;
-            process::activate(&mut instance, channels as usize, rate)?;
+            process::activate(&mut instance, rate)?;
             instance.shared.input_channel.store(channels);
         }
         let processor = Processor::new(plugin, channels as usize, rate);
@@ -638,11 +638,7 @@ fn open_cpal(settings: &Settings, plugin: Arc<Mutex<TunerPlugin>>) -> Result<Str
             let mut instance = plugin
                 .lock()
                 .map_err(|_| "The plugin audio state is unavailable")?;
-            process::activate(
-                &mut instance,
-                input_config.channels as usize,
-                input_config.sample_rate as f32,
-            )?;
+            process::activate(&mut instance, input_config.sample_rate as f32)?;
             instance
                 .shared
                 .input_channel

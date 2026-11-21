@@ -9,7 +9,12 @@ between TS808, TS9, OD-1, SD-1, RAT and Nice Clone; the **OS** button cycles Off
 reinitializing the circuit and resampler, then fade up over 64 samples. Controls
 are smoothed over approximately 10 ms, with network coefficients updated every
 16 host samples. These paths and reset neither allocate nor free heap storage.
-Both channels have independent circuit and filter state. Existing TS808/TS9
+The box is mono — one signal through one circuit — and so is this model: a
+single mono input enters the circuit and a single mono output leaves; folding
+a stereo signal down, or widening the answer back out, is the host's work,
+not the pedal's. One circuit runs at the selected oversampling rate, and
+there is no second lane with state of its own.
+Existing TS808/TS9
 model indices are unchanged; SD-1 is appended as index 2 (standalone number 3).
 
 The host receives a constant 32-sample latency in every mode (0.667 ms at 48 kHz).
@@ -88,17 +93,20 @@ in complex frequency using the bilinear frequency substitution. Its CSV is
 checked against settled, low-level time-domain responses at several drive/tone
 positions and frequencies for all six models. Additional tests cover nonlinear
 Kirchhoff residuals, distortion, level attenuation, folded-harmonic suppression,
-reset equivalence, stereo isolation, invalid inputs, rate/quality switching,
+reset equivalence, invalid inputs, rate/quality switching,
 allocation-free processing/reset and the actual plugin block adapter. The alias
 test is a targeted 9 kHz/21 kHz probe, not a full-band alias-free guarantee.
 The 9 kHz probe measured 22.9 dB less normalized folded 21 kHz energy at 8x
 than Off on the current build. On this aarch64 macOS host, stable-control stereo
 processing at 48 kHz measured about 1.4% of a core Off, 3.5% at 2x, 6.8% at 4x
 and 14.4% at 8x. These are host-specific measurements, not scheduling guarantees.
+They were taken against the two-lane stereo model that preceded the mono one;
+the box now runs one circuit per block instead of one per lane, so the figures
+stand here as history rather than current cost.
 A later run with the SD-1 model added measured about 11.1% of one core at
 8x for SD-1, versus 13.6–13.8% for the TS models on this host. The cost example
 now reports all six models.
-The benchmark prints best-of-three stereo DSP costs with stable controls; it
+The benchmark prints best-of-three mono DSP costs with stable controls; it
 does not measure the GUI, device transport or worst-case scheduling.
 
 ## 64-frame stereo compute-time comparison
@@ -107,7 +115,8 @@ Run `cargo run -p nice-dist --release --example block_cost` to reproduce.
 Raw results are in [`measurements/block_cost_64_8x.csv`](measurements/block_cost_64_8x.csv).
 Measured on the current aarch64 macOS desktop on 2026-11-19: 48 kHz, 8x,
 64 stereo frames per block, all controls at 0.5, a 750 Hz sine of peak 0.3
-with opposite-polarity channels. After 512 warm-up blocks, 8,192 blocks per model
+with opposite-polarity channels. These runs predate the box's move to mono and
+describe the two-lane stereo model they measured. After 512 warm-up blocks, 8,192 blocks per model
 were individually timed with a monotonic clock. The deadline is 1,333.33 us.
 
 | Model | Minimum | Median | 95th percentile | 99th percentile | Maximum | Median / budget |
@@ -212,8 +221,9 @@ hardware or manufacturer SPICE emulation.
 The GUI labels become Distortion / Filter / Volume in RAT mode. Filter turns
 clockwise to remove treble. Host parameter IDs remain drive/tone/level, preserving
 existing automation and saved states. RAT is host index 4 / settings number 5.
-All previous model numbers remain unchanged. Stereo layout and 32-sample latency
-are unchanged. Processing and switching remain allocation-free and safe Rust.
+All previous model numbers remain unchanged. The 32-sample latency is unchanged;
+the audio layout is now mono in, mono out, as stated above.
+Processing and switching remain allocation-free and safe Rust.
 Independent complex-response fixtures include the finite amplifier pole and
 loaded clipping/filter network; tests also check slew/rails, recovery, filter
 orientation, mute, reset and saved selections. Physical listening/measurement

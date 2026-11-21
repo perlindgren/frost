@@ -605,7 +605,7 @@ mod tests {
     #[ignore = "requires NICE_RACK_TEST_X11=1, a live X server, and NICE_RACK_TEST_CLAP"]
     #[allow(unsafe_code)]
     fn a_shim_frame_carries_a_real_plugin_editor() {
-        use crate::runtime::{Card, chain};
+        use crate::runtime::{Card, Route, chain};
         use std::{collections::BTreeMap, path::PathBuf};
 
         assert!(
@@ -625,7 +625,15 @@ mod tests {
             .id
             .clone();
         let card = Card::new(NodeId(2), path, entry, class, "Test plugin".into()).unwrap();
-        let (graph, bindings) = chain(&[card]);
+        // A route wide enough for the plugin both ways: this test witnesses
+        // the frame, not the width transitions.
+        let route = Route {
+            input: crate::routing::Channels::Stereo,
+            input_rate: None,
+            output: crate::routing::Channels::Stereo,
+            output_rate: None,
+        };
+        let (graph, bindings) = chain(&[card], route).unwrap();
         let (mut session, _audio) = nice_clap_host::LiveSession::prepare(
             &graph,
             &bindings,

@@ -49,7 +49,7 @@ impl ProcessContext<TunerPlugin> for Context {
     fn set_current_voice_capacity(&self, _: u32) {}
 }
 
-pub(super) fn activate(plugin: &mut TunerPlugin, channels: usize, rate: f32) -> Result<(), String> {
+pub(super) fn activate(plugin: &mut TunerPlugin, rate: f32) -> Result<(), String> {
     if let Some(&hz) = super::TEST_FREQUENCY.get()
         && hz >= f64::from(rate) / 2.0
     {
@@ -57,10 +57,12 @@ pub(super) fn activate(plugin: &mut TunerPlugin, channels: usize, rate: f32) -> 
             "Test frequency {hz} Hz must be below half the input sample rate ({rate} Hz)"
         ));
     }
+    // The box declares exactly one layout: mono in, mono out. Which of the
+    // device's inputs fills that single lane is routing, decided at the edge
+    // in `Processor::run`, not a second layout.
     let layout = TunerPlugin::AUDIO_IO_LAYOUTS
-        .iter()
-        .find(|layout| layout.main_input_channels.map(|n| n.get() as usize) == Some(channels))
-        .ok_or("The plugin does not support this input layout")?;
+        .first()
+        .expect("the tuner declares exactly one audio IO layout");
     plugin.deactivate();
     if !plugin.activate(
         layout,
@@ -79,7 +81,9 @@ pub(super) fn activate(plugin: &mut TunerPlugin, channels: usize, rate: f32) -> 
 }
 
 pub(super) struct Processor {
-    buffer: plugin_buffer::PlanarBuffer<{ 2 * BLOCK }>,
+    buffer: plugin_buffer::PlanarBuffer<{ BLOCK }>,
+    /// Inputs the device underneath actually delivers, used only to
+    /// de-interleave its frames and pick one of them for the box.
     channels: usize,
     context: Context,
     tone: Option<TestTone>,
@@ -88,7 +92,7 @@ pub(super) struct Processor {
 impl Processor {
     pub fn new(plugin: Arc<Mutex<TunerPlugin>>, channels: usize, rate: f32) -> Self {
         Self {
-            buffer: plugin_buffer::PlanarBuffer::new(channels, BLOCK),
+            buffer: plugin_buffer::PlanarBuffer::new(1, BLOCK),
             channels,
             context: Context::new(rate),
             tone: super::TEST_FREQUENCY
@@ -109,26 +113,29 @@ impl Processor {
         for block in interleaved.chunks(BLOCK * self.channels) {
             let frames = block.len() / self.channels;
             self.buffer.with_buffer(frames, |buffer| {
+                // The layout asks for exactly one channel, and the device
+                // hands over `channels` of them: the choice happens here, at
+                // the device's edge, and the box never sees two of anything.
+                let selected = (plugin.shared.input_channel.load().saturating_sub(1) as usize)
+                    .min(self.channels.saturating_sub(1));
+                let lane = buffer
+                    .as_slice()
+                    .first_mut()
+                    .expect("the layout asks for one channel");
                 for (frame, input) in block.chunks_exact(self.channels).enumerate() {
                     let tone = self.tone.as_mut().map(TestTone::next);
-                    for (channel, planar) in buffer.as_slice().iter_mut().enumerate() {
-                        planar[frame] = tone.unwrap_or_else(|| input[channel].level());
-                    }
+                    lane[frame] = tone.unwrap_or_else(|| input[selected].level());
                 }
                 let mut auxiliary = AuxiliaryBuffers {
                     inputs: &mut [],
                     outputs: &mut [],
                 };
                 plugin.process(buffer, &mut auxiliary, &mut self.context);
-                let selected = plugin.shared.input_channel.load().saturating_sub(1) as usize;
-                if let Some(mono) = buffer.as_slice_immutable().get(selected) {
-                    for &sample in mono.iter() {
-                        output(sample);
-                    }
-                } else {
-                    for _ in 0..frames {
-                        output(0.0);
-                    }
+                // Back out at the other edge: the one mono answer, which the
+                // caller routes onto the device lane it asked for.
+                let answered = buffer.as_slice_immutable();
+                for &sample in &**answered.first().expect("the layout asks for one channel") {
+                    output(sample);
                 }
             });
         }
@@ -163,7 +170,7 @@ mod tests {
     #[test]
     fn analysis_handoff_survives_48_frame_blocks_and_size_changes() {
         let mut plugin = TunerPlugin::default();
-        activate(&mut plugin, 2, 48000.0).unwrap();
+        activate(&mut plugin, 48000.0).unwrap();
         let shared = Arc::clone(&plugin.shared);
         shared
             .open
@@ -204,9 +211,6 @@ mod tests {
                     .load(std::sync::atomic::Ordering::Relaxed),
                 0
             );
-            assert_eq!(shared.process_channels.load(), 2);
-            assert_eq!(shared.channel_peaks[0].load(), 0.375);
-            assert_eq!(shared.channel_peaks[1].load(), 0.375);
             assert_eq!(shared.buffer_frames.load(), frames as u32);
             assert_eq!(shared.input_peak.load(), 0.375);
             assert_eq!(consumer.slots(), frames);
@@ -217,9 +221,9 @@ mod tests {
     }
 
     #[test]
-    fn test_tone_overrides_all_channels_and_keeps_phase_between_callbacks() {
+    fn test_tone_overrides_the_device_input_and_keeps_phase_between_callbacks() {
         let mut plugin = TunerPlugin::default();
-        activate(&mut plugin, 2, 48000.0).unwrap();
+        activate(&mut plugin, 48000.0).unwrap();
         plugin.shared.input_channel.store(2);
         let mut adapter = Processor::new(Arc::new(Mutex::new(plugin)), 2, 48000.0);
         adapter.tone = Some(TestTone::new(1000.0, 48000.0));
@@ -235,22 +239,23 @@ mod tests {
     }
 
     #[test]
-    fn activation_publishes_mono_and_stereo_operating_conditions() {
+    fn activation_publishes_the_mono_operating_conditions() {
         let mut plugin = TunerPlugin::default();
-        for (channels, rate) in [(1, 44100.0), (2, 48000.0)] {
-            activate(&mut plugin, channels, rate).unwrap();
-            assert_eq!(plugin.shared.input_channels.load(), channels as u32);
-            assert_eq!(plugin.shared.output_channels.load(), channels as u32);
-            assert_eq!(plugin.shared.sample_rate_hz.load(), rate as f64);
-            assert_eq!(plugin.shared.max_buffer_frames.load(), BLOCK as u32);
-            assert_eq!(plugin.shared.buffer_frames.load(), 0);
-        }
+        let rate = 48000.0;
+        activate(&mut plugin, rate).unwrap();
+        // One layout, one channel each side, whatever the device underneath
+        // happens to be carrying.
+        assert_eq!(plugin.shared.input_channels.load(), 1);
+        assert_eq!(plugin.shared.output_channels.load(), 1);
+        assert_eq!(plugin.shared.sample_rate_hz.load(), rate as f64);
+        assert_eq!(plugin.shared.max_buffer_frames.load(), BLOCK as u32);
+        assert_eq!(plugin.shared.buffer_frames.load(), 0);
     }
 
     #[test]
-    fn standalone_runs_the_plugin_and_preserves_the_selected_channel_at_input_rate() {
+    fn standalone_takes_the_selected_device_channel_as_the_box_input() {
         let mut plugin = TunerPlugin::default();
-        activate(&mut plugin, 2, 44100.0).unwrap();
+        activate(&mut plugin, 44100.0).unwrap();
         let shared = Arc::clone(&plugin.shared);
         shared
             .open

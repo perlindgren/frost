@@ -14,13 +14,22 @@ cargo run -p nice-nam --release --features standalone
 ```
 
 For editor diagnostics add `diag` (`--features standalone,diag`). On x86_64
-Linux, prefix Cargo commands with `RUSTFLAGS="-Ctarget-cpu=x86-64-v3"` as required
-by NeuralAmpModeler-rs. Rust 1.99+ is required. Intel Macs are not supported by
-that engine.
+Linux and on x86_64 Windows, prefix Cargo commands with
+`RUSTFLAGS="-Ctarget-cpu=x86-64-v3"` as required by NeuralAmpModeler-rs. Rust
+1.99+ is required. Intel Macs are not supported by that engine.
 
-On Windows the model runs through `nam-rs`, which has no cabinet simulation, and a
-model asking for a different sample rate is refused rather than run at the wrong
-one. `standalone` there brings the ASIO transport with it on Windows: `azo`,
+On every platform the model runs through NeuralAmpModeler-rs. Windows is the one
+platform whose copy of it cannot come from a registry: the engine's Windows
+backend arrived with 3.0.0, which has not been published, so the manifest names
+the commit on its `main` branch instead of a version, under the dependency name
+`nam_windows`. That is a build requirement as well as a source: the
+`x86-64-v3` baseline the engine demands is now asked of Windows too, and setting
+`RUSTFLAGS` that way replaces `+crt-static`, so name both if a build needs the
+statically linked runtime. The git source is a stopgap rather than a preference:
+once that release reaches the registry the manifest names a version again,
+`nam_windows` retires, and one dependency stands for the engine everywhere.
+
+`standalone` on Windows brings the ASIO transport with it: `azo`,
 whose FFI layer declares the ASIO COM interfaces in Rust, so there is no
 Steinberg SDK to obtain and `.cargo/config.toml` explains why the repository
 points at nothing. Add `unsafe` to let the window reopen where you left it, or
@@ -31,11 +40,16 @@ window inside a host is never moved.
 cargo run -p nice-nam --release --features standalone,unsafe
 ```
 
-`LOAD MODEL` works on Windows and offers `.nam` files only. The engine there
-cannot open a binary `.namb` container, and a file whose weights are not numbers
-or whose calibration levels are beyond ±60 dB is refused before anything is built,
-rather than run. The two cabinet rows stay off: a Windows build has no cabinet
-engine to receive an impulse response.
+`LOAD MODEL` offers `.nam` and `.namb` everywhere, and the two cabinet rows are
+live everywhere: reading both containers and convolving an impulse response are
+the engine's work, and it does both here. What a model file may contain is the
+loader's decision as well — byte size, the numbers around the network, the
+architecture — so a corrupt file is refused on this platform by the same code
+that refuses it on the others, rather than by a second set of checks this build
+kept for itself. One difference remains in the order of things: a model asking
+for another sample rate is refused here once it has been built, because the rate
+is read from what the loader returned, so a wrong-rate file fails a little later
+than it used to. The outcome, and the message, are the same.
 
 The dialog comes from `rfd`. On Windows it is `rfd`'s async picker, which builds
 the dialog on a thread `rfd` spawns and is collected on the frames that follow,
@@ -123,16 +137,18 @@ cargo xtask bundle nice-nam --release
 CLAP and VST3 entry points in the built library and writes both bundles to
 `target/bundled/`: the single-file `Nice NAM.clap` and the `Nice NAM.vst3/`
 directory, with the embedded fonts' licence texts shipped alongside, as for
-nice-tuner. On x86_64 Linux the `RUSTFLAGS` prefix stated above applies to this
-command too.
+nice-tuner. On x86_64 — Linux or Windows — the `RUSTFLAGS` prefix stated above
+applies to this command too, and on Windows remember that naming it drops
+`+crt-static`.
 
 Tests include synthetic LSTM inference, variable block sizes, allocation counting,
 cabinet impulse response/latency, missing files/rate mismatches, output routing,
 configuration round-trips and monitoring conversion. Native listening, real
 community models, multi-instance DAW use and loading the bundles in a real host
-require further integration testing. Models using mirrored memory also need
-native POSIX shared memory permissions; a restricted process may refuse their
-allocation.
+require further integration testing. Models using mirrored memory also need the
+system to hand it over: POSIX shared-memory permissions on Linux and macOS, a
+file mapping this process may reserve and view on Windows, where that backend is
+the one the engine gained most recently and still calls experimental.
 
 Worker lifecycle tests also cover idle shutdown with retained shared state,
 in-flight cancellation, a full ready queue with pending/retired chains, worker

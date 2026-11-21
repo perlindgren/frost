@@ -152,13 +152,18 @@ impl Delay {
         }
         self.cursor = (self.cursor + frames) % length;
     }
-    /// Latency-compensated unity bypass, with the graph's normal mono/stereo
-    /// conversion when a processor has different input and output layouts.
+    /// Latency-compensated unity bypass, with the graph's own channel-count
+    /// conversion when a processor has different input and output widths:
+    /// equal widths copy, a join folds every input to their mean, a split
+    /// hands the first channel to every output — the same contract as
+    /// [`crate::NodeKind::ChannelMap`].
     fn dry(&mut self, input: &AudioBuffer, output: &mut AudioBuffer, frames: usize) {
         let length = self.history[0].len();
+        let inputs = input.channels();
+        let outputs = output.channels();
         for frame in 0..frames {
-            let mut samples = [0.0; 2];
-            for (channel, sample) in samples.iter_mut().enumerate().take(input.channels()) {
+            let mut samples = [0.0f32; Channels::MAX as usize];
+            for (channel, sample) in samples.iter_mut().enumerate().take(inputs) {
                 *sample = if length == 0 {
                     input.0[channel][frame]
                 } else {
@@ -170,11 +175,15 @@ impl Delay {
             if length != 0 {
                 self.cursor = (self.cursor + 1) % length;
             }
-            for channel in 0..output.channels() {
-                output.0[channel][frame] = if input.channels() == output.channels() {
+            // The join is a mean over every input; the stereo case keeps its
+            // exact (L + R) * 0.5 form, which a halved sum reproduces bit for
+            // bit.
+            let joined: f32 = samples[..inputs].iter().sum::<f32>() / inputs as f32;
+            for channel in 0..outputs {
+                output.0[channel][frame] = if inputs == outputs {
                     samples[channel]
-                } else if output.channels() == 1 {
-                    (samples[0] + samples[1]) * 0.5
+                } else if outputs < inputs {
+                    joined
                 } else {
                     samples[0]
                 };
@@ -198,11 +207,17 @@ struct Edge {
 /// card ids start at one and auxiliary ids near `u64::MAX` are never metered.
 struct WireSlot {
     key: AtomicU64,
+    /// Left-lane RMS in f32 bits — for a mono wire, the whole of it.
     rms: AtomicU32,
-    /// True peak of the wire (dBTP) in f32 bits. A linear amplitude, so it can
-    /// exceed `1.0`: the inter-sample crest of a full-scale step is above full
-    /// scale by construction. See [`nice_common::true_peak`].
+    /// Right-lane RMS in f32 bits; silence on a mono wire. Channels past the
+    /// second fold into this lane rather than meter unobserved.
+    rms_r: AtomicU32,
+    /// Left-lane true peak of the wire (dBTP) in f32 bits. A linear amplitude,
+    /// so it can exceed `1.0`: the inter-sample crest of a full-scale step is
+    /// above full scale by construction. See [`nice_common::true_peak`].
     peak: AtomicU32,
+    /// Right-lane true peak; silence on a mono wire, folded max past two.
+    peak_r: AtomicU32,
     /// Applied UI trim as a linear multiplier in f32 bits, `1.0` for unity.
     /// The UI thread stores it at any time and the audio thread reads it once
     /// per block: a block carries either the old trim or the new one, which
@@ -245,6 +260,19 @@ pub fn card_wire_key(id: u64, side: bool) -> Option<u64> {
     }
 }
 
+/// The wire key of the rack's input jack.
+///
+/// The plan's single `NodeKind::Input` node is the capture side of the rack,
+/// and the rack addresses it `NodeId(0)`, so its output side lands on key 1 of
+/// [`card_wire_key`] — a key no card reaches, since card ids start at 1. The
+/// node's *input* side gets no slot: the device stream before the rack has
+/// touched it is not this wire's story. The slot carries the rack's input
+/// trim, and its meter reads the signal as it enters the rack, after that
+/// trim, so an operator dialing capture gain trims to what the meter shows.
+/// Its outgoing switch cuts the captured feed after metering, silencing every
+/// downstream branch while keeping the source visible.
+pub const INPUT_WIRE_KEY: u64 = 1;
+
 /// Lock-free wire observations shared between the audio thread and the UI.
 /// A control thread registers wires through [`PreparedRack::attach_wire_levels`]
 /// before the plan crosses to the audio thread; from then on the audio thread
@@ -271,7 +299,9 @@ impl WireLevels {
                 .map(|_| WireSlot {
                     key: AtomicU64::new(0),
                     rms: AtomicU32::new(0),
+                    rms_r: AtomicU32::new(0),
                     peak: AtomicU32::new(0),
+                    peak_r: AtomicU32::new(0),
                     gain: AtomicU32::new(1.0f32.to_bits()),
                     open: AtomicBool::new(false),
                     bypassed: AtomicBool::new(false),
@@ -299,7 +329,9 @@ impl WireLevels {
                 slot.paused.store(false, Ordering::Relaxed);
             }
             slot.rms.store(0, Ordering::Relaxed);
+            slot.rms_r.store(0, Ordering::Relaxed);
             slot.peak.store(0, Ordering::Relaxed);
+            slot.peak_r.store(0, Ordering::Relaxed);
         }
     }
 
@@ -326,17 +358,22 @@ impl WireLevels {
             slot.paused.store(false, Ordering::Relaxed);
         }
         slot.rms.store(0, Ordering::Relaxed);
+        slot.rms_r.store(0, Ordering::Relaxed);
         slot.peak.store(0, Ordering::Relaxed);
+        slot.peak_r.store(0, Ordering::Relaxed);
         slot.key.store(key, Ordering::Release);
         Some(index)
     }
 
-    fn publish(&self, index: usize, rms: f32, peak: f32) {
+    fn publish(&self, index: usize, level: WireSample) {
         let Some(slot) = self.slots.get(index) else {
             return;
         };
-        slot.rms.store(rms.to_bits(), Ordering::Relaxed);
-        slot.peak.store(peak.to_bits(), Ordering::Relaxed);
+        slot.rms.store(level.rms[0].to_bits(), Ordering::Relaxed);
+        slot.rms_r.store(level.rms[1].to_bits(), Ordering::Relaxed);
+        slot.peak.store(level.peak[0].to_bits(), Ordering::Relaxed);
+        slot.peak_r
+            .store(level.peak[1].to_bits(), Ordering::Relaxed);
     }
 
     /// Toggle the whole card's latency-preserving unity bypass, from the UI.
@@ -397,10 +434,10 @@ impl WireLevels {
 
     /// Throw or close the switch on the wire `key`, from the UI thread, at
     /// any time. An open wire carries no signal past its stub, which is the
-    /// whole of what this does to the audio; the wire is still measured up to
-    /// the switch (see [`PreparedRack::process`]), so the meter on a broken
-    /// wire says what is arriving at the gap rather than that the gap is
-    /// silent. Unregistered keys are declined for the reason [`WireLevels::set_gain`]
+    /// whole of what this does to the audio. Input meters read after the
+    /// switch, so an open input reads silence; output meters read before
+    /// their outgoing switch and still show the source's signal.
+    /// Unregistered keys are declined for the reason [`WireLevels::set_gain`]
     /// gives: a UI that broke a wire while audio was stopped re-states the
     /// break once the wires are attached again.
     pub fn set_open(&self, key: u64, open: bool) {
@@ -460,60 +497,95 @@ impl WireLevels {
             .map(|slot| f32::from_bits(slot.gain.load(Ordering::Relaxed)))
     }
 
-    /// The latest `(rms, true peak)` published for `key`, both linear, or
-    /// `None` while the key is not registered in this table. The peak is the
-    /// reconstructed crest (dBTP), not the largest sample, and a faithful
-    /// reading of a signal at full scale can sit above `1.0`.
+    /// The latest `(rms, true peak)` published for `key` — both linear, the
+    /// louder of the two lanes each, or `None` while the key is not
+    /// registered in this table. The peak is the reconstructed crest (dBTP),
+    /// not the largest sample, and a faithful reading of a signal at full
+    /// scale can sit above `1.0`. [`WireLevels::sample_lanes`] reads the two
+    /// lanes separately for stereo metering.
     pub fn sample(&self, key: u64) -> Option<(f32, f32)> {
+        self.sample_lanes(key).map(|level| {
+            (
+                level.rms[0].max(level.rms[1]),
+                level.peak[0].max(level.peak[1]),
+            )
+        })
+    }
+
+    /// The latest block's level per lane for `key`, or `None` while the key
+    /// is not registered in this table. Lane 0 is the left — for a mono wire,
+    /// the whole of it — and lane 1 the right, silent on a mono wire.
+    pub fn sample_lanes(&self, key: u64) -> Option<WireSample> {
         if key == 0 {
             return None;
         }
         self.slots
             .iter()
             .find(|slot| slot.key.load(Ordering::Acquire) == key)
-            .map(|slot| {
-                (
+            .map(|slot| WireSample {
+                rms: [
                     f32::from_bits(slot.rms.load(Ordering::Relaxed)),
+                    f32::from_bits(slot.rms_r.load(Ordering::Relaxed)),
+                ],
+                peak: [
                     f32::from_bits(slot.peak.load(Ordering::Relaxed)),
-                )
+                    f32::from_bits(slot.peak_r.load(Ordering::Relaxed)),
+                ],
             })
     }
 }
 
-/// Loudness observation of one wire for a block: a stereo-coerced RMS that
-/// keeps the louder of the two channels per frame, and the wire's **true
-/// peak** (dBTP) — the crest of the waveform the DAC would rebuild, not the
-/// largest sample in it. A 48 kHz sine at 12 kHz whose samples all sit at
-/// 1/√2 reads 0.707 as a sample peak and 0.979 as a true peak.
+/// One block's metered level on a wire, per lane: `[0]` is the left — for a
+/// mono wire, the whole of it — and `[1]` the right, silent on a mono wire.
+/// Both members are linear amplitudes; the peaks are true peaks (dBTP).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WireSample {
+    pub rms: [f32; 2],
+    pub peak: [f32; 2],
+}
+
+/// Loudness observation of one wire for a block, per lane: lane 0 carries
+/// the first channel — the whole wire when it is mono — and lane 1 the
+/// second, into which any further channels fold per frame by the louder of
+/// them, so a wider bus still meters instead of falling silent. A mono wire
+/// leaves lane 1 at zero. The peaks are **true peaks** (dBTP) — the crest of
+/// the waveform the DAC would rebuild, not the largest sample in it. A
+/// 48 kHz sine at 12 kHz whose samples all sit at 1/√2 reads 0.707 as a
+/// sample peak and 0.979 as a true peak.
 ///
-/// `meters` is one estimator per channel and must outlive the call: the
+/// `meters` is one estimator per lane and must outlive the call: the
 /// history they carry across blocks is what lets a *held* level read its own
 /// value instead of the +0.8 dB overshoot of an onset. Passing a fresh
 /// estimator per block would make every constant read high.
 ///
 /// `frames` is nonzero whenever `process` calls this.
-fn wire_level(buffer: &AudioBuffer, frames: usize, meters: &mut [TruePeak]) -> (f32, f32) {
-    let mut energy = 0f64;
-    if buffer.channels() >= 2 {
-        for (left, right) in buffer.0[0].iter().zip(&buffer.0[1]).take(frames) {
-            energy += (left * left).max(right * right) as f64;
+fn wire_level(buffer: &AudioBuffer, frames: usize, meters: &mut [TruePeak]) -> WireSample {
+    // The first channel is lane 0 on its own; every channel after it folds
+    // into lane 1 per frame, keeping the louder, before its energy counts.
+    let mut energy = [0f64; 2];
+    for (frame, sample) in buffer.0[0][..frames].iter().enumerate() {
+        energy[0] += (sample * sample) as f64;
+        let mut fold = 0.0f32;
+        for channel in buffer.0[1..].iter() {
+            fold = fold.max(channel[frame].abs());
         }
-    } else {
-        for sample in buffer.0[0].iter().take(frames) {
-            energy += (sample * sample) as f64;
-        }
+        energy[1] += (fold * fold) as f64;
     }
-    let mut peak = 0f32;
-    // A wire carries mono or stereo, so the two meters the node owns always
-    // cover it; the spare only keeps a hypothetically wider buffer from
-    // metering silently low instead of at all.
+    // A wire carries at most the two lanes the node's two meters cover; the
+    // spare only keeps a hypothetically wider buffer from metering silently
+    // low instead of at all, folding into lane 1.
     let mut spare = TruePeak::new();
+    let mut level = WireSample::default();
     for (index, channel) in buffer.0.iter().enumerate() {
+        let lane = usize::from(index > 0);
         let meter = meters.get_mut(index).unwrap_or(&mut spare);
         meter.process(&channel[..frames]);
-        peak = peak.max(meter.take());
+        level.peak[lane] = level.peak[lane].max(meter.take());
     }
-    ((energy / frames as f64).sqrt() as f32, peak)
+    for lane in 0..2 {
+        level.rms[lane] = (energy[lane] / frames as f64).sqrt() as f32;
+    }
+    level
 }
 
 /// Scale a block in place by a linear gain. Unity — the state of every
@@ -575,12 +647,6 @@ pub struct PreparedRack {
     wires: Arc<WireLevels>,
     timings: Option<(Arc<ProcessingTimes>, f64)>,
 }
-fn count(channels: Channels) -> usize {
-    match channels {
-        Channels::Mono => 1,
-        Channels::Stereo => 2,
-    }
-}
 impl PreparedRack {
     pub fn prepare(
         graph: &RackGraph,
@@ -637,8 +703,8 @@ impl PreparedRack {
                 .map(|edge| latencies[&edge.from])
                 .max()
                 .unwrap_or(0usize);
-            let in_count = count(kind.inputs().or(kind.outputs()).unwrap());
-            let out_count = count(kind.outputs().or(kind.inputs()).unwrap());
+            let in_count = kind.inputs().or(kind.outputs()).unwrap().count();
+            let out_count = kind.outputs().or(kind.inputs()).unwrap().count();
             let processor = if matches!(kind, NodeKind::Plugin { .. }) {
                 Some(
                     processors
@@ -696,12 +762,12 @@ impl PreparedRack {
             .map(|&(&id, kind)| OutputBus {
                 id,
                 index: indices[&id],
-                channels: count(kind.inputs().unwrap()),
+                channels: kind.inputs().unwrap().count(),
             })
             .collect();
         Ok(Self {
             nodes,
-            input_channels: count(inputs[0].1.outputs().unwrap()),
+            input_channels: inputs[0].1.outputs().unwrap().count(),
             output_buses,
             max_frames,
             latency: outputs
@@ -738,7 +804,10 @@ impl PreparedRack {
     /// input buffer, the output side its processed output. The primary
     /// `Output` node registers one more key, [`MASTER_WIRE_KEY`], whose
     /// `wire_in` carries the rack's master output trim, a break switch, and
-    /// a meter reading the summed signal about to leave for the DAC.
+    /// a meter reading the summed signal about to leave for the DAC. The
+    /// single `Input` node registers one too — [`INPUT_WIRE_KEY`] on its
+    /// `wire_out` — carrying the rack's input trim and a meter reading the
+    /// capture as it enters the rack.
     pub fn attach_wire_levels(&mut self, levels: Arc<WireLevels>) {
         // Control-thread allocation is fine here; `process` stays
         // allocation-free.
@@ -751,6 +820,14 @@ impl PreparedRack {
             .collect();
         if self.master_output_index().is_some() {
             keys.push(MASTER_WIRE_KEY);
+        }
+        if let Some(key) = self
+            .nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Input(_)))
+            .and_then(|node| card_wire_key(node.id.0, true))
+        {
+            keys.push(key);
         }
         levels.reset(&keys);
         self.reset_metering();
@@ -770,6 +847,12 @@ impl PreparedRack {
                 node.wire_out = levels.attach(base | 1);
             } else if master == Some(index) {
                 node.wire_in = levels.attach(MASTER_WIRE_KEY);
+            } else if matches!(node.kind, NodeKind::Input(_)) {
+                // The capture jack's trim and meter sit on the node's
+                // output side — the signal as it enters the rack — and the
+                // input side stays unmetred: what the device sent before
+                // the rack trimmed it is not this wire's story.
+                node.wire_out = card_wire_key(node.id.0, true).and_then(|key| levels.attach(key));
             }
         }
         self.wires = levels;
@@ -848,6 +931,22 @@ impl PreparedRack {
                     for (source, destination) in input.iter().zip(&mut node.output.0) {
                         destination[..frames].copy_from_slice(&source[..frames]);
                     }
+                    // The capture jack's trim sits on the wire leaving the
+                    // node, so every card downstream shares the level the
+                    // meter shows — the same shape as the master output
+                    // stage, mirrored to the front of the rack. The meter
+                    // reads the trimmed signal, because that is the signal
+                    // the rack feeds itself, before its outgoing break switch.
+                    if let Some(slot) = node.wire_out {
+                        apply_gain(&mut node.output, frames, wires.gain(slot));
+                        let level = wire_level(&node.output, frames, &mut node.tp_out);
+                        wires.publish(slot, level);
+                        // Capture is metered at the source, then its outgoing
+                        // switch cuts the feed to every downstream branch.
+                        if wires.open_at(slot) {
+                            node.output.clear(frames);
+                        }
+                    }
                 }
                 NodeKind::Plugin { .. } => {
                     // A wire trim sits on the wire itself: the input trim
@@ -866,19 +965,20 @@ impl PreparedRack {
                     if let Some(trim) = wire_in.filter(|_| !bypassed && !paused) {
                         apply_gain(&mut node.input, frames, wires.gain(trim));
                     }
-                    // An open circuit is measured before it is broken. The
-                    // stub on the switch then keeps reading the signal that
-                    // arrives at the gap, which is what tells an operator
-                    // chasing a fault that the far side of the break is alive;
-                    // what goes on past the gap is silence. A card
-                    // bypass ignores both saved breaks and trims, routing the
-                    // unmodified dry signal around this branch instead.
+                    // Input meters sit on the plugin side of the cable break.
+                    // Bypass ignores the break; otherwise both the processor and
+                    // its input meter receive silence. Reset reconstruction history
+                    // so a previously live wire cannot leak a stale peak past it.
+                    let input_broken = !bypassed && wire_in.is_some_and(|slot| wires.open_at(slot));
+                    if input_broken {
+                        node.input.clear(frames);
+                        for meter in &mut node.tp_in {
+                            meter.reset();
+                        }
+                    }
                     let arrival = wire_in
                         .is_some()
                         .then(|| wire_level(&node.input, frames, &mut node.tp_in));
-                    if !bypassed && wire_in.is_some_and(|slot| wires.open_at(slot)) {
-                        node.input.clear(frames);
-                    }
                     let processor = node.processor.as_mut().unwrap();
                     // Bypass changes routing, not time: keep the effect's
                     // history current with actual input. Only Pause suspends DSP.
@@ -901,7 +1001,7 @@ impl PreparedRack {
                             for meter in &mut node.tp_out {
                                 meter.reset();
                             }
-                            (0.0, 0.0)
+                            WireSample::default()
                         } else {
                             wire_level(&node.output, frames, &mut node.tp_out)
                         }
@@ -917,11 +1017,11 @@ impl PreparedRack {
                     // describe the same signal. Keys are only registered by
                     // `attach_wire_levels`, so an unobserved plan takes two
                     // `None` loads per node.
-                    if let (Some(slot), Some((rms, peak))) = (wire_in, arrival) {
-                        wires.publish(slot, rms, peak);
+                    if let (Some(slot), Some(level)) = (wire_in, arrival) {
+                        wires.publish(slot, level);
                     }
-                    if let (Some(slot), Some((rms, peak))) = (wire_out, departure) {
-                        wires.publish(slot, rms, peak);
+                    if let (Some(slot), Some(level)) = (wire_out, departure) {
+                        wires.publish(slot, level);
                     }
                 }
                 NodeKind::Output(_) => {
@@ -944,8 +1044,8 @@ impl PreparedRack {
                         destination[..frames].copy_from_slice(&source[..frames]);
                     }
                     if let Some(slot) = wire_in {
-                        let (rms, peak) = wire_level(&node.output, frames, &mut node.tp_out);
-                        wires.publish(slot, rms, peak);
+                        let level = wire_level(&node.output, frames, &mut node.tp_out);
+                        wires.publish(slot, level);
                         // Publish first, then break: the meter describes
                         // the signal reaching the jack, the cleared
                         // buffer keeps it out of the audio device.
@@ -955,14 +1055,23 @@ impl PreparedRack {
                     }
                 }
                 NodeKind::ChannelMap { .. } if node.input.channels() != node.output.channels() => {
-                    if node.output.channels() == 1 {
-                        for frame in 0..frames {
-                            node.output.0[0][frame] =
-                                (node.input.0[0][frame] + node.input.0[1][frame]) * 0.5;
-                        }
-                    } else {
-                        for channel in &mut node.output.0 {
-                            channel[..frames].copy_from_slice(&node.input.0[0][..frames]);
+                    // A join folds every input to their mean — the stereo
+                    // pair keeps its exact (L + R) * 0.5 form, which a halved
+                    // sum reproduces bit for bit — and a split hands the
+                    // first channel to every output. Equal widths never reach
+                    // here; the copy arm below carries those.
+                    let (inputs, outputs) = (node.input.channels(), node.output.channels());
+                    let inputs = &node.input.0[..inputs];
+                    let outputs = &mut node.output.0[..outputs];
+                    for frame in 0..frames {
+                        let value = if outputs.len() < inputs.len() {
+                            let sum: f32 = inputs.iter().map(|lane| lane[frame]).sum();
+                            sum / inputs.len() as f32
+                        } else {
+                            inputs[0][frame]
+                        };
+                        for lane in outputs.iter_mut() {
+                            lane[frame] = value;
                         }
                     }
                 }

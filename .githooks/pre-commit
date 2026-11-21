@@ -118,19 +118,38 @@ cargo clippy -p nice-tuner -p pitch --all-targets -- -D warnings || {
 }
 
 # The model plugin and the crate the two plugins share, for the reason stated
-# above — and one more, specific to them: `nice-nam` is written twice, once per
-# engine, and which half a commit compiles is decided by the machine committing
-# it. The gate compiles each half on its own platform; this line is what makes
-# the Windows half wait for neither. Not `--features standalone`, and the reason
+# above — and one more, specific to them: the engine under `nice-nam` is the same
+# engine on every platform now, so this line compiles here what the gate compiles
+# on the other machine, and the machine in front of you is the first to see it.
+# That engine refuses rustc's default instruction set on x86_64 — Linux or
+# Windows, since the branch that carries the Windows backend replaced the engine
+# that asked nothing — so the two commands that build it are given
+# `-Ctarget-cpu=x86-64-v3` the way the gate gives it to its own steps: per
+# command, never in `.cargo/config.toml`, which would raise the floor for
+# everything else here. Apple silicon has nothing to set, and rustc refuses an
+# x86-64 CPU name there, so the flag is named only where the name exists.
+# Not `--features standalone`, and the reason
 # under it has changed rather than the omission: it used to be a Steinberg SDK no
 # clean checkout has, and now it is that a hook runs on every commit while eight
 # standalone graphs do not belong in one. That feature set has its own job in the
 # gate, on both platforms, on every push.
+case $(uname -m) in
+    x86_64 | amd64) nam_flag='-Ctarget-cpu=x86-64-v3' ;;
+    *) nam_flag='' ;;
+esac
 printf 'pre-commit: clippy -D warnings (the model plugin and the shared crate)...\n'
-cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings || {
-    printf 'pre-commit: clippy failed in nice-nam/nice-common - commit aborted.\n' >&2
-    exit 1
-}
+if [ -n "$nam_flag" ]; then
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$nam_flag" \
+        cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings || {
+        printf 'pre-commit: clippy failed in nice-nam/nice-common - commit aborted.\n' >&2
+        exit 1
+    }
+else
+    cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings || {
+        printf 'pre-commit: clippy failed in nice-nam/nice-common - commit aborted.\n' >&2
+        exit 1
+    }
+fi
 
 # The wah, named like the others rather than swept in: it shares nice-nam's
 # shape — a cdylib under nice-plug's assert_process_allocs, an editor under

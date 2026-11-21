@@ -34,6 +34,13 @@ pub struct RackPreferences {
     /// and a file written before the output stage existed names none, which
     /// is 0 dB — the gain such a rack was already running.
     pub output_gain_db: f32,
+    /// The trim on the input jack wire in dB — the gain the IN card applies
+    /// to the captured signal before any card in the rack sees it. This is
+    /// the stage that sets what the rack is fed, so the input meter reads the
+    /// signal after it. Stored the way the output trim is, and a file written
+    /// before the input stage existed names none, which is 0 dB — the gain
+    /// such a rack was already running.
+    pub input_gain_db: f32,
 }
 
 /// Written by hand rather than derived, so the one preference that does not
@@ -47,11 +54,15 @@ impl Default for RackPreferences {
             plugins: Vec::new(),
             meter_gate_db: METER_GATE_DEFAULT_DB,
             output_gain_db: 0.0,
+            input_gain_db: 0.0,
         }
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedPlugin {
+    /// Structural routing stored once on the first entry; absent imports legacy lanes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<layout::Flow>,
     pub id: u64,
     pub stage: u64,
     /// Which branch of its stage this card chains onto, keyed by the branch's
@@ -61,6 +72,15 @@ pub struct SavedPlugin {
     /// branch of its own — the wiring that file's racks have always had.
     #[serde(default)]
     pub branch: Option<u64>,
+    /// The columns of its stage this card's lane runs across, as a
+    /// half-open `(start, end)` pair — the same value on every card of the
+    /// lane. A lane may start after the stage's split and end before its
+    /// merge, which is how a local fork around one column is remembered;
+    /// `None` is the whole stage, the shape every lane had before local
+    /// forks existed. `#[serde(default)]` on its own, so a file written
+    /// before spans existed still loads and lays out exactly as it did.
+    #[serde(default)]
+    pub span: Option<(u64, u64)>,
     pub path: std::path::PathBuf,
     pub class: String,
     pub name: String,
@@ -175,11 +195,13 @@ mod tests {
             [(1, vec![0, 255, 1], 20, true), (3, vec![42, 8], 840, false)]
         {
             settings.preferences.plugins.push(SavedPlugin {
+                routing: None,
                 id,
                 stage: 1,
                 // One card carries a chain key and one does not, so the file
                 // is read for both shapes and the key survives as written.
                 branch: (id == 1).then_some(1),
+                span: None,
                 path: "/plugins/tuner.clap".into(),
                 class: "same-class".into(),
                 name: "Tuner".into(),
@@ -200,6 +222,10 @@ mod tests {
                 paused: id == 3,
             });
         }
+        settings.preferences.plugins[0].routing = Some(layout::Flow::parallel(vec![
+            layout::Flow::Plugin(1),
+            layout::Flow::Plugin(3),
+        ]));
         settings.save_to(&path).unwrap();
         let (loaded, warning) = Settings::load_from(&path);
         assert_eq!(warning, None);

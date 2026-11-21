@@ -63,10 +63,12 @@ impl ProcessContext<WahPlugin> for Context {
     fn set_current_voice_capacity(&self, _: u32) {}
 }
 
-/// (Re)activate for a freshly opened pair of streams. The transport hands the
-/// pump stereo in and out whatever the device layout, so the two-channel
-/// layout is the only one this host ever spawns, exactly as a DAW's stereo
-/// insert would run it.
+/// (Re)activate for a freshly opened pair of streams, on the plugin's own mono
+/// layout. The device contract in `nice_common::audio_io` is stereo — the rings
+/// carry stereo frames whatever the device layout — so the fold from a captured
+/// frame down to the pedal's one input, and the widening of its one output back
+/// to the device's two lanes, happen in `pump_once` below, at the host's edges.
+/// Width is the host's work; the pedal has one of each.
 pub(super) fn activate(plugin: &mut WahPlugin, rate: f32) -> Result<(), String> {
     plugin.deactivate();
     if !plugin.activate(
@@ -93,7 +95,7 @@ pub(super) fn activate(plugin: &mut WahPlugin, rate: f32) -> Result<(), String> 
 /// and passing a device's live signal through a plugin mid-retuning is worse
 /// than one short gap on a reconfiguration the user asked for.
 fn pump_once(
-    buffer: &mut plugin_buffer::PlanarBuffer<{ 2 * BLOCK }>,
+    buffer: &mut plugin_buffer::PlanarBuffer<{ BLOCK }>,
     context: &mut Context,
     plugin: &Arc<Mutex<WahPlugin>>,
     shared: &WahSharedState,
@@ -104,18 +106,16 @@ fn pump_once(
         return 0;
     }
     buffer.with_buffer(count, |buffer| {
-        // The layout asks for exactly two channels, and the ring hands
-        // over exactly a frame: split the buffer into its two halves and
-        // fill both from one pop, so neither channel's index can drift.
+        // The layout asks for exactly one channel, and the ring hands over a
+        // stereo frame: the fold happens here, at the host's edge, and the
+        // pedal never sees two of anything.
         let channels = buffer.as_slice();
-        let (left, rest) = channels
-            .split_first_mut()
-            .expect("the layout asks for two channels");
-        let right = rest.first_mut().expect("the layout asks for two channels");
-        for (left_slot, right_slot) in left[..count].iter_mut().zip(&mut right[..count]) {
+        let mono = channels
+            .first_mut()
+            .expect("the layout asks for one channel");
+        for slot in mono[..count].iter_mut() {
             let [left, right] = io.input.pop().expect("slots() promised a frame");
-            *left_slot = left;
-            *right_slot = right;
+            *slot = (left + right) * 0.5;
         }
         match plugin.try_lock() {
             Ok(mut instance) => {
@@ -135,11 +135,10 @@ fn pump_once(
             }
         }
         for frame in 0..count {
-            let [left, right] = [
-                buffer.as_slice_immutable()[0][frame],
-                buffer.as_slice_immutable()[1][frame],
-            ];
-            let _ = io.output.push(StereoFrame([left, right]));
+            // Back out at the other edge: the one mono answer, duplicated so
+            // both device lanes carry the pedal.
+            let sample = buffer.as_slice_immutable()[0][frame];
+            let _ = io.output.push(StereoFrame([sample, sample]));
         }
     });
     shared.buffer_frames.store(count as u32, Ordering::Relaxed);
@@ -157,7 +156,7 @@ pub(super) fn pump(
     stop: Arc<AtomicBool>,
     rate: f32,
 ) {
-    let mut buffer = plugin_buffer::PlanarBuffer::<{ 2 * BLOCK }>::new(2, BLOCK);
+    let mut buffer = plugin_buffer::PlanarBuffer::<{ BLOCK }>::new(1, BLOCK);
     let mut context = Context::new(rate);
     while !stop.load(Ordering::Relaxed) {
         if pump_once(&mut buffer, &mut context, &plugin, &shared, &mut io) == 0 {
@@ -188,9 +187,9 @@ mod tests {
             output: playback,
         };
         for _ in 0..4 {
-            capture.push([0.5, -0.5]).unwrap();
+            capture.push([0.5, 0.5]).unwrap();
         }
-        let mut buffer = plugin_buffer::PlanarBuffer::<{ 2 * BLOCK }>::new(2, BLOCK);
+        let mut buffer = plugin_buffer::PlanarBuffer::<{ BLOCK }>::new(1, BLOCK);
         let mut context = Context::new(48_000.0);
         assert_eq!(
             pump_once(&mut buffer, &mut context, &plugin, &shared, &mut io),
@@ -198,9 +197,14 @@ mod tests {
         );
         assert_eq!(drain.slots(), 4);
         while let Ok(frame) = drain.pop() {
+            let [left, right] = frame.0;
             for sample in frame.0 {
                 assert!(sample.is_finite(), "the filter handed back {sample}");
             }
+            assert_eq!(
+                left, right,
+                "the pedal answers once and the host duplicates it"
+            );
         }
         assert_eq!(
             shared.buffer_frames.load(Ordering::Relaxed),
@@ -219,7 +223,7 @@ mod tests {
             input,
             output: playback,
         };
-        let mut buffer = plugin_buffer::PlanarBuffer::<{ 2 * BLOCK }>::new(2, BLOCK);
+        let mut buffer = plugin_buffer::PlanarBuffer::<{ BLOCK }>::new(1, BLOCK);
         let mut context = Context::new(44_100.0);
         assert_eq!(
             pump_once(&mut buffer, &mut context, &plugin, &shared, &mut io),

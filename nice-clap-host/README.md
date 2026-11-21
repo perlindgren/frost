@@ -37,9 +37,18 @@ $env:NICE_RACK_TEST_CLAP = "$PWD\target\debug\nice_tuner.dll"
 cargo test -p nice-clap-host --test tuner_roundtrip -- --ignored
 ```
 
-That Windows form has been run. The probe reported two inputs, two outputs,
-zero samples of latency and 175 saved state bytes, and all four ignored tests
-passed. The Linux form is the one that has not been exercised.
+That Windows form has been run. The tuner's Linux form has been exercised too,
+after the mono conversion; the probe reported one input, one output, zero
+samples of latency and 175 saved state bytes, and all four ignored tests pass
+with it:
+
+```text
+com.nice-tuner.nice-tuner	Nice Tuner
+Processed 256 frames: 1 inputs, 1 outputs, 0 samples latency, peak 0.125; state supported: true, saved bytes: Some(175)
+```
+
+The Windows run's earlier report — two inputs, two outputs — belongs to the
+stereo tuner that stood before that conversion.
 
 The `nice-rack` application and routing engine remain safe Rust. The loader's
 unsafe precondition is intentionally not hidden behind a safe arbitrary-path API;

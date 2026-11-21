@@ -12,18 +12,18 @@ fn main() {
                 .map(|i| 0.3 * (std::f32::consts::TAU * 750.0 * i as f32 / 48000.0).sin())
                 .collect();
             for x in &samples[..1024] {
-                effect.process([*x, -*x]);
+                effect.process(*x);
             }
             let mut best = f64::INFINITY;
             for _ in 0..3 {
                 let now = std::time::Instant::now();
                 for x in &samples {
-                    std::hint::black_box(effect.process(std::hint::black_box([*x, -*x])));
+                    std::hint::black_box(effect.process(std::hint::black_box(*x)));
                 }
                 best = best.min(now.elapsed().as_secs_f64());
             }
             println!(
-                "{} {}: {:.2} ms per stereo audio second ({:.2}% of one core)",
+                "{} {}: {:.2} ms per mono audio second ({:.2}% of one core)",
                 variant.label(),
                 mode.label(),
                 best * 1000.0,

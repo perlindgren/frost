@@ -34,8 +34,6 @@ fn a_block_costs_nothing_to_the_allocator() {
         let mut phaser = Phase::new(48_000.0, &controls);
         let input = [0.25f32; BLOCK];
         let mut mono = [0.0f32; BLOCK];
-        let mut left = [0.0f32; BLOCK];
-        let mut right = [0.0f32; BLOCK];
         // The first block through any filter is the one that used to be
         // allowed to prepare coefficients; measure after that, the way a
         // host's real blocks arrive.
@@ -43,11 +41,6 @@ fn a_block_costs_nothing_to_the_allocator() {
         let counted = allocation_counter::measure(|| {
             for _ in 0..64 {
                 phaser.process_mono(&controls, &input, &mut mono);
-                phaser.process_stereo(
-                    &controls,
-                    [&input[..], &input[..]],
-                    [&mut left[..], &mut right[..]],
-                );
             }
         });
         assert_eq!(counted.count_total, 0, "{} allocates", mode.name);

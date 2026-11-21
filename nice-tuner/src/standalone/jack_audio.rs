@@ -217,7 +217,7 @@ pub(super) fn open(
         let mut instance = plugin
             .lock()
             .map_err(|_| failure("The plugin audio state is unavailable"))?;
-        process::activate(&mut instance, 1, rate as f32).map_err(failure)?;
+        process::activate(&mut instance, rate as f32).map_err(failure)?;
         instance.shared.input_channel.store(1);
     }
     let started = Instant::now();
