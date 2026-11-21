@@ -113,6 +113,11 @@ requested configuration asynchronously and preserves supported plugin state.
 Settings are written to `nice-rack-settings.ron` in the working directory; window
 geometry is saved independently. Missing settings boot silently.
 
+A left-click on the `IN` or `OUT` card opens the same panel about that card's
+side of the route — the capture or the playback — and leaves the application's
+own rows to the cog. On Windows a card opens the whole panel instead, because
+the two halves are not two decisions there: see the next paragraph.
+
 Which transports exist is the platform's, and the panel's backend row is where
 that shows. On Windows the row offers `ASIO` and `no audio (dummy)` and nothing
 else, and what Apply opens is `nice_common::asio_io`: one ASIO driver carrying

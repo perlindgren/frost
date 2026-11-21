@@ -798,6 +798,27 @@ fn rate_text(hz: Option<f32>) -> String {
         format!("{khz:.1} kHz")
     }
 }
+/// Which half of the device page a click on an endpoint card opens.
+///
+/// A card answers for one side of the route, so it opens that side — except
+/// on a platform whose transport is one driver carrying both directions on
+/// one clock. Windows is that platform: the backend row there offers `ASIO`
+/// and `no audio (dummy)` and nothing else, and `nice_common::asio_io` opens
+/// a single driver for both streams (README §Audio settings), so a half page
+/// opens a decision it cannot finish — the `IN` card's page reaches neither
+/// the output device nor the ASIO copy rows, and the `OUT` card's cannot
+/// touch the capture feeding it, yet each Apply reopens the one stream both
+/// sides share. There the whole page is the smallest thing that can answer
+/// what the click asked. macOS runs two cpal streams, one per direction, and
+/// Linux registers one JACK port per direction, so the half page stays the
+/// honest unit there.
+fn card_page_scope(side: PageScope, one_driver_both_ways: bool) -> PageScope {
+    if one_driver_both_ways {
+        PageScope::All
+    } else {
+        side
+    }
+}
 #[derive(Clone, Copy)]
 struct Slot {
     id: NodeId,
@@ -3263,7 +3284,8 @@ impl Process for RackUi {
         // cuts the feed after metering. The
         // face is where the input half of the device page is opened,
         // because the capture is the one thing about it an operator can
-        // change.
+        // change — or the whole page, where one driver answers for both
+        // directions; see [`card_page_scope`].
         let input = layout.input;
         let in_visible = visible(&input, layout.top, layout.bottom, w);
         let in_hover = in_visible
@@ -3317,7 +3339,7 @@ impl Process for RackUi {
             && !hit(mouse, in_gain_x, in_gain_y, GAIN_HALF_W, GAIN_HALF_H)
         {
             self.settings_page = true;
-            self.settings_scope = PageScope::Input;
+            self.settings_scope = card_page_scope(PageScope::Input, cfg!(windows));
             self.settings = None;
             // As with the cog: the page takes the whole window, so an open
             // dB editor would have no card corner left to draw in.
@@ -3790,7 +3812,9 @@ impl Process for RackUi {
         }
         // The `OUT` card's face is also its way into the device page: a
         // left-click opens the playback half of it, exactly as the `IN`
-        // card opens the capture half. The two corners of the face keep
+        // card opens the capture half — and on a platform where one driver
+        // carries both directions, both cards open the whole of it, as
+        // [`card_page_scope`] says. The two corners of the face keep
         // their own clicks — the trim at its input corner and the budget
         // bar along its top — and the stub beside it is a switch, so the
         // face answers only where nothing else on it reaches.
@@ -3804,7 +3828,7 @@ impl Process for RackUi {
             && !hit(mouse, out.x, layout.flow - 54.0, CARD_WIDTH / 2.0, 5.0)
         {
             self.settings_page = true;
-            self.settings_scope = PageScope::Output;
+            self.settings_scope = card_page_scope(PageScope::Output, cfg!(windows));
             self.settings = None;
             self.gain_edit = None;
             self.gain_input.set_focus(false);
@@ -6498,5 +6522,25 @@ mod gain_double_click_tests {
             clicks.press(Some((9, true)), now + Duration::from_millis(800)),
             Some((9, true))
         );
+    }
+}
+
+#[cfg(test)]
+mod card_page_tests {
+    use super::{PageScope, card_page_scope};
+
+    /// An endpoint card opens its own half of the device page, until the
+    /// platform's transport is one driver carrying both directions on one
+    /// clock — there a half answers for a stream nobody chose on its own, so
+    /// both cards open the whole page. The rack passes `cfg!(windows)` for
+    /// the second argument; the rule is tested both ways, so it holds on the
+    /// machine that is not Windows too.
+    #[test]
+    fn a_card_opens_its_own_side_until_one_driver_carries_both_directions() {
+        assert_eq!(card_page_scope(PageScope::Input, false), PageScope::Input);
+        assert_eq!(card_page_scope(PageScope::Output, false), PageScope::Output);
+        for side in [PageScope::Input, PageScope::Output] {
+            assert_eq!(card_page_scope(side, true), PageScope::All);
+        }
     }
 }
