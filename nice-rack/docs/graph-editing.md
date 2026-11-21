@@ -21,15 +21,15 @@ Audio reconfiguration still follows the existing stop/snapshot/reuse protocol.
 | Insert in series after a plugin | `After(target)` | Right of its card, before its existing outgoing connection |
 | Create a local parallel branch above a plugin | `Above(target)` | Top of / directly above its card; above its outgoing wire |
 | Create a local parallel branch below a plugin | `Below(target)` | Bottom of / directly below its card; below its outgoing wire |
-| Insert before a complete fork | `BeforeFork(scope)` | That fork's split ring |
-| Insert after a complete fork | `AfterFork(scope)` | That fork's join ring |
+| Insert before a complete fork | `BeforeFork(scope)` | Wire immediately before that fork's split |
+| Insert after a complete fork | `AfterFork(scope)` | Wire immediately after that fork's join |
 | Add at the end | `Append(id)` | A new CLAP file without a local drop target |
 | Remove an instance | `Remove(id)` | Card's × |
 
 Moving is **detach, insert, normalize**, as one transaction:
 
 1. Validate unique IDs and that the target exists. Capture the exact group for a
-   ring target before detaching anything. Every visible ring carries its own
+   wire target before detaching anything. Every visible fork carries its own
    group scope; the first card's identity does not identify a nested fork.
 2. Remove the moving plugin from its old position, closing its serial gap. An
    emptied branch disappears rather than becoming an implicit dry-signal branch.
@@ -49,7 +49,9 @@ uses precisely the same operation.
 
 Internal drags and OS file drops use the same hit-test and operations. A new file
 is given a new ID, appended, then moved to its selected target. Card faces take
-precedence over nearby rings; an actual ring drop carries its exact scope. A
+precedence over nearby wires. The incoming/outgoing fork wire carries its exact
+scope and shows a normal vertical insertion bar; the circles themselves are not
+drop targets. A
 release on the dragged card or in distant empty space cancels an internal move.
 Escape and loss of pointer likewise cancel. A release without a drag still opens
 the editor. Numeric controls/meters retain priority over graph dragging.
@@ -109,3 +111,24 @@ The restored three-branch rack is an unambiguous import.
 New nested documents should be edited with this version of Nice Rack; an older
 binary understands only the compatibility lane projection and cannot preserve
 all nested routing semantics.
+
+## Equivalent drop slots
+
+The UI caches a semantic drop table for each routing expression and dragged ID.
+Candidates are compared by their complete normalized result **after detachment**.
+Each distinct ordered graph has one canonical target and one insertion marker:
+
+- After A / before its serial successor B share the cable midpoint.
+- Below A / above adjacent parallel sibling B share the gap midpoint when both
+  actually produce the same local graph. Forking a member of a longer serial
+  branch is not confused with adding an outer parallel branch.
+- A serial endpoint next to a fork shares the fork's adjacent wire target.
+- After a join / before the next split share one serial slot.
+- Card-face and wire above/below gestures use the same Above/Below operation;
+  the old Over/Under variants have been removed.
+- Self/adjacent moves that reproduce the unchanged document have no drop marker.
+
+Branch order is part of equivalence: top-to-bottom execution is preserved.
+Internal moves and external file drops use this same table. Pointer movement and
+scrolling reuse it; the potentially more expensive graph comparisons run only
+when the routing or dragged instance changes.

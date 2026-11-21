@@ -1,33 +1,29 @@
 //! Structural rack editing. Layout coordinates are a projection, never wiring.
+mod drop_targets;
 mod flow;
 use crate::routing::NodeId;
+pub use drop_targets::DropTargets;
 pub use flow::{Edit, Flow, Placement};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Side {
     Left,
     Right,
-    /// A lane's run, above the wire: the same local fork as [`Side::Over`]
+    /// A lane's run, above the wire: a local fork
     /// around the card the run starts at — the moving card splits from
     /// that lane before the upstream card, runs above it for that one
     /// column and joins back right after it; no wider bracket is drawn.
     Above,
     /// A lane's run, below the wire, as [`Side::Above`] is above it.
     Below,
-    /// Onto a card's face, pulling up: a fork of its own around that one
-    /// column — the moving card runs beside the target alone, splitting
-    /// before it and joining right after it.
-    Over,
-    /// Onto a card's face, pulling down, as [`Side::Over`] is above it.
-    Under,
     /// The ring a fork draws where its trunk fans out into lanes: dropping
-    /// on it lands the card in a stage of its own ahead of that whole fork.
+    /// on its incoming wire inserts the card ahead of that whole fork.
     Split,
     /// The ring a split stage draws where its lanes merge: dropping on
-    /// it lands the card in a stage of its own behind the whole fork.
+    /// its outgoing wire inserts the card behind the whole fork.
     Join,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Target {
     /// Preorder index of the exact Parallel group whose ring was targeted.
     pub scope: Option<usize>,
@@ -102,8 +98,8 @@ impl From<Side> for Placement {
         match side {
             Side::Left => Self::Before,
             Side::Right => Self::After,
-            Side::Above | Side::Over => Self::Above,
-            Side::Below | Side::Under => Self::Below,
+            Side::Above => Self::Above,
+            Side::Below => Self::Below,
             Side::Split => Self::BeforeFork,
             Side::Join => Self::AfterFork,
         }

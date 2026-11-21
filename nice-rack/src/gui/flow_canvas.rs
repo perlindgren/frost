@@ -27,7 +27,32 @@ pub(super) struct Canvas {
     next_scope: usize,
     scope_ids: Vec<Vec<NodeId>>,
 }
+const SERIAL_GAP: f32 = COLUMN_STEP - CARD_WIDTH;
+const FORK_LEAD: f32 = 64.0;
 impl Canvas {
+    // Pixel spans include both fork leads; logical Flow widths remain unchanged.
+    fn span(root: &Flow) -> f32 {
+        match root {
+            Flow::Empty => 0.0,
+            Flow::Plugin(_) => CARD_WIDTH,
+            Flow::Series(children) => {
+                children.iter().map(Self::span).sum::<f32>()
+                    + SERIAL_GAP * children.len().saturating_sub(1) as f32
+            }
+            Flow::Parallel(children) => {
+                children.iter().map(Self::span).fold(0.0, f32::max) + 2.0 * FORK_LEAD
+            }
+        }
+    }
+    pub fn content_width(root: &Flow) -> f32 {
+        2.0 * CARD_WIDTH
+            + SERIAL_GAP
+            + if matches!(root, Flow::Empty) {
+                0.0
+            } else {
+                SERIAL_GAP + Self::span(root)
+            }
+    }
     pub fn new(
         root: &Flow,
         size: [f32; 2],
@@ -65,7 +90,7 @@ impl Canvas {
                 },
                 output: Slot {
                     id: NodeId(MASTER_WIRE_KEY),
-                    x: input_x + (root.width().max(1) + 1) as f32 * COLUMN_STEP,
+                    x: input_x + Self::content_width(root) - CARD_WIDTH,
                     y: centre,
                 },
                 top,
@@ -91,17 +116,28 @@ impl Canvas {
         if matches!(root, Flow::Empty) {
             canvas.connect(incoming, outgoing);
         } else {
-            let (a, b) = canvas.build(root, input_x + COLUMN_STEP, centre, step, shapes, input);
+            let (a, b) = canvas.build(
+                root,
+                input_x + CARD_WIDTH / 2.0 + SERIAL_GAP,
+                centre,
+                step,
+                shapes,
+                input,
+            );
             canvas.connect(incoming, a);
             canvas.connect(b, outgoing);
         }
         canvas
     }
     fn connect(&mut self, from: Port, to: Port) {
+        let from_join = self
+            .forks
+            .iter()
+            .any(|mark| mark.side == Side::Join && [mark.x, mark.y] == from.at);
         self.cables.push(Cable {
             from,
             to,
-            via: if from.meter.is_none() {
+            via: if from.meter.is_none() && !from_join {
                 from.at[0]
             } else if to.meter.is_none() {
                 to.at[0]
@@ -124,17 +160,17 @@ impl Canvas {
                 let (inputs, outputs) = shapes[id];
                 self.frame.slots.push(Slot {
                     id: NodeId(*id),
-                    x,
+                    x: x + CARD_WIDTH / 2.0,
                     y,
                 });
                 (
                     Port {
-                        at: [x - CARD_WIDTH / 2.0, y],
+                        at: [x, y],
                         lanes: inputs,
                         meter: Some((NodeId(*id), false)),
                     },
                     Port {
-                        at: [x + CARD_WIDTH / 2.0, y],
+                        at: [x + CARD_WIDTH, y],
                         lanes: outputs,
                         meter: Some((NodeId(*id), true)),
                     },
@@ -159,7 +195,7 @@ impl Canvas {
                         first = Some(a);
                     }
                     previous = Some(b);
-                    column += child.width() as f32 * COLUMN_STEP;
+                    column += Self::span(child) + SERIAL_GAP;
                 }
                 (first.unwrap(), previous.unwrap())
             }
@@ -169,7 +205,7 @@ impl Canvas {
                 self.scope_ids
                     .push(root.ids().into_iter().map(NodeId).collect());
                 let split = Port {
-                    at: [junction_x(x, false), y],
+                    at: [x, y],
                     lanes: input,
                     meter: None,
                 };
@@ -177,6 +213,7 @@ impl Canvas {
                 let mut row = y + (root.height() - 1) as f32 * step / 2.0;
                 let anchor = NodeId(root.ids()[0]);
                 self.forks.push(ForkMark {
+                    wire_target: None,
                     scope: Some(scope),
                     anchor,
                     x: split.at[0],
@@ -186,16 +223,16 @@ impl Canvas {
                 for child in children {
                     let height = child.height();
                     let cy = row - (height - 1) as f32 * step / 2.0;
-                    let (a, b) = self.build(child, x, cy, step, shapes, input);
+                    let child_x = x
+                        + FORK_LEAD
+                        + (Self::span(root) - 2.0 * FORK_LEAD - Self::span(child)) / 2.0;
+                    let (a, b) = self.build(child, child_x, cy, step, shapes, input);
                     self.connect(split, a);
                     exits.push(b);
                     row -= height as f32 * step;
                 }
                 let join = Port {
-                    at: [
-                        junction_x(x + (root.width() - 1) as f32 * COLUMN_STEP, true),
-                        y,
-                    ],
+                    at: [x + Self::span(root), y],
                     lanes: exits.iter().map(|p| p.lanes).max().unwrap_or(input),
                     meter: None,
                 };
@@ -203,6 +240,7 @@ impl Canvas {
                     self.connect(exit, join);
                 }
                 self.forks.push(ForkMark {
+                    wire_target: None,
                     scope: Some(scope),
                     anchor,
                     x: join.at[0],
@@ -239,15 +277,12 @@ impl Canvas {
                 else {
                     return None;
                 };
-                if from == INPUT_JACK
-                    || to.0 == MASTER_WIRE_KEY
-                    || moving == Some(from)
-                    || moving == Some(to)
-                {
+                if to.0 == MASTER_WIRE_KEY || moving == Some(from) || moving == Some(to) {
                     return None;
                 }
                 Some(WireRun {
                     card: from,
+                    to,
                     x0: cable.from.at[0],
                     x1: cable.to.at[0],
                     y: cable.from.at[1],
@@ -260,6 +295,59 @@ impl Canvas {
             .iter()
             .copied()
             .filter_map(|mut mark| {
+                let cable = self.cables.iter().find(|c| {
+                    if mark.side == Side::Split {
+                        c.to.at == [mark.x, mark.y]
+                    } else {
+                        c.from.at == [mark.x, mark.y]
+                    }
+                })?;
+                let mut segments = self.segments(cable);
+                if mark.side == Side::Split {
+                    segments.reverse();
+                }
+                mark.wire_target = segments.into_iter().find_map(|(mut a, mut b)| {
+                    if a == b {
+                        return None;
+                    }
+                    if (a[1] - b[1]).abs() < 0.5 {
+                        if a == [mark.x, mark.y] {
+                            a[0] += RING_CLEAR;
+                        }
+                        if b == [mark.x, mark.y] {
+                            b[0] -= RING_CLEAR;
+                        }
+                        if let Some((id, true)) = cable.from.meter {
+                            let source = self
+                                .frame
+                                .slots
+                                .iter()
+                                .chain(std::iter::once(&self.frame.input))
+                                .find(|s| s.id == id)?;
+                            a[0] = a[0].max(wire_box_x(source.x, true) + STUB_HALF);
+                        }
+                        if let Some((id, false)) = cable.to.meter {
+                            let target = self
+                                .frame
+                                .slots
+                                .iter()
+                                .chain(std::iter::once(&self.frame.output))
+                                .find(|s| s.id == id)?;
+                            b[0] = b[0].min(wire_box_x(target.x, false) - STUB_HALF);
+                        }
+                        (b[0] > a[0]).then_some([(a[0] + b[0]) / 2.0, a[1]])
+                    } else {
+                        let direction = (b[1] - a[1]).signum();
+                        if a == [mark.x, mark.y] {
+                            a[1] += direction * RING_CLEAR;
+                        }
+                        if b == [mark.x, mark.y] {
+                            b[1] -= direction * RING_CLEAR;
+                        }
+                        Some([a[0], (a[1] + b[1]) / 2.0])
+                    }
+                });
+                mark.wire_target?;
                 if Some(mark.anchor) == moving {
                     // A ring remains usable while its first plugin is being dragged.
                     // Its group's IDs were captured when geometry was built.
@@ -454,14 +542,6 @@ impl Canvas {
                 }
             }
         }
-        for ring in &self.forks {
-            ctx.circle(ring.x, ring.y, MIXER_RING, color, 0.15);
-            ctx.circle(ring.x, ring.y, MIXER_RING - 2.2, rgb(23, 18, 38), 0.16);
-            ctx.line(ring.x, ring.y - 4.0, ring.x, ring.y + 4.0, color, 2.0, 0.22);
-            if ring.side == Side::Join {
-                ctx.line(ring.x - 4.0, ring.y, ring.x + 4.0, ring.y, color, 2.0, 0.22);
-            }
-        }
         for slot in &self.frame.slots {
             if ui.runtime.bypassed(slot.id.0) {
                 continue;
@@ -603,8 +683,28 @@ mod tests {
         let canvas = view(&root);
         let forks = canvas.fork_targets(Some(NodeId(4)));
         for mark in &forks {
+            assert!(
+                target_at(
+                    Some([mark.x, mark.y]),
+                    &canvas.frame.slots,
+                    Some(NodeId(4)),
+                    &DropZones {
+                        joins: &forks,
+                        runs: &[]
+                    },
+                    canvas.frame.top,
+                    canvas.frame.bottom,
+                    1800.0
+                )
+                .is_none(),
+                "the circle is not an insertion target"
+            );
+            let point = fork_drop_point(mark);
+            assert!(
+                (point[0] - mark.x).abs() > MIXER_RING || (point[1] - mark.y).abs() > MIXER_RING
+            );
             let target = target_at(
-                Some([mark.x, mark.y]),
+                Some(fork_drop_point(mark)),
                 &canvas.frame.slots,
                 Some(NodeId(4)),
                 &DropZones {
@@ -708,12 +808,12 @@ mod session_tests {
         let mut root = s(vec![n(1), p(vec![s(vec![n(2), n(4)]), n(3)])]);
         let steps = [
             (3, 2, Side::Right),
-            (2, 4, Side::Under),
+            (2, 4, Side::Below),
             (1, 2, Side::Left),
             (2, 4, Side::Right),
             (5, 1, Side::Left),
-            (5, 2, Side::Under),
-            (3, 4, Side::Over),
+            (5, 2, Side::Below),
+            (3, 4, Side::Above),
             (2, 3, Side::Right),
             (5, 2, Side::Right),
         ];
@@ -732,8 +832,8 @@ mod session_tests {
             let (dx, dy) = match side {
                 Side::Left => (-89.0, 0.0),
                 Side::Right => (89.0, 0.0),
-                Side::Over => (0.0, 40.0),
-                Side::Under => (0.0, -40.0),
+                Side::Above => (0.0, 40.0),
+                Side::Below => (0.0, -40.0),
                 _ => unreachable!(),
             };
             let forks = canvas.fork_targets(Some(NodeId(id)));
@@ -752,6 +852,9 @@ mod session_tests {
             )
             .unwrap();
             assert_eq!(target.side, side);
+            let target = crate::layout::DropTargets::new(&root, Some(id))
+                .canonical(target)
+                .unwrap();
             root = root
                 .edit_scoped(
                     crate::layout::Edit::Move {
@@ -771,5 +874,240 @@ mod session_tests {
             2,
             "one three-way split and one three-way join"
         );
+    }
+}
+
+#[cfg(test)]
+mod serial_drop_tests {
+    use super::*;
+    #[test]
+    fn both_halves_of_a_serial_wire_share_one_target_and_midpoint_bar() {
+        let root = Flow::parallel(vec![
+            Flow::series(vec![Flow::Plugin(1), Flow::Plugin(2)]),
+            Flow::Plugin(3),
+        ]);
+        let shapes = root.ids().into_iter().map(|id| (id, (1, 1))).collect();
+        let canvas = Canvas::new(&root, [1800.0, 1000.0], [0.0, 0.0], &shapes, [1, 2]);
+        for moving in [None, Some(NodeId(3))] {
+            let runs = canvas.run_targets(moving);
+            assert_eq!(runs.len(), 1);
+            let run = runs[0];
+            let midpoint = [(run.x0 + run.x1) / 2.0, run.y];
+            for fraction in [0.01, 0.25, 0.49, 0.51, 0.75, 0.99] {
+                let target = target_at(
+                    Some([run.x0 + (run.x1 - run.x0) * fraction, run.y]),
+                    &canvas.frame.slots,
+                    moving,
+                    &DropZones {
+                        joins: &[],
+                        runs: &runs,
+                    },
+                    canvas.frame.top,
+                    canvas.frame.bottom,
+                    1800.0,
+                )
+                .unwrap();
+                assert_eq!(target.card, NodeId(1));
+                assert_eq!(target.side, Side::Right);
+                let source = canvas
+                    .frame
+                    .slots
+                    .iter()
+                    .find(|s| s.id == target.card)
+                    .unwrap();
+                assert_eq!(serial_drop_point(&target, source, &runs), midpoint);
+            }
+            let destination = canvas
+                .frame
+                .slots
+                .iter()
+                .find(|s| s.id == NodeId(2))
+                .unwrap();
+            let before = Target {
+                scope: None,
+                card: NodeId(2),
+                side: Side::Left,
+            };
+            assert_eq!(serial_drop_point(&before, destination, &runs), midpoint);
+        }
+    }
+}
+
+#[cfg(test)]
+mod canonical_preview_tests {
+    use super::*;
+    #[test]
+    fn adjacent_parallel_aliases_show_one_bar_halfway_between_the_branches() {
+        let root = Flow::parallel(vec![Flow::Plugin(1), Flow::Plugin(2), Flow::Plugin(3)]);
+        let shapes = root.ids().into_iter().map(|id| (id, (1, 1))).collect();
+        let canvas = Canvas::new(&root, [1800.0, 1000.0], [0.0, 0.0], &shapes, [1, 2]);
+        let targets = crate::layout::DropTargets::new(&root, None);
+        let below = targets
+            .canonical(Target {
+                scope: None,
+                card: NodeId(1),
+                side: Side::Below,
+            })
+            .unwrap();
+        let above = targets
+            .canonical(Target {
+                scope: None,
+                card: NodeId(2),
+                side: Side::Above,
+            })
+            .unwrap();
+        assert_eq!(above, below);
+        let slot = canvas
+            .frame
+            .slots
+            .iter()
+            .find(|s| s.id == below.card)
+            .unwrap();
+        let point = parallel_drop_point(&below, slot, &canvas.frame.slots, Some(&targets));
+        let a = canvas
+            .frame
+            .slots
+            .iter()
+            .find(|s| s.id == NodeId(1))
+            .unwrap();
+        let b = canvas
+            .frame
+            .slots
+            .iter()
+            .find(|s| s.id == NodeId(2))
+            .unwrap();
+        assert_eq!(point, [a.x, (a.y + b.y) / 2.0]);
+    }
+}
+
+#[cfg(test)]
+mod input_slot_tests {
+    use super::*;
+    #[test]
+    fn the_input_to_first_plugin_slot_uses_the_cable_midpoint() {
+        let root = Flow::series(vec![Flow::Plugin(1), Flow::Plugin(2), Flow::Plugin(3)]);
+        let shapes = root.ids().into_iter().map(|id| (id, (1, 1))).collect();
+        let canvas = Canvas::new(&root, [1800.0, 1000.0], [0.0, 0.0], &shapes, [1, 2]);
+        let first = canvas
+            .frame
+            .slots
+            .iter()
+            .find(|s| s.id == NodeId(1))
+            .unwrap();
+        let expected = [(canvas.frame.input.x + first.x) / 2.0, first.y];
+        for moving in [None, Some(NodeId(3))] {
+            let runs = canvas.run_targets(moving);
+            let run = runs.iter().find(|run| run.card == INPUT_JACK).unwrap();
+            for f in [0.1, 0.5, 0.9] {
+                let target = target_at(
+                    Some([run.x0 + (run.x1 - run.x0) * f, run.y]),
+                    &canvas.frame.slots,
+                    moving,
+                    &DropZones {
+                        joins: &[],
+                        runs: &runs,
+                    },
+                    canvas.frame.top,
+                    canvas.frame.bottom,
+                    1800.0,
+                )
+                .unwrap();
+                assert_eq!(target.card, NodeId(1));
+                assert_eq!(target.side, Side::Left);
+                assert_eq!(serial_drop_point(&target, first, &runs), expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod nested_lead_tests {
+    use super::*;
+    #[test]
+    fn nested_forks_have_accessible_leads_in_both_directions() {
+        let n = Flow::Plugin;
+        for mirrored in [false, true] {
+            let local = Flow::parallel(vec![n(2), n(5)]);
+            let middle = if mirrored {
+                Flow::series(vec![n(1), local])
+            } else {
+                Flow::series(vec![local, n(1)])
+            };
+            let root = Flow::parallel(vec![n(4), middle, n(3)]);
+            let shapes = root.ids().into_iter().map(|id| (id, (1, 1))).collect();
+            let canvas = Canvas::new(&root, [2800.0, 1400.0], [0.0, 0.0], &shapes, [1, 2]);
+            let forks = canvas.fork_targets(Some(NodeId(1)));
+            let runs = canvas.run_targets(Some(NodeId(1)));
+            let outer_split = canvas
+                .forks
+                .iter()
+                .find(|m| m.scope == Some(0) && m.side == Side::Split)
+                .unwrap();
+            let outer_join = canvas
+                .forks
+                .iter()
+                .find(|m| m.scope == Some(0) && m.side == Side::Join)
+                .unwrap();
+            for mark in &forks {
+                let point = fork_drop_point(mark);
+                let hit = target_at(
+                    Some(point),
+                    &canvas.frame.slots,
+                    Some(NodeId(1)),
+                    &DropZones {
+                        joins: &forks,
+                        runs: &runs,
+                    },
+                    canvas.frame.top,
+                    canvas.frame.bottom,
+                    2800.0,
+                )
+                .unwrap();
+                assert_eq!((hit.scope, hit.side), (mark.scope, mark.side));
+                let Some(target) = crate::layout::DropTargets::new(&root, Some(1)).canonical(hit)
+                else {
+                    assert_eq!(mark.scope, Some(1));
+                    assert_eq!(mark.side, if mirrored { Side::Split } else { Side::Join });
+                    continue; // Tuner is already adjacent to this side of the local group.
+                };
+                let edited = root
+                    .edit_scoped(
+                        crate::layout::Edit::Move {
+                            id: 1,
+                            target: target.card.0,
+                            placement: target.side.into(),
+                        },
+                        target.scope,
+                    )
+                    .unwrap();
+                let expected = if mark.scope == Some(1) {
+                    let local = Flow::parallel(vec![n(2), n(5)]);
+                    let middle = if mirrored {
+                        Flow::series(vec![local, n(1)])
+                    } else {
+                        Flow::series(vec![n(1), local])
+                    };
+                    Flow::parallel(vec![n(4), middle, n(3)])
+                } else {
+                    let rest = Flow::parallel(vec![n(4), n(2), n(5), n(3)]);
+                    if mark.side == Side::Split {
+                        Flow::series(vec![n(1), rest])
+                    } else {
+                        Flow::series(vec![rest, n(1)])
+                    }
+                };
+                assert_eq!(edited, expected);
+            }
+            for mark in canvas.forks.iter().filter(|m| m.scope == Some(1)) {
+                assert!(mark.x > outer_split.x && mark.x < outer_join.x);
+            }
+            let short = canvas
+                .frame
+                .slots
+                .iter()
+                .find(|s| s.id == NodeId(4))
+                .unwrap();
+            assert!((short.x - (outer_split.x + outer_join.x) / 2.0).abs() < 0.01);
+        }
     }
 }
