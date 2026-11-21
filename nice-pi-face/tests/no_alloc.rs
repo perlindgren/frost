@@ -7,8 +7,8 @@
 //! refuses the pair outright. So this binary includes the DSP source as a module
 //! of its own and measures against nothing but the filter.
 //!
-//! It carries no `cfg` at all, and that is deliberate. `nice-nam` gates its RT
-//! test `#![cfg(not(windows))]` because the NAM engine behind that DSP has no
+//! It carries no `cfg` at all, and that is deliberate. `nice-nam` gated its RT
+//! test `#![cfg(not(windows))]` for as long as the engine behind that DSP had no
 //! Windows build; `nice-wah` copied the line along with the file's shape, and
 //! this file came from the wah. Nothing here earns an exclusion — the counter is
 //! a plain `#[global_allocator]` over `System` with no platform code in it, and

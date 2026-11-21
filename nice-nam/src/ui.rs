@@ -14,19 +14,26 @@ use std::sync::{Arc, atomic::Ordering};
 #[cfg(windows)]
 use std::task::{Poll, Waker};
 
-/// A model pick that is still going: `rfd`'s dialog is on a thread of its own,
-/// and the choice arrives through this future (`pick_model` explains why the
+/// A file pick that is still going: `rfd`'s dialog is on a thread of its own,
+/// and the choice arrives through this future (`pick_file` explains why the
 /// dialog goes there). The frame loop polls it, so nothing waits on it.
 #[cfg(windows)]
-type ModelPick = Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>;
-
-/// What the model picker offers. A Windows build's engine cannot open a `.namb`
-/// container at all, so it offers the format that loads there rather than a file
-/// that would only come back refused — `Chain::load` checks the same thing.
-#[cfg(not(windows))]
-const MODEL_FILTERS: &[&str] = &["nam", "namb"];
+type FilePick = Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>;
+/// Which of the two dialogs a pending pick came from, so the answer goes where
+/// the button that opened it meant it to go.
 #[cfg(windows)]
-const MODEL_FILTERS: &[&str] = &["nam"];
+#[derive(Clone, Copy)]
+enum Pick {
+    Model,
+    Cabinet,
+}
+
+/// What the model picker offers, and the cabinet picker: one engine on every
+/// platform reads both `.nam` and the binary `.namb` container, so there is
+/// nothing left to filter out for one target — `Chain::load` refuses what it
+/// cannot run whatever the dialog was talked into returning.
+const MODEL_FILTERS: &[&str] = &["nam", "namb"];
+const CABINET_FILTERS: &[&str] = &["wav"];
 
 /// The heaviest cut of the main view's font, which is the heaviest it has. The
 /// embedded `FiraCode-VariableFont_wght.ttf` carries one variation axis, `wght`,
@@ -177,10 +184,10 @@ pub struct NamUi {
     armed: Option<usize>,
     settings_page: bool,
     message: String,
-    /// A model dialog that is open on its own thread, waiting to be asked what
-    /// it decided (`pick_model`).
+    /// A file dialog open on its own thread, waiting to be asked what it
+    /// decided, along with the button that opened it (`pick_file`).
     #[cfg(windows)]
-    pending_model: Option<ModelPick>,
+    pending: Option<(Pick, FilePick)>,
     #[cfg(feature = "standalone")]
     applied: Settings,
     #[cfg(feature = "standalone")]
@@ -206,7 +213,7 @@ impl NamUi {
             settings_page: false,
             message: String::new(),
             #[cfg(windows)]
-            pending_model: None,
+            pending: None,
             #[cfg(feature = "standalone")]
             applied: Settings::load().0,
             #[cfg(feature = "standalone")]
@@ -246,10 +253,10 @@ impl NamUi {
     /// host for the ambiguity — `rfd`'s synchronous picker answers `None` both
     /// when the apartment it was handed refuses it and when the user presses
     /// Cancel — and on Windows there is no longer an apartment for it to be
-    /// handed (`pick_model`).
+    /// handed (`pick_file`).
     fn choose_model(&mut self) {
         #[cfg(windows)]
-        self.pick_model();
+        self.pick_file(Pick::Model, "NAM model", MODEL_FILTERS);
         #[cfg(not(windows))]
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("NAM model", MODEL_FILTERS)
@@ -303,13 +310,19 @@ impl NamUi {
     /// waiting for it here — the only thread a Cocoa editor gets — would wait on
     /// itself.
     #[cfg(windows)]
-    fn pick_model(&mut self) {
-        if self.pending_model.is_some() {
+    fn pick_file(&mut self, pick: Pick, name: &'static str, filters: &'static [&'static str]) {
+        if self.pending.is_some() {
             // One dialog at a time; the open one owns the answer.
             return;
         }
-        let dialog = rfd::AsyncFileDialog::new().add_filter("NAM model", MODEL_FILTERS);
-        self.pending_model = Some(Box::pin(dialog.pick_file()));
+        self.pending = Some((
+            pick,
+            Box::pin(
+                rfd::AsyncFileDialog::new()
+                    .add_filter(name, filters)
+                    .pick_file(),
+            ),
+        ));
     }
     /// Ask an open dialog whether it has answered, from every frame. Asking from
     /// the frame clock is also what makes a waker that does nothing enough: the
@@ -320,15 +333,21 @@ impl NamUi {
     /// choice is dropped rather than applied to a window that went away.
     #[cfg(windows)]
     fn collect_pick(&mut self) {
-        let Some(mut pick) = self.pending_model.take() else {
+        let Some((pick, mut future)) = self.pending.take() else {
             return;
         };
         let mut cx = std::task::Context::from_waker(Waker::noop());
-        match pick.as_mut().poll(&mut cx) {
-            Poll::Ready(Some(file)) => self.accept_model(file.path().to_path_buf()),
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(Some(file)) => {
+                let path = file.path().to_path_buf();
+                match pick {
+                    Pick::Model => self.accept_model(path),
+                    Pick::Cabinet => self.accept_cab(path),
+                }
+            }
             // Cancelled, which is the user changing their mind and not an error.
             Poll::Ready(None) => {}
-            Poll::Pending => self.pending_model = Some(pick),
+            Poll::Pending => self.pending = Some((pick, future)),
         }
     }
     /// The chosen model, handed to the loader the same way from either road.
@@ -338,17 +357,26 @@ impl NamUi {
         paths.model_path = Some(path);
         self.shared.engine.revision.fetch_add(1, Ordering::Release);
     }
-    /// There is no cabinet engine in a Windows build, so there is nothing here
-    /// to pick; the row that would call this is disabled there.
+    /// Pick a cabinet impulse. The same dialog, on the same road as a model: the
+    /// thread rules that move a model dialog off the painting thread do not care
+    /// which file the dialog is being asked for.
     fn choose_cab(&mut self) {
+        #[cfg(windows)]
+        self.pick_file(Pick::Cabinet, "Cabinet impulse response", CABINET_FILTERS);
         #[cfg(not(windows))]
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Cabinet impulse response", &["wav"])
+            .add_filter("Cabinet impulse response", CABINET_FILTERS)
             .pick_file()
         {
-            self.shared.engine.paths.lock().unwrap().cabinet_path = Some(path);
-            self.shared.engine.revision.fetch_add(1, Ordering::Release);
+            self.accept_cab(path);
         }
+    }
+    /// The chosen impulse, handed to the loader the same way from either road.
+    /// Reloading is what puts it in the chain: the revision bump is how the
+    /// preparation thread learns that the paths it was given have changed.
+    fn accept_cab(&mut self, path: PathBuf) {
+        self.shared.engine.paths.lock().unwrap().cabinet_path = Some(path);
+        self.shared.engine.revision.fetch_add(1, Ordering::Release);
     }
 }
 impl Process for NamUi {
@@ -442,12 +470,11 @@ impl Process for NamUi {
         let mut rows: Vec<(String, bool, bool)> = Vec::new();
         {
             rows.push(("LOAD MODEL".into(), true, false));
-            // A Windows build has no cabinet engine to receive an impulse
-            // response, so these two have nothing to do there — they are off
-            // rather than silently ignoring the choice, and the status line says
-            // as much if a session hands one over.
-            rows.push(("LOAD CABINET".into(), !cfg!(windows), false));
-            rows.push(("REMOVE CABINET".into(), !cfg!(windows), false));
+            // Every build has a cabinet engine now, so these two are live
+            // everywhere and a refused impulse comes back as the loader's own
+            // message rather than as a row that cannot be pressed.
+            rows.push(("LOAD CABINET".into(), true, false));
+            rows.push(("REMOVE CABINET".into(), true, false));
             let paths = self.shared.engine.paths.lock().unwrap().clone();
             let model_line = format!(
                 "Model: {}",

@@ -232,14 +232,18 @@ cargo test -p nice-tuner -p pitch || fail 'cargo test -p nice-tuner -p pitch'
 
 # The model plugin and the crate the two plugins share. Named by the same logic
 # as above — a member nothing tests is a member that regresses quietly — and
-# worth more here than anywhere else, because `nice-nam` is written twice: once
-# against nam-rs, once against NeuralAmpModeler-rs, and this line runs whichever
-# half the pushing machine is on. The gate now compiles and tests each half on
-# its own platform — `tests/dsp_windows.rs` has had an automated run since the
-# Windows job landed — and this line is what makes the machine in front of you
-# answer for itself without waiting for a runner. The test that holds both
-# engines to one gain convention needs one engine on each machine, which is why
-# it sits in the suite both of them run.
+# worth more here than anywhere else, because the engine under `nice-nam` is one
+# engine on every platform now: this line runs the same suite the gate runs on the
+# other machine, against the copy of the engine this platform is pinned to, which
+# is not the copy it pins (Linux and macOS take the published 2.0.0, Windows a
+# commit of the branch its backend was added on). The test that holds the chain's
+# own gain derivation against the loader's runs here as it runs there.
+#
+# `-Ctarget-cpu=x86-64-v3` on x86_64 only, and on this line only, as in the two
+# gate steps that name the plugin: the engine's build script refuses the default
+# baseline, and the refusal is the same on Windows now that Windows builds that
+# engine. Apple silicon has nothing to set and rustc does not accept an x86-64 CPU
+# name there, so the flag is named only where the name exists.
 #
 # `--features standalone` stays out of this, as it does in `pre-commit` — no
 # longer because of an SDK that had to live outside the tree, `azo` needing none,
@@ -247,7 +251,14 @@ cargo test -p nice-tuner -p pitch || fail 'cargo test -p nice-tuner -p pitch'
 # graphs have a job of their own, on both platforms. The plugin shape compiles
 # the engine, the refusals and the picker, which is the part that breaks.
 printf 'pre-push: running `cargo test -p nice-nam -p nice-common`...\n'
-cargo test -p nice-nam -p nice-common || fail 'cargo test -p nice-nam -p nice-common'
+case $(uname -m) in
+    x86_64 | amd64)
+        RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Ctarget-cpu=x86-64-v3" \
+            cargo test -p nice-nam -p nice-common \
+            || fail 'cargo test -p nice-nam -p nice-common'
+        ;;
+    *) cargo test -p nice-nam -p nice-common || fail 'cargo test -p nice-nam -p nice-common' ;;
+esac
 
 # The wah, by the same named-not-swept-in logic, and its suite earns the
 # minute twice over: the Goertzel assertions are the filter's contract with

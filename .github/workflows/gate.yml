@@ -482,13 +482,16 @@ jobs:
           --skip jack_server_defaults_resolve_without_manual_device_settings
           --skip named_routes_preserve_full_level_on_both_outputs_and_restore_after_failure
 
-      # The model plugin, and this is the step that matters most for it: `nice-nam`
-      # splits by platform, so a Linux runner is the only automatic place its
-      # NeuralAmpModeler-rs half is compiled at all — the nam-rs half exists solely on
-      # a Windows machine, where `.githooks/pre-push` runs the same line for that
-      # platform. The gain staging is held to one
-      # convention by a test that compares the two engines, and until now neither
-      # machine could compile the side it was written against.
+      # The model plugin. `nice-nam` no longer splits by engine — one engine runs on
+      # every platform now — but the two runners still do not build the same copy of
+      # it: this one takes the published 2.0.0 the manifest pins, and the `windows`
+      # job at the end of this file takes a commit of the same crate's `main`, which
+      # is where that platform's backend was added. So this stays the only automatic
+      # place the published version is compiled, and the Windows step beside it the
+      # only automatic place the branch version is executed. The gain staging is held
+      # to one convention by a test that compares the chain's own derivation against
+      # the loader's numbers, and that test now runs on both machines, against both
+      # copies.
       #
       # `--features standalone` is not here for nice-nam, unlike the tuner above:
       # it is believed to build on Linux (the ALSA and JACK libraries this job
@@ -500,7 +503,8 @@ jobs:
       # on, is a `cfg(windows)` dependency of nice-common, so on this
       # runner there is no ASIO transport in the graph to test — and the `windows`
       # job at the end of this file is where it runs, this plugin with `standalone`
-      # on and the `cfg(windows)` half of the DSP suite beside it.
+      # on and the whole DSP suite beside it, which since the two engines became one
+      # is no longer divided between the two machines.
       #
       # `RUSTFLAGS` here is the prefix `nice-nam/README.md` already tells a Linux
       # builder to use, and CI is where forgetting it shows up. NeuralAmpModeler-rs
@@ -820,13 +824,22 @@ jobs:
       - name: Clippy, zero warnings, the standalone tuner
         run: cargo clippy -p nice-tuner --features standalone --all-targets -- -D warnings
 
-      # No `RUSTFLAGS: -Ctarget-cpu=x86-64-v3` anywhere in this job, unlike two steps
-      # above. That flag answers NeuralAmpModeler-rs's refusal of the default x86-64
-      # baseline, and NeuralAmpModeler-rs is the Linux half of `nice-nam`; the Windows
-      # half is `nam-rs`, which asks nothing of the instruction set. Setting it here
-      # would raise the instruction floor of every build on the platform people run the
-      # binaries on, for a reason that does not exist on it.
+      # `RUSTFLAGS: -Ctarget-cpu=x86-64-v3` belongs in this job now, and this is the
+      # step that needs it. The flag answers NeuralAmpModeler-rs's refusal of rustc's
+      # default x86-64 baseline, and this platform builds that engine now instead of
+      # `nam-rs`, which asked nothing of the instruction set. The refusal is a build
+      # script, so a step without the flag never reaches a lint: it fails inside the
+      # dependency with "Missing required feature(s): avx, avx2, bmi1, bmi2, f16c,
+      # fma, lzcnt, movbe", which is what this step did the first time it was tried
+      # this way. Raising the instruction floor of the artefacts built here is not a
+      # cost to minimize but the fact being stated: a CPU without AVX2 cannot run
+      # this plugin on any platform now. On Windows the assignment also replaces the
+      # `+crt-static` that `.cargo/config.toml` asks for — that file says why a
+      # bundle meant for somebody's DAW is better built without the static CRT, and
+      # nothing here ships a bundle from this step.
       - name: Clippy, zero warnings, the model plugin and the shared crate
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings
 
       # The shared crate with every feature on, which on this platform is the sentence
@@ -887,15 +900,19 @@ jobs:
           --skip jack_server_defaults_resolve_without_manual_device_settings
           --skip named_routes_preserve_full_level_on_both_outputs_and_restore_after_failure
 
-      # The step the comment above has been waiting for. `nice-nam` splits by platform:
-      # the Linux runner is the only automatic place its NeuralAmpModeler-rs half is
-      # compiled, and `tests/dsp_windows.rs` is the twin of that suite for the engine
-      # this platform actually ships — `#[cfg(windows)]`, compiling `src/dsp.rs` in
-      # place, on the ground that a shipping binary with no DSP tests is unverified
-      # however green the other machine is. It has existed since it was written without
-      # any automated run, because there was no automated Windows run to be in.
+      # The step the comment above has been waiting for, with its premise gone:
+      # `nice-nam` no longer splits by platform, and `tests/dsp_windows.rs` — the twin
+      # suite that existed because the two engines read the same file differently —
+      # went with the engine it was written against. What this step buys now is the
+      # one suite run against the buffers the shipping binary actually uses: the
+      # Win32 mirrored pages the engine maps for its weights and state, and the
+      # zero-allocation assertion around `Chain::process` on a backend upstream still
+      # labels experimental. Both ran on this machine before the line was written, and
+      # both need the baseline the step above explains.
       - name: Tests, the model plugin with its own audio
         if: needs.plan.outputs.nam == 'true'
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: cargo test --no-fail-fast -p nice-nam --features standalone
 
       # The plugins beside it, standalone only and one step apiece: the plain halves
