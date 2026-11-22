@@ -1,7 +1,9 @@
-//! Nominal TS808/TS9/OD-1/SD-1/RAT signal-path model. See README.md for sources and limits.
+//! Independent BS808/BS9/OH-1/SH-1/CAT signal-path approximations.
+//! Inspired by the TS808/TS9/OD-1/SD-1/RAT circuits; see README.md and
+//! docs/plugin-inspiration.md for source attribution and limits.
 #![allow(clippy::needless_range_loop)]
-#[path = "dsp/rat.rs"]
-mod rat;
+#[path = "dsp/cat.rs"]
+mod cat;
 use crate::controls::Variant;
 use nice_common::oversample::{Oversampling, Resampler, TAPS, fir};
 const CONTACT: f64 = 0.1;
@@ -235,10 +237,10 @@ fn symmetric_feedback_voltage(current: f64, g: f64) -> f64 {
 }
 
 /// Solve the parallel resistor/capacitor and antiparallel diode strings.
-/// SD-1 has two diodes for positive output-minus-input voltage and one
+/// SH-1 has two diodes for positive output-minus-input voltage and one
 /// for negative voltage; Tube Screamers have one in each direction.
 fn feedback_voltage(current: f64, g: f64, variant: Variant) -> f64 {
-    if !matches!(variant, Variant::Sd1 | Variant::Od1) {
+    if !matches!(variant, Variant::Sh1 | Variant::Oh1) {
         return symmetric_feedback_voltage(current, g);
     }
     let target = current.abs();
@@ -289,17 +291,17 @@ struct Circuit {
     level: Network<5, 2>,
     output: Filter,
     od_tone: Filter,
-    rat: Option<rat::Rat>,
+    cat: Option<cat::Cat>,
     clone: Option<nice_common::clone_drive::Circuit>,
 }
 impl Circuit {
     fn new(rate: f64, c: [f64; 3], variant: Variant) -> Self {
-        let od1 = variant == Variant::Od1;
-        let sd1 = matches!(variant, Variant::Sd1 | Variant::Od1);
+        let oh1 = variant == Variant::Oh1;
+        let sh1 = matches!(variant, Variant::Sh1 | Variant::Oh1);
         let (series, shunt, output_cap) = match variant {
-            Variant::Ts808 => (100.0, 10_000.0, 10e-6),
-            Variant::Ts9 => (470.0, 100_000.0, 10e-6),
-            Variant::Sd1 | Variant::Od1 | Variant::Rat | Variant::Clone => {
+            Variant::Bs808 => (100.0, 10_000.0, 10e-6),
+            Variant::Bs9 => (470.0, 100_000.0, 10e-6),
+            Variant::Sh1 | Variant::Oh1 | Variant::Cat | Variant::Clone => {
                 (1_000.0, 100_000.0, 1e-6)
             }
         };
@@ -307,8 +309,8 @@ impl Circuit {
             variant,
             clone: (variant == Variant::Clone)
                 .then(|| nice_common::clone_drive::Circuit::new(rate, c)),
-            rat: (variant == Variant::Rat).then(|| rat::Rat::new(rate, c)),
-            // OD-1 R7=R8=10k, C4=18nF: inverting unity-gain low pass.
+            cat: (variant == Variant::Cat).then(|| cat::Cat::new(rate, c)),
+            // OH-1 R7=R8=10k, C4=18nF: inverting unity-gain low pass.
             od_tone: {
                 let k = 2.0 * rate * 10_000.0 * 18e-9;
                 Filter {
@@ -320,41 +322,41 @@ impl Circuit {
             },
             input: Filter::highpass(
                 rate,
-                if sd1 { 47e-9 } else { 22e-9 },
-                if od1 {
+                if sh1 { 47e-9 } else { 22e-9 },
+                if oh1 {
                     1_000.0
-                } else if sd1 {
+                } else if sh1 {
                     10_000.0
                 } else {
                     1_000.0
                 },
-                if sd1 { 470_000.0 } else { 510_000.0 },
+                if sh1 { 470_000.0 } else { 510_000.0 },
             ),
             coupling: Filter::highpass(
                 rate,
-                if od1 {
+                if oh1 {
                     4.7e-9
-                } else if sd1 {
+                } else if sh1 {
                     18e-9
                 } else {
                     1e-6
                 },
                 0.0,
-                if sd1 { 100_000.0 } else { 10_000.0 },
+                if sh1 { 100_000.0 } else { 10_000.0 },
             ),
             ground_cap: 2.0 * rate * 47e-9,
             ground_history: 0.0,
-            feedback_cap: if sd1 { 0.0 } else { 2.0 * rate * 51e-12 },
+            feedback_cap: if sh1 { 0.0 } else { 2.0 * rate * 51e-12 },
             feedback_history: 0.0,
             resistance: 0.0,
             tone: Network::new([
-                Capacitor::new(N(0), G, if sd1 { 18e-9 } else { 220e-9 }, rate),
-                Capacitor::new(N(1), N(2), if sd1 { 27e-9 } else { 220e-9 }, rate),
-                Capacitor::new(N(3), N(4), if sd1 { 10e-9 } else { 0.0 }, rate),
+                Capacitor::new(N(0), G, if sh1 { 18e-9 } else { 220e-9 }, rate),
+                Capacitor::new(N(1), N(2), if sh1 { 27e-9 } else { 220e-9 }, rate),
+                Capacitor::new(N(3), N(4), if sh1 { 10e-9 } else { 0.0 }, rate),
             ]),
             level: Network::new([
                 Capacitor::new(S(0), N(0), 1e-6, rate),
-                Capacitor::new(N(3), N(4), if sd1 { 47e-9 } else { 100e-9 }, rate),
+                Capacitor::new(N(3), N(4), if sh1 { 47e-9 } else { 100e-9 }, rate),
             ]),
             output: Filter::highpass(
                 rate,
@@ -371,56 +373,56 @@ impl Circuit {
             clone.tune([drive, tone, level]);
             return;
         }
-        if let Some(rat) = &mut self.rat {
-            rat.tune([drive, tone, level]);
+        if let Some(cat) = &mut self.cat {
+            cat.tune([drive, tone, level]);
             return;
         }
-        let od1 = self.variant == Variant::Od1;
-        let sd1 = matches!(self.variant, Variant::Sd1 | Variant::Od1);
-        self.resistance = if sd1 {
+        let oh1 = self.variant == Variant::Oh1;
+        let sh1 = matches!(self.variant, Variant::Sh1 | Variant::Oh1);
+        self.resistance = if sh1 {
             33_000.0 + 1_000_000.0 * drive
         } else {
             51_000.0 + 500_000.0 * drive * drive
         };
         self.tone.begin();
         self.tone
-            .resistor(S(0), N(0), if sd1 { 10_000.0 } else { 1_000.0 });
-        if !sd1 {
+            .resistor(S(0), N(0), if sh1 { 10_000.0 } else { 1_000.0 });
+        if !sh1 {
             self.tone.resistor(N(0), G, 10_000.0);
         }
         self.tone.resistor(N(0), N(1), 20_000.0 * tone);
         self.tone.resistor(N(1), N(3), 20_000.0 * (1.0 - tone));
-        self.tone.resistor(N(2), G, if sd1 { 470.0 } else { 220.0 });
+        self.tone.resistor(N(2), G, if sh1 { 470.0 } else { 220.0 });
         self.tone
-            .resistor(N(3), N(4), if sd1 { 10_000.0 } else { 1_000.0 });
+            .resistor(N(3), N(4), if sh1 { 10_000.0 } else { 1_000.0 });
         // Ideal second op-amp: inverting input (3) equals noninverting (0).
         // Capacitor history on the output node must not enter the ideal
         // op-amp voltage constraint (row 4 is not an output KCL equation).
         self.tone.constraint_row = Some(4);
         self.tone.matrix[4] = [-1.0, 0.0, 0.0, 1.0, 0.0];
         self.tone.finish();
-        let level = if sd1 { level } else { level * level };
-        let pot = if sd1 { 10_000.0 } else { 100_000.0 };
+        let level = if sh1 { level } else { level * level };
+        let pot = if sh1 { 10_000.0 } else { 100_000.0 };
         self.level.begin();
         self.level
-            .resistor(N(0), N(1), if sd1 { 4_700.0 } else { 1_000.0 });
+            .resistor(N(0), N(1), if sh1 { 4_700.0 } else { 1_000.0 });
         self.level.resistor(N(1), N(2), pot * (1.0 - level));
         self.level.resistor(N(2), G, pot * level);
         self.level
-            .resistor(N(2), N(3), if sd1 && !od1 { 22_000.0 } else { CONTACT });
-        if sd1 && !od1 {
+            .resistor(N(2), N(3), if sh1 && !oh1 { 22_000.0 } else { CONTACT });
+        if sh1 && !oh1 {
             self.level.resistor(N(3), G, 22_000.0);
         }
         self.level
-            .resistor(N(4), G, if sd1 { 1_000_000.0 } else { 510_000.0 });
+            .resistor(N(4), G, if sh1 { 1_000_000.0 } else { 510_000.0 });
         self.level.finish();
     }
     fn tick(&mut self, x: f64) -> f64 {
         if let Some(clone) = &mut self.clone {
             return clone.tick(x);
         }
-        if let Some(rat) = &mut self.rat {
-            return rat.tick(x);
+        if let Some(cat) = &mut self.cat {
+            return cat.tick(x);
         }
         let x = self.input.tick(x).clamp(-3.0, 3.0);
         let x = self.coupling.tick(x);
@@ -435,7 +437,7 @@ impl Circuit {
         );
         let clipped = (x + delta).clamp(-3.0, 3.0);
         self.feedback_history = 2.0 * self.feedback_cap * (clipped - x) - self.feedback_history;
-        let toned = if self.variant == Variant::Od1 {
+        let toned = if self.variant == Variant::Oh1 {
             self.od_tone.tick(clipped).clamp(-3.0, 3.0)
         } else {
             let nodes = self.tone.solve([clipped, 0.0]);
@@ -604,10 +606,10 @@ mod tests {
         }
     }
     #[test]
-    fn od1_tone_is_fixed_and_differs_from_sd1() {
-        let mut a = Circuit::new(384000.0, [0.5, 0.0, 0.7], Variant::Od1);
-        let mut b = Circuit::new(384000.0, [0.5, 1.0, 0.7], Variant::Od1);
-        let mut sd = Circuit::new(384000.0, [0.5, 0.5, 0.7], Variant::Sd1);
+    fn oh1_tone_is_fixed_and_differs_from_sh1() {
+        let mut a = Circuit::new(384000.0, [0.5, 0.0, 0.7], Variant::Oh1);
+        let mut b = Circuit::new(384000.0, [0.5, 1.0, 0.7], Variant::Oh1);
+        let mut sd = Circuit::new(384000.0, [0.5, 0.5, 0.7], Variant::Sh1);
         let mut difference = 0.0;
         for i in 0..32768 {
             let x = 0.2 * (i as f64 * std::f64::consts::TAU * 750.0 / 384000.0).sin();
@@ -618,25 +620,25 @@ mod tests {
         assert!(difference > 1.0);
     }
     #[test]
-    fn sd1_diode_strings_are_asymmetric_and_satisfy_kirchhoff() {
+    fn sh1_diode_strings_are_asymmetric_and_satisfy_kirchhoff() {
         let g = 1.0 / 1_033_000.0;
         for current in [-1.0, -0.01, -0.0001, -1e-12, 1e-12, 0.0001, 0.01, 1.0] {
-            let v = feedback_voltage(current, g, Variant::Sd1);
+            let v = feedback_voltage(current, g, Variant::Sh1);
             let solved = g * v + IS * ((v / (2.0 * NVT)).exp_m1() - (-v / NVT).exp_m1());
             assert!(
                 (solved - current).abs() < 1e-11 * current.abs() + 1e-20,
                 "{current}: {solved}"
             );
         }
-        let positive = feedback_voltage(0.0001, g, Variant::Sd1);
-        let negative = feedback_voltage(-0.0001, g, Variant::Sd1);
+        let positive = feedback_voltage(0.0001, g, Variant::Sh1);
+        let negative = feedback_voltage(-0.0001, g, Variant::Sh1);
         assert!(positive > 1.8 * negative.abs());
     }
     #[test]
     fn silicon_feedback_solution_satisfies_kirchhoff() {
         for current in [-1.0, -0.01, -0.0001, 0.0, 0.0001, 0.01, 1.0] {
             let g = 1.0 / 551000.0 + 2.0 * 384000.0 * 51e-12;
-            let v = feedback_voltage(current, g, Variant::Ts808);
+            let v = feedback_voltage(current, g, Variant::Bs808);
             let solved = g * v + 2.0 * IS * (v / NVT).sinh();
             assert!((solved - current).abs() < 1e-10, "{current} {solved}");
         }
@@ -692,7 +694,7 @@ mod tests {
     fn moving_controls_and_quality_switches_stay_finite() {
         for rate in [8000.0, 44100.0, 48000.0, 96000.0, 192000.0] {
             let mut effect =
-                Dist::new(rate, &Controls::default(), Variant::Ts808, Oversampling::X8);
+                Dist::new(rate, &Controls::default(), Variant::Bs808, Oversampling::X8);
             for i in 0..4096 {
                 if i % 256 == 0 {
                     effect.set_controls(
@@ -748,14 +750,14 @@ mod signal_tests {
             .collect()
     }
     #[test]
-    fn sd1_produces_even_harmonics_unlike_the_symmetric_ts_clipper() {
+    fn sh1_produces_even_harmonics_unlike_the_symmetric_ts_clipper() {
         let c = Controls {
             drive: 0.7,
             tone: 0.5,
             level: 0.8,
         };
-        let sd1 = spectrum(
-            Variant::Sd1,
+        let sh1 = spectrum(
+            Variant::Sh1,
             Oversampling::X8,
             c,
             750.0,
@@ -763,17 +765,17 @@ mod signal_tests {
             &[750.0, 1500.0],
         );
         let ts = spectrum(
-            Variant::Ts808,
+            Variant::Bs808,
             Oversampling::X8,
             c,
             750.0,
             0.1,
             &[750.0, 1500.0],
         );
-        assert!(sd1[1] / sd1[0] > 0.001, "SD-1: {sd1:?}");
+        assert!(sh1[1] / sh1[0] > 0.001, "SH-1: {sh1:?}");
         assert!(
-            sd1[1] / sd1[0] > 100.0 * ts[1] / ts[0],
-            "SD-1 {sd1:?}, TS808 {ts:?}"
+            sh1[1] / sh1[0] > 100.0 * ts[1] / ts[0],
+            "SH-1 {sh1:?}, BS808 {ts:?}"
         );
     }
     #[test]
@@ -784,7 +786,7 @@ mod signal_tests {
             level: 0.8,
         };
         let off = spectrum(
-            Variant::Ts808,
+            Variant::Bs808,
             Oversampling::Off,
             c,
             9000.0,
@@ -792,7 +794,7 @@ mod signal_tests {
             &[9000.0, 21000.0],
         );
         let on = spectrum(
-            Variant::Ts808,
+            Variant::Bs808,
             Oversampling::X8,
             c,
             9000.0,
@@ -811,7 +813,7 @@ mod signal_tests {
             level: 0.8,
         };
         let low = spectrum(
-            Variant::Ts808,
+            Variant::Bs808,
             Oversampling::X8,
             c,
             750.0,
@@ -819,7 +821,7 @@ mod signal_tests {
             &[750.0, 2250.0],
         );
         let high = spectrum(
-            Variant::Ts808,
+            Variant::Bs808,
             Oversampling::X8,
             Controls { drive: 1.0, ..c },
             750.0,
@@ -831,7 +833,7 @@ mod signal_tests {
             "{low:?} {high:?}"
         );
         let muted = spectrum(
-            Variant::Ts808,
+            Variant::Bs808,
             Oversampling::X8,
             Controls { level: 0.0, ..c },
             750.0,

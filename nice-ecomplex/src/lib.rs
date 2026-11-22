@@ -1,11 +1,7 @@
-//! Ecomplex: a Binson Echoplex T.E.C. 1 tape-delay model as a CLAP/VST3
-//! plugin, with a frost editor. *Ecomplex* is this crate's own name, and the
-//! plugin ships as *Nice Ecomplex*, the prefix every bundle in this workspace
-//! carries; the Binson Echoplex T.E.C. 1 is named only as the machine it
-//! models, and `dsp`'s module documentation records which facts about that
-//! machine are panel knowledge and which — A-1 through A-7 — are this model's
-//! named assumptions.
-//!
+//! Nice Brain Lag Tube: an original single-head tape-delay approximation, with a
+//! tube-style front end. No particular hardware reproduction is claimed.
+//! Sources and explicitly unverified attribution are documented in
+//! `docs/plugin-inspiration.md`. DSP assumptions remain in `dsp`.
 //! This file is the interface to the host: the parameters a host can automate,
 //! a shared view of the metering for the editor, the two plugin-API identities,
 //! and the block loop that hands samples to [`dsp`]. The transport snapshots
@@ -311,11 +307,11 @@ impl Default for EcomplexPlugin {
 impl Plugin for EcomplexPlugin {
     /// What a host lists in its plugin menu, in both wrappers. Spelled the same
     /// way as the `name` in the workspace `bundler.toml`, because a bundle
-    /// called "Nice Ecomplex" that opens as "Ecomplex" is a name the operator
+    /// called "Nice Brain Lag Tube" that opens as "Ecomplex" is a name the operator
     /// has to reconcile by hand. Neither identity string derives from this: the
     /// CLAP id and the VST3 class id below are what a saved session resolves,
     /// so renaming here does not orphan anyone's project.
-    const NAME: &'static str = "Nice Ecomplex";
+    const NAME: &'static str = "Nice Brain Lag Tube";
     const VENDOR: &'static str = "frost developers";
     const URL: &'static str = "https://github.com/perlindgren/frost";
     const EMAIL: &'static str = "";
@@ -436,9 +432,11 @@ impl Plugin for EcomplexPlugin {
 
 impl ClapPlugin for EcomplexPlugin {
     const CLAP_ID: &'static str = "com.frost.nice-ecomplex";
-    const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Tape echo with a tube front end, modelled on the Binson Echoplex T.E.C. 1");
-    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_DESCRIPTION: Option<&'static str> = Some(
+        "Original single-head tape-delay approximation with a tube-style front end; no manufacturer affiliation",
+    );
+    const CLAP_MANUAL_URL: Option<&'static str> =
+        Some("https://github.com/perlindgren/frost/blob/main/docs/plugin-inspiration.md");
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     // Delay only: the machine has no reverb of any kind, and this model
     // declares none — claiming Reverb here would be a feature the tape does

@@ -1,7 +1,6 @@
-//! Nice Pi-Fase: a Mu-Tron Bi-Phase model as a CLAP/VST3 plugin, with a frost
-//! editor. The name follows the user's spelling — *Pi-Fase* — so this touches
-//! no trademark; what the plugin models is the documented machine, and
-//! `dsp`'s module documentation records what that means and what it does not.
+//! Nice Pi Face: an independent dual phaser inspired by the Mu-Tron Bi-Phase.
+//! No manufacturer affiliation or endorsement is claimed. Sources and limits
+//! are recorded in `docs/plugin-inspiration.md` and this crate's README.
 //!
 //! This file is the interface to the host: the parameters a host can automate,
 //! a shared view of the metering for the editor, the two plugin-API identities,
@@ -496,7 +495,7 @@ impl Default for PiFacePlugin {
 }
 
 impl Plugin for PiFacePlugin {
-    const NAME: &'static str = "Nice Pi-Fase";
+    const NAME: &'static str = "Nice Pi Face";
     const VENDOR: &'static str = "frost developers";
     const URL: &'static str = "https://github.com/perlindgren/frost";
     const EMAIL: &'static str = "";
@@ -625,9 +624,11 @@ impl Plugin for PiFacePlugin {
 
 impl ClapPlugin for PiFacePlugin {
     const CLAP_ID: &'static str = "com.frost.nice-pi-face";
-    const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Two six-stage lamp-swept phasor lanes, modelled on the Mu-Tron Bi-Phase");
-    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_DESCRIPTION: Option<&'static str> = Some(
+        "Two six-stage lamp-swept phasor lanes, inspired by the Mu-Tron Bi-Phase; independent and unaffiliated",
+    );
+    const CLAP_MANUAL_URL: Option<&'static str> =
+        Some("https://github.com/perlindgren/frost/blob/main/docs/plugin-inspiration.md");
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
         ClapFeature::AudioEffect,

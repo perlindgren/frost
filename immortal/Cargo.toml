@@ -2,14 +2,11 @@
 name = "immortal"
 version = "0.1.0"
 edition = "2024"
-# The absence of a `license` field is the point of this file. Engine-side
-# packages inherit `MIT OR Apache-2.0` by asking for it with
-# `license.workspace = true`; this one does not ask, and declaring nothing means
-# all rights reserved. Until the game was a package of its own, the only licence
-# statement anywhere near it was the `license` field of the crate it was an
-# example *inside* — a claim about a directory whose files it does not describe.
-# `docs/licensing.md` is the table of who carries what, including the three fonts
-# and every `.wav` in `assets/` whose provenance is still unrecorded.
+# Separate game terms are described in LICENCE.txt, subject to third-party
+# licences, earlier valid grants and statutory rights. This package does not
+# inherit the engine's licence metadata. `publish = false` prevents Cargo
+# registry publication; neither setting establishes ownership or legal terms.
+# See ../docs/licensing.md for provenance and unresolved asset permissions.
 publish = false
 
 [dependencies]

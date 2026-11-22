@@ -1,0 +1,10 @@
+License declaration from https://raw.githubusercontent.com/SSheldon/rust-dispatch/82d6c7a5b75dc0c71c3f46f87bb6c16a476f7748/Cargo.toml
+
+name = "dispatch"
+version = "0.2.0"
+authors = ["Steven Sheldon"]
+license = "MIT"
+
+No standalone license/copyright text was present in this upstream commit.
+The declared MIT terms are provided in the standard license collection;
+authors are attribution metadata, not an inferred copyright-holder notice.

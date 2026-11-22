@@ -1,4 +1,4 @@
-//! The Pi-Fase signal path: two lamp-swept all-pass lanes, and the two
+//! The Pi Face signal path: two lamp-swept all-pass lanes, and the two
 //! generators that walk them.
 //!
 //! The model is the circuit the owner's manual describes and the service

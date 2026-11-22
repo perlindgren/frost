@@ -8,7 +8,7 @@ pub(crate) fn create(params: Arc<PiFaceParams>, shared: Arc<PiFaceSharedState>) 
     nice_plugin::Editor::new(
         shared.clone(),
         nice_plugin::WindowConfig {
-            title: "Nice Pi-Fase",
+            title: "Nice Pi Face",
             min_size: MIN_SIZE,
             resize_hint: RESIZE_HINT,
         },

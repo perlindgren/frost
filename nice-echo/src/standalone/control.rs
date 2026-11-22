@@ -1,4 +1,4 @@
-//! The Nice Echo host's endpoint of the shared control logic.
+//! The Nice Brain Lag Multi host's endpoint of the shared control logic.
 //!
 //! The logic — one command in flight, a refusal to overlap, an error slot the
 //! panel reads on its next frame — lives once in [`nice_common::control`]. What

@@ -8,7 +8,7 @@ pub struct DistPreferences {
     pub drive: Option<f32>,
     pub tone: Option<f32>,
     pub output: Option<f32>,
-    /// Circuit number: 1 = TS808, 2 = TS9, 3 = SD-1, 4 = OD-1, 5 = RAT, 6 = Nice Clone. Missing selects TS808.
+    /// Circuit number: 1 = BS808, 2 = BS9, 3 = SH-1, 4 = OH-1, 5 = CAT, 6 = Nice Clone. Missing selects BS808.
     pub variant: Option<u32>,
     /// 1 (Off), 2, 4 or 8; defaults to 8x.
     pub oversampling: Option<u32>,

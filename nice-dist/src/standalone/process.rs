@@ -22,7 +22,7 @@ mod tests {
         let mut reference = crate::dsp::Dist::new(
             48_000.0,
             &crate::dsp::Controls::default(),
-            crate::controls::Variant::Ts808,
+            crate::controls::Variant::Bs808,
             nice_common::oversample::Oversampling::X8,
         );
         let mut context = Context::new(48_000.0);

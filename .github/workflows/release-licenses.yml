@@ -1,0 +1,45 @@
+name: Release license checks
+on:
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - Cargo.lock
+      - 'nice-tuner/xtask/**'
+      - 'docs/third-party-licenses/**'
+      - docs/plugin-inspiration.md
+      - docs/NON-AFFILIATION.txt
+      - '.github/workflows/release-licenses.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - Cargo.lock
+      - 'nice-tuner/xtask/**'
+      - 'docs/third-party-licenses/**'
+      - '.github/workflows/release-licenses.yml'
+permissions:
+  contents: read
+jobs:
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Verify original legal-text provenance
+        run: python nice-tuner/xtask/scripts/check-release-licenses.py
+      - name: Test notice policy and archive verification failures
+        run: cargo test -p xtask --locked
+      - name: Resolve release notices for each supported target
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-darwin x86_64-pc-windows-msvc x86_64-unknown-linux-gnu; do
+            cargo xtask release-notices \
+              -p nice-tuner -p nice-nam -p nice-dist -p nice-phase \
+              -p nice-clone -p nice-echo -p nice-ecomplex -p nice-wah \
+              -p nice-pi-face -p nice-rack-standalone \
+              --all-features --target "$target" --locked
+          done

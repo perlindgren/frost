@@ -1,4 +1,4 @@
-//! The Pi-Fase editor view.
+//! The Pi Face editor view.
 //!
 //! **This is the family's face, not the Bi-Phase's.** It gives every control a
 //! place on screen and a readout, so the plugin, its parameters, the host's
@@ -714,7 +714,7 @@ impl Process for PiFaceUi {
             return;
         }
         let Some(params) = self.params.clone() else {
-            self.text(ctx, 0.0, 0.0, "NICE PI-FASE".into(), 24.0, MUTED);
+            self.text(ctx, 0.0, 0.0, "NICE PI FACE".into(), 24.0, MUTED);
             return;
         };
         let (w, h) = ctx.size();
@@ -839,7 +839,7 @@ impl Process for PiFaceUi {
 
         // ---- drawing, back to front ----
         let title_size = 21.0 * fit;
-        let title = "NICE PI-FASE";
+        let title = "NICE PI FACE";
         let title_w = self.text_width(ctx, title, title_size);
         self.text(
             ctx,

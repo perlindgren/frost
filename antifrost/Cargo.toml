@@ -6,11 +6,11 @@
 name = "antifrost"
 version = "0.1.0"
 edition = "2024"
-# A game, not a library: Ember Hill and its art are offered on their own terms,
-# which are not the engine's (../docs/licensing.md). So this package does not
-# ask for the workspace licence — inheriting is opt-in, and asking would grant
-# the world rights over the art. `publish = false` marks the silence as a
-# decision rather than an oversight: "all rights reserved" is what is meant.
+# Separate game terms are described in LICENCE.txt, subject to third-party
+# licences, earlier valid grants and statutory rights. This package does not
+# inherit the engine's licence metadata. `publish = false` prevents Cargo
+# registry publication; neither setting establishes ownership or legal terms.
+# See ../docs/licensing.md for provenance and unresolved asset permissions.
 publish = false
 
 [dependencies]

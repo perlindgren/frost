@@ -1,20 +1,8 @@
-# Nice Ecomplex
+# Nice Brain Lag Tube
 
-A model of the **Binson Echoplex T.E.C. 1** as a CLAP/VST3 plugin: one
-motor turning one drum, one playback head on it, and a tube front end in
-front of the whole thing. The machine is mono — one source on the tape, one
-output — and so is this model: a single mono input enters the front end at
-unity and a single mono output leaves; folding a stereo signal to mono, or
-widening the answer back out, is the host's work, not the tape's. The Delay
-Time knob changes the *speed of the
-tape* — a longer delay is literally slower tape, and slower tape wobbles
-more, so delay and wow are one control, not two. Recount feeds the echo
-back toward the record head, Timbre shapes the repeats, and Echo Volume
-sits the echo against a dry signal that is *always there*. *Ecomplex* is
-this crate's own name, and the plugin ships as *Nice Ecomplex* like every
-other bundle here; "Binson Echoplex T.E.C. 1" is the name of the
-machine being modelled, used here only to say what the subject is — the
-repository rule is that brand names never become our product names.
+An original single-head tape-delay approximation with a tube-style front end,
+speed-linked modulation, feedback tone filtering and an always-present dry path.
+It is not presented as a reproduction of a particular commercial device.
 
 **Current state: the sound is in, the panel is drawn, and the division
 between the known and the chosen is in the open.** `dsp.rs` runs the whole
@@ -36,28 +24,13 @@ Like its siblings, plugin and application are one codebase: the same
 `Plugin::process` and the same editor run in both. Only the answer to "who
 owns the audio and the numbers" changes.
 
-## What the original is
+## Design and limits
 
-The Binson Echoplex — Binson & Cerrone, France, the Echo Drive of 1964
-developed into the T.E.C. around 1970 — is the tape echo that preceded the
-Roland RE-201 in this workspace's other crate, and it differs from that
-machine in exactly the ways this model is shaped by: a **tube** front end
-(the familiar 12AX7 stage) with its own high-gain microphone input, where
-the RE-201 is solid-state; **one** playback head on a drum turned by **one**
-motor, where the RE-201 has a bank of heads and a mode switch; and a delay
-time that comes from varying tape speed, so the transport's wobble deepens
-as the delay lengthens instead of being an independent effect.
-
-**No service document for the machine was consulted for this model, and
-this crate quotes no source text.** The facts above are the machine's
-common panel-and-reputation description — what its controls are called and
-what players and repair notes have always said the box does — and this file
-says so plainly rather than dressing tier-three knowledge in a citation it
-does not have. Where the common description stops — the exact delay range,
-the drum's rotation rate, the flutter depth, the crossover of Recount, the
-tone stage's real topology, the front end's exact curve — the model needed
-a number anyway, and those numbers are named assumptions, **A-1** through
-**A-7**, carried in `dsp.rs` beside the constants themselves:
+This implementation has no verified commercial counterpart. The Binson
+Echorec is mentioned only as early related work in the reference notes, not as
+an implemented model. No external reference is claimed retroactively. The DSP
+is unchanged; its A-1 through A-7 assumptions describe our design choices.
+See the shared [inspiration and references](../docs/plugin-inspiration.md).
 
 | Label | The assumption | Why it is needed |
 |-------|----------------|------------------|
@@ -207,3 +180,16 @@ what an afternoon with the machine and a bench would retire.
 The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
 Plugin-specific view construction lives in `src/editor.rs`; standalone
 activation follows the shared activate/reset sequence.
+
+## Inspiration and non-affiliation
+
+These are independent frost projects, not products sponsored, approved or
+endorsed by the manufacturers or authors of referenced equipment. Third-party
+names identify sources and inspiration only; trademarks belong to their
+respective owners. An "inspired by" description does not claim an exact circuit,
+measured sonic match, or trademark clearance. See the shared
+[inspiration and reference notes](../docs/plugin-inspiration.md).
+
+The displayed product name is **Nice Brain Lag Tube**. The `nice-ecomplex`
+package, plugin IDs, settings filename and legacy `Nice Ecomplex` bundle
+filename remain stable for existing projects and rack paths.

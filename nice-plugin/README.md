@@ -13,8 +13,8 @@ be owned only by that view. Hosted windows never restore or persist standalone
 placement, even if a caller has enabled standalone support in the same build.
 
 The optional `standalone` feature adds one Apply/rollback owner and transport pump
-for Clone, Dist, Echo, Ecomplex, Phase, Pi-Fase and Wah. Mono layouts fold transport
-input and duplicate the mono output; Pi-Fase's stereo layout preserves both
+for Clone, Dist, Echo, Ecomplex, Phase, Pi Face and Wah. Mono layouts fold transport
+input and duplicate the mono output; Pi Face's stereo layout preserves both
 channels. Buffer bounds and plugin-declared layouts remain explicit. Tuner's test
 tone/analysis input and NAM's model/device path retain their specialized adapters;
 all nine use the same no-MIDI processing context and successful activation always

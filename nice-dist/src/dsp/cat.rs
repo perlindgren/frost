@@ -1,14 +1,14 @@
-//! Classic silicon RAT signal path; nominal LM308 macromodel, not a transistor model.
+//! CAT, inspired by the Pro Co RAT circuit; nominal LM308 macromodel, not a transistor model.
 use super::*;
 
-pub(super) struct Rat {
+pub(super) struct Cat {
     amp: Network<6, 5>,
     clip: Network<4, 3>,
     output: Network<2, 1>,
     previous: f64,
     slew: f64,
 }
-impl Rat {
+impl Cat {
     pub(super) fn new(rate: f64, controls: [f64; 3]) -> Self {
         let mut amp = Network::new([
             Capacitor::new(S(0), N(0), 22e-9, rate),
@@ -96,25 +96,25 @@ mod tests {
     use super::*;
     #[test]
     fn amplifier_obeys_slew_and_rails_and_recovers() {
-        let mut rat = Rat::new(384000.0, [1.0, 0.5, 1.0]);
+        let mut cat = Cat::new(384000.0, [1.0, 0.5, 1.0]);
         let mut previous = 0.0;
         for i in 0..10000 {
-            let y = rat.tick(if i < 5000 { 64.0 } else { 0.0 });
+            let y = cat.tick(if i < 5000 { 64.0 } else { 0.0 });
             assert!(y.is_finite());
-            assert!(rat.previous.abs() <= 3.0);
-            assert!((rat.previous - previous).abs() <= rat.slew + 1e-12);
-            previous = rat.previous;
+            assert!(cat.previous.abs() <= 3.0);
+            assert!((cat.previous - previous).abs() <= cat.slew + 1e-12);
+            previous = cat.previous;
         }
         for _ in 0..384000 {
-            rat.tick(0.0);
+            cat.tick(0.0);
         }
-        assert!(rat.previous.abs() < 1e-5);
+        assert!(cat.previous.abs() < 1e-5);
     }
     #[test]
     fn clockwise_filter_cuts_treble_and_volume_zero_mutes() {
-        let mut bright = Rat::new(384000.0, [0.5, 0.0, 0.7]);
-        let mut dark = Rat::new(384000.0, [0.5, 1.0, 0.7]);
-        let mut muted = Rat::new(384000.0, [0.5, 0.5, 0.0]);
+        let mut bright = Cat::new(384000.0, [0.5, 0.0, 0.7]);
+        let mut dark = Cat::new(384000.0, [0.5, 1.0, 0.7]);
+        let mut muted = Cat::new(384000.0, [0.5, 0.5, 0.0]);
         let mut energy = [0.0; 3];
         for i in 0..65536 {
             let x = 0.1 * (std::f64::consts::TAU * 6000.0 * i as f64 / 384000.0).sin();

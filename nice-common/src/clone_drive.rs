@@ -1,4 +1,4 @@
-//! Component-based Centaur signal circuit. Component designators follow Martin
+//! Independent component-based signal circuit inspired by the Klon Centaur. Component designators follow Martin
 //! Chittum's corrected April 2009 trace (linked in nice-clone/README.md).
 //!
 //! Capacitors use trapezoidal companion models. The two clean feed-forward

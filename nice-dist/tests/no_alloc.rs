@@ -11,7 +11,7 @@ fn processing_switching_and_reset_do_not_allocate_or_free() {
     let mut effect = dsp::Dist::new(
         48000.0,
         &dsp::Controls::default(),
-        controls::Variant::Ts808,
+        controls::Variant::Bs808,
         Oversampling::X8,
     );
     let count = allocation_counter::measure(|| {

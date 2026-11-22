@@ -1,0 +1,6 @@
+Canonical SPDX license texts retrieved 2026-11-22 from:
+https://github.com/spdx/license-list-data/tree/main/text
+
+These are standard terms, not package-specific copyright attributions.
+Any placeholders in standard texts are templates, not invented ownership.
+Package-specific notices and source declarations are retained separately.

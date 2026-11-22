@@ -1,11 +1,11 @@
-# Nice Echo
+# Nice Brain Lag Multi
 
-A model of the **Roland RE-201 Space Echo** as a CLAP/VST3 plugin: a tape
+An independent tape delay inspired by the **Roland RE-201 Space Echo** as a CLAP/VST3 plugin: a tape
 loop with one record head and three playback heads, a spring reverb tank
 riding beside it, and the machine's twelve-position mode selector that
 decides which heads and whether the spring reach the output. Wow and
 flutter live in the transport, saturation lives in the record path, and the
-tone stack shapes what comes back. *Nice Echo* is this crate's own name;
+tone stack shapes what comes back. *Nice Brain Lag Multi* is this crate's own name;
 "Roland RE-201 Space Echo" is the name of the machine being modelled, used
 here only to say what the subject is — the repository rule is that brand
 names never become our product names.
@@ -257,3 +257,16 @@ a bench would retire.
 The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
 Plugin-specific view construction lives in `src/editor.rs`; standalone
 activation follows the shared activate/reset sequence.
+
+The displayed product name is **Nice Brain Lag Multi**. The `nice-echo` package, plugin
+IDs, settings filename and legacy `Nice Echo` bundle filename remain stable
+so existing projects and rack paths still resolve.
+
+## Inspiration and non-affiliation
+
+These are independent frost projects, not products sponsored, approved or
+endorsed by the manufacturers or authors of referenced equipment. Third-party
+names identify sources and inspiration only; trademarks belong to their
+respective owners. An "inspired by" description does not claim an exact circuit,
+measured sonic match, or trademark clearance. See the shared
+[inspiration and reference notes](../docs/plugin-inspiration.md).

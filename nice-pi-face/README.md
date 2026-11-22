@@ -1,12 +1,12 @@
-# Nice Pi-Fase
+# Nice Pi Face
 
-A model of the **Mu-Tron Bi-Phase** as a CLAP/VST3 plugin: two phasor lanes of
+An independent dual phaser inspired by the **Mu-Tron Bi-Phase** as a CLAP/VST3 plugin: two phasor lanes of
 six all-pass sections each — "two independent six-stage phase shifters", as the
 owner's manual puts it — two sweep generators that are free to drift against
 each other, and the switching the original has: Shape, Sweep source, Sweep Sync,
 and the Phasor B Input switch, whose three positions *are* the machine's three
-basic modes of operation. The name is the user's spelling, *Pi-Fase*, chosen to
-clear any trademark; the thing it models is the machine documented below.
+basic modes of operation. Pi Face is our model name; it is not a claim of trademark clearance or
+manufacturer affiliation. See the shared [inspiration and reference notes](../docs/plugin-inspiration.md).
 
 **Current state: the sound is in; the face is not.** `dsp.rs` runs the whole
 signal path — two free-running generators, six lamp-swept all-pass sections a
@@ -299,3 +299,16 @@ afternoon with a scope and a PH3A lamp would retire.
 The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
 Plugin-specific view construction lives in `src/editor.rs`; standalone
 activation follows the shared activate/reset sequence.
+
+The displayed product name is **Nice Pi Face**. The `nice-pi-face` package, plugin
+IDs, settings filename and legacy `Nice Pi-Fase` bundle filename remain stable
+so existing projects and rack paths still resolve.
+
+## Inspiration and non-affiliation
+
+These are independent frost projects, not products sponsored, approved or
+endorsed by the manufacturers or authors of referenced equipment. Third-party
+names identify sources and inspiration only; trademarks belong to their
+respective owners. An "inspired by" description does not claim an exact circuit,
+measured sonic match, or trademark clearance. See the shared
+[inspiration and reference notes](../docs/plugin-inspiration.md).

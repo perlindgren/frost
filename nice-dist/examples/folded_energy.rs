@@ -1,4 +1,4 @@
-//! Coherent single-tone alias probe for the nominal TS808/TS9 models.
+//! Coherent single-tone alias probe for the nominal BS808/BS9 models.
 //! Run in release; stdout is CSV. Not a broadband or hardware measurement.
 use nice_common::oversample::Oversampling;
 use nice_dist::{
@@ -38,7 +38,7 @@ fn main() {
     println!(
         "model,oversampling,fundamental_peak,folded_power,folded_dbc,reduction_db,folded_21k_dbc"
     );
-    for variant in [Variant::Ts808, Variant::Ts9] {
+    for variant in [Variant::Bs808, Variant::Bs9] {
         let mut baseline = 0.0;
         for mode in Oversampling::ALL {
             let a = measure(variant, mode);

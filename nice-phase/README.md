@@ -93,11 +93,9 @@ hardware.
 | BLOCK 45 | 2 | on | The single hole filled to a singing dip instead of a null. |
 | SIGNATURE 90 | 4 | off | The two-switch superset pedal, parked at the corner its namesake is known for. |
 
-The names are ours. SCRIPT and BLOCK name the two enclosure-silkscreen
-eras of the circuit by their typeface, the way players have always named
-them to each other; SIGNATURE stands where a signature model's name would,
-because a player's name is the one trademark this table has no business
-wearing. No manufacturer makes or endorsed anything here.
+SCRIPT and BLOCK are descriptive model labels; the original pedal names are
+retained only as references. No manufacturer makes, sponsors or endorses these
+plugins, and no legal clearance is implied by our labels.
 
 `SIGNATURE 90` is honest about being a reading: the real two-switch pedal
 contains the other four settings' wiring as its switch positions, and a
@@ -172,3 +170,12 @@ silence it promises.
 The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
 Plugin-specific view construction lives in `src/editor.rs`; standalone
 activation follows the shared activate/reset sequence.
+
+## Inspiration and non-affiliation
+
+These are independent frost projects, not products sponsored, approved or
+endorsed by the manufacturers or authors of referenced equipment. Third-party
+names identify sources and inspiration only; trademarks belong to their
+respective owners. An "inspired by" description does not claim an exact circuit,
+measured sonic match, or trademark clearance. See the shared
+[inspiration and reference notes](../docs/plugin-inspiration.md).

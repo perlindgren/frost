@@ -1,4 +1,5 @@
-//! Nice Dist: TS808/TS9/OD-1/SD-1/RAT/Centaur overdrive with oversampled nonlinear feedback clipping.
+//! Nice Dist: independent overdrive models. Inspiration and source mapping:
+//! `docs/plugin-inspiration.md`; model names do not claim manufacturer affiliation.
 #![deny(unsafe_code)]
 
 const BLOCK: usize = 128;
@@ -112,10 +113,7 @@ impl Default for DistParams {
                     controls::Variant::from_index(index).label().into()
                 }))
                 .with_string_to_value(Arc::new(|text| {
-                    controls::Variant::ALL
-                        .iter()
-                        .find(|mode| mode.label().eq_ignore_ascii_case(text.trim()))
-                        .map(|mode| mode.index())
+                    controls::Variant::parse_label(text).map(|mode| mode.index())
                 }))
                 .non_automatable(),
         }
@@ -334,9 +332,11 @@ impl Plugin for DistPlugin {
 
 impl ClapPlugin for DistPlugin {
     const CLAP_ID: &'static str = "com.frost.nice-dist";
-    const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("TS808/TS9/OD-1/SD-1/RAT/Centaur component-based overdrive");
-    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_DESCRIPTION: Option<&'static str> = Some(
+        "Independent BS808, BS9, OH-1, SH-1, CAT and Nice Clone overdrives; no manufacturer affiliation",
+    );
+    const CLAP_MANUAL_URL: Option<&'static str> =
+        Some("https://github.com/perlindgren/frost/blob/main/docs/plugin-inspiration.md");
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] =
         &[ClapFeature::AudioEffect, ClapFeature::Distortion];
@@ -364,7 +364,7 @@ mod parameter_tests {
     #[test]
     fn variants_and_controls_have_distinct_saved_host_ids() {
         let params = DistParams::default();
-        assert_eq!(params.variant.value(), controls::Variant::Ts808.index());
+        assert_eq!(params.variant.value(), controls::Variant::Bs808.index());
         let mut ids: Vec<_> = params
             .param_map()
             .into_iter()

@@ -1,5 +1,5 @@
-//! Nice Echo: a Roland RE-201 Space Echo tape-delay model as a CLAP/VST3
-//! plugin, with a frost editor. *Nice Echo* is this crate's own name; the
+//! Nice Brain Lag Multi: an independent tape delay inspired by the Roland RE-201 Space Echo as a CLAP/VST3
+//! plugin, with a frost editor. *Nice Brain Lag Multi* is this crate's own name; the
 //! Roland RE-201 Space Echo is named only as the machine it models, and
 //! `dsp`'s module documentation records which facts about that machine came
 //! from the sources and which — A-1 through A-10 — are this model's named
@@ -422,7 +422,7 @@ impl Default for EchoPlugin {
 }
 
 impl Plugin for EchoPlugin {
-    const NAME: &'static str = "Nice Echo";
+    const NAME: &'static str = "Nice Brain Lag Multi";
     const VENDOR: &'static str = "frost developers";
     const URL: &'static str = "https://github.com/perlindgren/frost";
     const EMAIL: &'static str = "";
@@ -541,9 +541,11 @@ impl Plugin for EchoPlugin {
 
 impl ClapPlugin for EchoPlugin {
     const CLAP_ID: &'static str = "com.frost.nice-echo";
-    const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Tape echo with a spring tank, modelled on the Roland RE-201 Space Echo");
-    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_DESCRIPTION: Option<&'static str> = Some(
+        "Tape echo with a spring tank, inspired by the Roland RE-201 Space Echo; independent and unaffiliated",
+    );
+    const CLAP_MANUAL_URL: Option<&'static str> =
+        Some("https://github.com/perlindgren/frost/blob/main/docs/plugin-inspiration.md");
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
         ClapFeature::AudioEffect,

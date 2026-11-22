@@ -1,4 +1,4 @@
-//! Application-owned standalone host; shares its editor and TS808/TS9/SD-1 DSP with CLAP/VST3.
+//! Application-owned standalone host; shares its editor and BS808/BS9/SH-1 DSP with CLAP/VST3.
 #![deny(unsafe_code)]
 fn main() {
     let args: Vec<_> = std::env::args().collect();

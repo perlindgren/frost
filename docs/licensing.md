@@ -1,38 +1,32 @@
 # Licensing
 
-A `license` field is a claim about the files inside one package. It says nothing
-about a directory, a repository, or a neighbour — which is the whole reason this
-file exists, because the arrangement before it was a repo where nothing declared
-anything and everything looked like it might be free.
+Cargo's `license` field records declared package licence metadata; it is not
+proof of ownership, a substitute for applicable licence notices, or a way to
+override third-party terms. Omitting it leaves that metadata unspecified.
+`publish = false` prevents Cargo registry publication, not redistribution by law.
 
-Measured, not felt: `cargo package --list -p frost` on the manifest as it stood
-listed **372 files**, of which **235 were `assets/` and `examples/`**, including
-`.DS_Store`, every `.wav`, and four fonts that no source file mentions. An
-`MIT OR Apache-2.0` field written over that would have licensed a game's art to
-the world by an accident of packaging.
+An earlier `cargo package --list -p frost` listed 372 files, including 235 under
+`assets/` and `examples/`. Publishing unrelated game material with engine licence
+metadata could create scope ambiguity and could distribute assets without the
+necessary permissions. Packaging alone cannot grant rights the distributor
+does not hold. The package inclusion rules reduce that risk; they do not resolve
+asset ownership or permissions.
 
 ## What each package says
 
 | package | terms | why |
 |---|---|---|
-| `frost` (engine) | `MIT OR Apache-2.0`, **defines the default** in `[workspace.package]` | the library, its shaders, and the three files its own `include_bytes!` reaches for — `include` in the manifest is what makes that the crate rather than the repo |
+| `frost` (engine) | `MIT OR Apache-2.0`, **defines the opt-in metadata** in `[workspace.package]` | the library, its shaders, and the three files its own `include_bytes!` reaches for — `include` in the manifest is what makes that the crate rather than the repo |
 | `frost_shaders` | inherited: `license.workspace = true` | games borrow programs from the shelf; a lender cannot hand out what it does not hold |
-| `tools/sprite_util`, `tools/noisefloor` | inherited: `license.workspace = true` | engine-side tooling; `noisefloor` is a dev-dependency of the engine's benches, so its terms cannot be stranger than the engine's |
-| `nice-tuner`, `nice-tuner/crates/pitch`, `nice-tuner/xtask` | inherited: `license.workspace = true` | The plugin joined the workspace on 2026-10-30 already asking for the default. Two of its three manifests said something else, and both said it by accident: `pitch` carried `license = "MIT"`, the narrower grant rather than a different one — the MIT option stays open to anyone who wants only MIT, so nothing already given was withdrawn and one route less was offered to whoever comes next — and `xtask` carried no `license` at all, which this table reads the way it reads the games' silence, all rights reserved, a true thing about a game's art and a false thing about the driver that bundles a plugin carrying these terms. It depends on `nice-plug-xtask` and emits a bundle; the terms of what it builds and the terms of the builder now agree |
-| `antifrost` (Ember Hill) | none — all rights reserved | a game and its art; it does not ask for the workspace licence, and `publish = false` marks the silence as a decision |
-| `immortal` (`immortal/`) | none — all rights reserved, stated by the manifest's silence: a `[package]` with no `license` key, in a workspace where engine-side packages inherit `MIT OR Apache-2.0` only by asking for it | The garden game, 13,135 lines, a package of its own since 2026-10-29. Before that it was an example *target* of the `frost` package, which meant the nearest licence statement was a claim about a crate it was not, and the only record of its terms was a comment and this row — nothing a distributor could check. `publish = false`, no `include` list, and 78 art files of its own |
+| `tools/sprite_util`, `tools/noisefloor` | inherited: `license.workspace = true` | engine-side tooling; `noisefloor` is a dev-dependency of the engine's benches, its declared terms are MIT OR Apache-2.0 |
+| `nice-tuner`, `nice-tuner/crates/pitch`, `nice-tuner/xtask` | inherited: `license.workspace = true` | Current metadata declares MIT OR Apache-2.0. Earlier metadata differed; changes to it do not withdraw valid earlier grants. Third-party components retain their own terms. |
+| `antifrost` (Ember Hill) | [Rights reservation](../antifrost/LICENCE.txt) | Covers only the rights described in the notice; preserves third-party terms, earlier grants and statutory rights. No inherited Cargo licence metadata; registry publication disabled. |
+| `immortal` | [Rights reservation](../immortal/LICENCE.txt) | Same qualifications as Antifrost. Its move from an engine example to a separate package does not revoke any valid earlier permissions. |
 
-Inheriting is **opt-in**, which is the only reason a workspace default is safe to
-state: a game added to `members` tomorrow is not licensed by a decision it never
-made. `cargo metadata --no-deps` is the check, because it prints what cargo
-resolved rather than what a manifest appears to say. Measured 2026-11-02 across the
-nine members: **seven** carry `MIT OR Apache-2.0` — `frost`, `frost_shaders`,
-`sprite_util`, `noisefloor`, `nice-tuner`, `pitch`, `xtask` — and **two** carry
-nothing, `antifrost` and `immortal`. Those two are the policy in one line: the games
-keep their own terms, and everything engine-side, the plugin and its detector and its
-bundling driver included, speaks one licence. (This paragraph read *four packages and
-antifrost carrying nothing* until the recount, which is what a document says when the
-workspace grows by two and nobody re-runs the command.)
+Cargo workspace licence inheritance is opt-in. `cargo metadata --no-deps`
+reports resolved metadata, not the full legal status of each file. The games'
+separate notices state the intended reservation; applicable component licences,
+previous valid permissions and law remain controlling for their respective scope.
 
 They stay separate packages rather than modules of `frost` for reasons already in
 their own manifests: `sprite_util` brings `clap`, `env_logger`, `rfd` and `image`,
@@ -141,21 +135,18 @@ three endings below) and `/examples` can join the list without costing anything.
   files now in the package and the ones that stayed. None of that is a claim of
   ownership in either direction, which is why none of it moved. Provenance is the
   gap below, and these are its remaining instances.
-- **Three fonts and every sound have no provenance note.** `assets/fonts/OFL.txt`
-  and `assets/fonts/README.txt` cover Fira Code properly — that instinct was
-  already here. Leofont, JameGem08 and Barrfont say nothing about who made them,
-  and to a distributor "mine" and "unknown" look identical. One line each in a
-  `CREDITS` file is the whole obligation. Same for the `.wav` files.
-- **Inbound contributions.** The dual licence is clean to grant today: first
-  commit 2026-09-11, one author. That stops being true the moment anyone else
-  lands a patch, and there is no contributor agreement — so the day a stranger's
-  commit is accepted, this file needs a line about what terms contributions
-  arrive under, or the ability to relicense later depends on finding them.
-  Settled 2026-10-29 as a decision rather than a gap: no contributors are
-  expected, so no agreement is written and the README says nothing about
-  inbound terms. This bullet is the trigger to revisit, not an action item —
-  the first commit from anyone else reopens it, and the cost of reopening
-  grows with every patch accepted before it is written.
+- **Asset provenance remains incomplete.** Fira Code has accompanying OFL terms
+  and provenance information. The ledger lacks sufficient provenance records for
+  Leofont, JameGem08, Barrfont and sound files. Identify the relevant creators,
+  rights holders, permissions and applicable conditions before distributing
+  affected assets. Attribution alone does not establish permission or necessarily
+  satisfy a licence. Missing records do not establish ownership in either direction.
+- **Inbound contributions and ownership.** Git author names and commit history
+  are evidence of development activity, not proof of copyright ownership or
+  authority to license every contribution. Applicable contribution terms and any
+  necessary permissions should be checked before accepting or relicensing work.
+  A separate contributor agreement is not automatically required, but should not
+  be assumed to exist; existing valid grants must be respected.
 - **Before any real `cargo publish`.** Packaging is proven; uploading is not, and
   cargo already says part of it: `manifest has no description, documentation,
   homepage or repository`. `noisefloor` is also a path dev-dependency of the
@@ -164,24 +155,17 @@ three endings below) and `/examples` can join the list without costing anything.
 
 ## Where nice-tuner fits
 
-It is a member now, and it declares its terms in one inherited line —
-`license.workspace = true` — so the plugin and the engine say the same thing in
-two places rather than two things in one. That inheritance is opt-in, exactly as
-above: a package that does not ask declares nothing.
+Nice Tuner declares MIT OR Apache-2.0 metadata by inheriting the workspace
+field. Its dependencies and embedded assets retain their applicable terms;
+metadata inheritance is not evidence of their ownership or permission scope.
+The plugin depends on the engine by path rather than through a vendored copy.
 
-The arrangement this section was written against is the one it came from: a
-vendored copy of the engine inside a crate declaring `MIT OR Apache-2.0`, while
-the engine declared nothing at all. That is how a wrong licence gets shipped —
-not by decision, but by adjacency. The copy is gone; the plugin depends on the
-engine by path, so there is one copy of each file with one set of terms, and no
-tarball can pick up the engine under a licence the engine never granted.
-
-What the plugin takes out of `assets/` is one font, Fira Code, under the SIL Open
-Font Licence — a licence that permits embedding on the condition that its text
-travels with the font. The engine's sprites, maps and audio stay all rights
-reserved and do not appear in the plugin or its bundles; the bundler does not yet
-carry the OFL text at all, which is recorded against `nice-tuner/src/gui.rs`
-rather than assumed.
+Fira Code is separately licensed under the SIL Open Font License. Its licence
+and copyright notice must accompany redistribution as required by those terms.
+Game sprites, maps and audio are outside the intended plugin release contents;
+their rights and provenance must be assessed individually rather than described
+collectively as owned by this project. The release packaging below includes the
+font notices; that does not resolve provenance gaps elsewhere in the repository.
 
 The family's second embedded font, the Fluent System Icons face its panels draw
 their glyphs from, belongs to `nice-common`: that package's `assets/fonts/` holds
@@ -192,3 +176,80 @@ which no manifest could record as a dependency — an asset seven editors share 
 not one plugin's property. The bundler ships the MIT text into every bundle the
 workspace builds, for the same reason as the OFL text: all eight editors embed the
 font, so all their distributions carry the permission.
+
+## Plugin and standalone release notices
+
+`cargo xtask bundle` keeps the small project MIT/Apache, Fira Code OFL and Fluent
+System Icons MIT texts in directory bundles' `Contents/Resources` (or beside
+single-file CLAP exports), together with inspiration and non-affiliation notes.
+Nice NAM also carries its dependency's upstream NOTICE. The original copy in
+`nice-nam/NOTICE.txt` matches both currently pinned engine versions.
+
+The large third-party collection is **shared per download**, not embedded in
+every executable or repeated inside every plugin. It consists of:
+
+- `THIRD-PARTY-NOTICES.txt`: original legal texts and selected standard terms,
+  deduplicating identical content while preserving attribution/source pointers.
+- `DEPENDENCIES.tsv`: exact versions, declared/selected terms, target, source
+  download URLs, repositories and authors (not inferred copyright holders).
+- `MPL-SOURCES.txt`: exact-version source locations for the unmodified MPL
+  components. Source code is not bundled; recipients receive a route to the
+  corresponding covered source under MPL-2.0.
+
+Build a complete download containing the selected plugin formats, standalone
+applications and rack, with one shared notice set:
+
+```sh
+cargo xtask package-release -p nice-tuner -p nice-nam -p nice-dist -p nice-phase \
+  -p nice-clone -p nice-echo -p nice-ecomplex -p nice-wah -p nice-pi-face \
+  -p nice-rack --release --target aarch64-apple-darwin --locked
+```
+
+Use the required target triple explicitly (also for native builds), so a local
+Cargo configuration cannot cause a different dependency inventory. Windows uses
+`x86_64-pc-windows-msvc`; the Linux NAM engine requires the documented per-command
+`RUSTFLAGS="-Ctarget-cpu=x86-64-v3"` with `x86_64-unknown-linux-gnu`. Do not add that
+flag globally. Rust targets, native system libraries and macOS codesigning tools
+must be available on the build host. This is packaging, not cross-linking support.
+
+Output is under the actual Cargo target directory:
+`downloads/frost-nice-<target>/` and `downloads/frost-nice-<target>.tar.gz`.
+Only the selected current builds enter it. Small notices remain inside directory
+plugins; standalones and single-file plugins share the top-level texts. NAM's
+upstream notice is also present at the download root when NAM is selected.
+
+The archive is read back and required texts compared byte for byte. Settings,
+models, cabinet WAVs, artwork, source files and OS droppings are rejected by the
+release asset policy. The Python checker additionally verifies archive layout,
+MPL source pointers, one shared notice collection and hashes/origins of the
+reviewed legal texts:
+
+```sh
+python nice-tuner/xtask/scripts/check-release-licenses.py \
+  target/downloads/frost-nice-aarch64-apple-darwin.tar.gz
+```
+
+`cargo xtask package-standalone -p nice-tuner -p nice-nam -p nice-rack --release`
+still stages per-application executable directories with small notices under
+`packaged/`; the large collection is shared at `packaged/`, not repeated in each
+application. These staging directories are not independent complete downloads:
+use `package-release` with one selected package if offering separate downloads.
+Likewise direct `bundle` leaves its shared collection beside the bundle set.
+
+For notice validation without compilation use `cargo xtask release-notices -p
+nice-nam --features nice-nam/standalone --target <triple> --locked`. The native
+default is accepted for this inspection command; configured cross-builds must
+name the target explicitly. Universal bundles collect both macOS architectures.
+Build different targets sequentially or use separate target directories.
+
+`release-licenses.yml` checks legal-text provenance, failure-case unit tests and
+metadata inventories for macOS, Windows and Linux. The final downloadable archive
+is checked by the packaging command itself; CI also needs to invoke the Python
+checker on archives it publishes. Publishing/tag-triggered binary workflows are
+not installed by these notice checks.
+
+See [the provenance collection](third-party-licenses/README.md) for scope and
+upstream omissions. These checks do not establish title to third-party material,
+resolve SDK/patent/trademark questions, or replace review of any added native
+redistributable. Mozilla's [MPL FAQ question 8](https://www.mozilla.org/en-US/MPL/2.0/FAQ/)
+explains the source-location duty for executables built from unchanged code.

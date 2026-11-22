@@ -425,7 +425,8 @@ impl ClapPlugin for PhasePlugin {
     const CLAP_ID: &'static str = "com.frost.nice-phase";
     const CLAP_DESCRIPTION: Option<&'static str> =
         Some("The family's four-stage phaser, five settings and all");
-    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_MANUAL_URL: Option<&'static str> =
+        Some("https://github.com/perlindgren/frost/blob/main/docs/plugin-inspiration.md");
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::AudioEffect, ClapFeature::Phaser];
 }

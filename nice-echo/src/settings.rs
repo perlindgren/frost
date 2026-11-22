@@ -1,4 +1,4 @@
-//! Standalone Nice Echo preferences, kept in the same file as the audio
+//! Standalone Nice Brain Lag Multi preferences, kept in the same file as the audio
 //! settings.
 //!
 //! The nine controls are what the standalone remembers between runs. Each is

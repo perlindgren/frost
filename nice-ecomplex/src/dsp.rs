@@ -1,43 +1,16 @@
-//! Ecomplex's tape path: a tube-style front end feeding one drum-driven tape
-//! loop with one playback head, in the shape of the Binson Echoplex — the
-//! machine by Binson & Cerrone (France) that this crate models, the Echo
-//! Drive of 1964 developed into the T.E.C. around 1970. Nothing here is a
-//! reproduction of that machine: no schematic was consulted, nothing was
-//! measured, and the numbers below are a player's model of how the machine
-//! behaves, not its electrical behaviour.
-//!
-//! The machine is mono — one source on the tape, one output — and so is
-//! this model: mono in, mono out, with the signal entering the front end
-//! at unity. Making a stereo signal mono, or a mono one stereo, is the
-//! host's work, not the tape's.
-//!
-//! What the talk around the machine agrees on, and this model follows:
-//!
-//! * One motor turns one drum; the **Delay Time** knob changes the tape
-//!   *speed*, so a longer delay is literally slower tape — and slower tape
-//!   wobbles more. Delay and flutter are the same control, not two. (The
-//!   Roland RE-201 later did the same trick; both differ from fixed-head
-//!   designs that select delay by picking a head.)
-//! * One playback head on the drum (longer loops and the rarer two-head
-//!   variants are exactly that: variants). There is no mode switch, no bank
-//!   of patterns, and no spring tank anywhere in the machine.
-//! * A **Recount** control feeds the echo back toward the record head, up to
-//!   self-oscillation. A **Timbre** control shapes the tone. An **Echo
-//!   Volume** (often just *Volume* on the panel) sets the level of the
-//!   repeats against a dry signal that is **always present** — the machine
-//!   has no wet/dry crossfade and no dry-kill.
-//! * A tube front end (the familiar 12AX7 stage) with its own microphone
-//!   input: a hi-fi input by the standards of 1964, but one that softens —
-//!   gently compresses, then soft-clips — when driven hard. The machine to
-//!   compare it with on this point is its own solid-state successor, the
-//!   RE-201, which does not do this.
+//! Ecomplex's original tape-delay approximation: a tube-style saturator,
+//! one delay tap, feedback tone filtering and speed-linked modulation.
+//! No particular commercial counterpart is claimed. The controls and A-1..A-7
+//! are design choices, not verified hardware specifications. The Binson
+//! Echorec is discussed only as early related work in the reference notes;
+//! this DSP does not replicate its magnetic drum or head arrangement.
+//! See docs/plugin-inspiration.md for provenance and limits.
 //!
 //! This model's own numbers are named assumptions, kept here where the code
 //! can cite them and carried into `README.md` where the reader can find them:
 //!
-//! * **A-1** — Delay range: 40 ms to 3 s on an exponential taper. The real
-//!   range came from the installed loop length and the speed range; only a
-//!   service sheet could say more.
+//! * **A-1** — Delay range: 40 ms to 3 s on an exponential taper, chosen
+//!   for this model rather than calibrated against a physical device.
 //! * **A-2** — The drum reference speed is 5 Hz at the fastest setting, and
 //!   the wow rate tracks the drum, so it *slows down* as the delay lengthens
 //!   (same motor, slower drum).
@@ -49,8 +22,8 @@
 //!   away on a real machine too, which clips instead of stopping. The
 //!   feedback-path soft limiter here stands in for that clipping.
 //! * **A-5** — The repeat band is one low-pass (300 Hz–12 kHz, exponential,
-//!   under Timbre) and one fixed 90 Hz high-pass. The machine's tone stage is
-//!   a real circuit; one-pole filters are this model's shorthand for it.
+//!   under Timbre) and one fixed 90 Hz high-pass. These are model design
+//!   choices rather than a verified reproduction of a hardware tone network.
 //! * **A-6** — The front-end curve is `x·(1+g)/(1+g·|x|)`: small signals see
 //!   a clean gain of `1+g`, `x = 1` passes unchanged, and the output ceiling
 //!   is `(1+g)/g`. `g` comes from COLOR squared (so the first half of the
@@ -59,7 +32,7 @@
 //!   front of it.
 //! * **A-7** — The wet taper is `Echo Volume² × 1.2`: a perceptually even
 //!   knob with a little more level at the top. The dry path beside it is
-//!   honest machine behaviour, not an assumption — it never fades out.
+//!   a design choice here — it never fades out.
 //!
 //! Honest debts this file states but does not repay: when the machine moves
 //! its TIME knob the tape speed changes, so the repeats audibly change pitch

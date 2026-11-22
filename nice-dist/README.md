@@ -1,10 +1,15 @@
 # Nice Dist
 
-A TS808/TS9/OD-1/SD-1/RAT/Centaur overdrive/distortion with a Frost editor, CLAP/VST3 exports and a standalone
-build using the same plugin processing implementation.
+Independent overdrive/distortion approximations with a Frost editor, CLAP/VST3
+exports and a standalone application. Models are **BS808**, **BS9**, **OH-1**, **SH-1**, **CAT**, and **Nice Clone**. They are inspired by the
+TS808, TS9, OD-1, SD-1, RAT and Klon Centaur respectively; no manufacturer
+affiliation or endorsement is claimed. The OS selector controls oversampling.
+See [inspiration, references and limits](../docs/plugin-inspiration.md).
 
-Drive, Tone and Level control the modeled circuit. The model selector switches
-between TS808, TS9, OD-1, SD-1, RAT and Nice Clone; the **OS** button cycles Off, 2x, 4x and 8x oversampling.
+Model indices, parameter IDs and numeric saved settings are unchanged. Historical
+names below identify reference hardware or earlier benchmark rows. Old host-text
+labels remain accepted on input; current output labels use the names above.
+
 8x is the default. Model/quality changes fade down over 64 host samples before
 reinitializing the circuit and resampler, then fade up over 64 samples. Controls
 are smoothed over approximately 10 ms, with network coefficients updated every
@@ -14,8 +19,7 @@ single mono input enters the circuit and a single mono output leaves; folding
 a stereo signal down, or widening the answer back out, is the host's work,
 not the pedal's. One circuit runs at the selected oversampling rate, and
 there is no second lane with state of its own.
-Existing TS808/TS9
-model indices are unchanged; SD-1 is appended as index 2 (standalone number 3).
+The saved model indices remain unchanged; SH-1 retains index 2 (standalone number 3).
 
 The host receives a constant 32-sample latency in every mode (0.667 ms at 48 kHz).
 Off adds an explicit 32-sample delay; the linear-phase up/down FIRs contribute
@@ -269,3 +273,12 @@ Historical timing tables above predate this sixth model.
 The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
 Plugin-specific view construction lives in `src/editor.rs`; standalone
 activation follows the shared activate/reset sequence.
+
+## Inspiration and non-affiliation
+
+These are independent frost projects, not products sponsored, approved or
+endorsed by the manufacturers or authors of referenced equipment. Third-party
+names identify sources and inspiration only; trademarks belong to their
+respective owners. An "inspired by" description does not claim an exact circuit,
+measured sonic match, or trademark clearance. See the shared
+[inspiration and reference notes](../docs/plugin-inspiration.md).

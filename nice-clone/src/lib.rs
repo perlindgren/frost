@@ -1,4 +1,4 @@
-//! Nice Clone: a component-based Centaur-style overdrive with a frost editor.
+//! Nice Clone: a component-based overdrive inspired by the Klon Centaur with a frost editor.
 #![deny(unsafe_code)]
 
 const BLOCK: usize = 128;
@@ -322,9 +322,11 @@ impl Plugin for ClonePlugin {
 
 impl ClapPlugin for ClonePlugin {
     const CLAP_ID: &'static str = "com.frost.nice-clone";
-    const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Component-based Centaur-style germanium overdrive");
-    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_DESCRIPTION: Option<&'static str> = Some(
+        "Independent germanium overdrive inspired by the Klon Centaur; no manufacturer affiliation",
+    );
+    const CLAP_MANUAL_URL: Option<&'static str> =
+        Some("https://github.com/perlindgren/frost/blob/main/docs/plugin-inspiration.md");
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] =
         &[ClapFeature::AudioEffect, ClapFeature::Distortion];

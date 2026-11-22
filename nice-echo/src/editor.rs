@@ -8,7 +8,7 @@ pub(crate) fn create(params: Arc<EchoParams>, shared: Arc<EchoSharedState>) -> E
     nice_plugin::Editor::new(
         shared.clone(),
         nice_plugin::WindowConfig {
-            title: "Nice Echo",
+            title: "Nice Brain Lag Multi",
             min_size: MIN_SIZE,
             resize_hint: RESIZE_HINT,
         },

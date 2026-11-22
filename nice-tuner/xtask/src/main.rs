@@ -3,24 +3,24 @@
 //! Native bundle assembly uses nice-plug-xtask public APIs. This wrapper keeps
 //! nested worktrees in their own workspace and ships embedded font licences.
 
+mod archive;
+mod notices;
+mod release;
+mod standalone;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
 
-/// `src/gui.rs` embeds `assets/fonts/FiraCode-VariableFont_wght.ttf`, and OFL 1.1
-/// permits that on the condition that its licence text travels with the font. The
-/// embedded font is the awkward case precisely because it succeeds: the font never
-/// appears as a file, so nothing ever reaches for its licence — and a bundle from
-/// `nice-plug-xtask` 0.1.1 contains the binary and nothing else, because that step
-/// does not exist upstream. This puts the text where a distributor meets it rather
-/// than remembers it.
-///
-/// Both texts go into every bundle this workspace builds, whichever plugin was
-/// named on the command line, because every editor embeds both fonts: Fira Code
-/// from the repository's `assets/fonts/`, and the icon font now held by
-/// `nice-common` and handed out by `nice_common::fonts::icon_font()`.
-const FONT_LICENCES: &[(&str, &str)] = &[
+/// Texts shipped with every plugin bundle and standalone release directory.
+/// Both fonts are embedded in the editors; their original notices must travel
+/// with the executable even though the font files are inside the binary.
+const COMMON_LICENCES: &[(&str, &str)] = &[
+    ("LICENSE-MIT", "LICENSE-MIT"),
+    ("LICENSE-APACHE", "LICENSE-APACHE"),
+    ("docs/plugin-inspiration.md", "PLUGIN-INSPIRATION.md"),
+    ("docs/NON-AFFILIATION.txt", "NON-AFFILIATION.txt"),
     ("assets/fonts/OFL.txt", "OFL.txt"),
     (
         "nice-common/assets/fonts/LICENSE-FluentSystemIcons.txt",
@@ -45,6 +45,25 @@ fn main() -> anyhow::Result<()> {
         .context("workspace manifest has no parent")?
         .to_path_buf();
     std::env::set_current_dir(&root).context("could not enter the Cargo workspace")?;
+    if std::env::args().nth(1).as_deref() == Some("package-release") {
+        return release::package(&root, &std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if std::env::args().nth(1).as_deref() == Some("package-standalone") {
+        return standalone::package(&root, &std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if std::env::args().nth(1).as_deref() == Some("release-notices") {
+        let (packages, args) = bundle_args(&std::env::args().skip(2).collect::<Vec<_>>())?;
+        let notices = notices::Notices::collect(&root, &packages, &args, &[])?;
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(root.join("Cargo.toml"))
+            .no_deps()
+            .exec()?;
+        let directory = metadata.target_directory.join("release-notices");
+        fs::create_dir_all(&directory)?;
+        notices.write(directory.as_std_path())?;
+        println!("Release notices: {directory}");
+        return Ok(());
+    }
     let bundling = matches!(
         std::env::args().nth(1).as_deref(),
         Some("bundle" | "bundle-universal")
@@ -54,52 +73,90 @@ fn main() -> anyhow::Result<()> {
     // reason to stop, not a reason to spend two minutes compiling and then mention
     // it. The bundler runs below without changing to an outer checkout.
     let licences = if bundling {
-        FONT_LICENCES
+        COMMON_LICENCES
             .iter()
             .map(|(source, name)| {
                 fs::read(root.join(source))
                     .map(|bytes| (*name, bytes))
-                    .with_context(|| format!("the embedded font licence '{source}' is missing"))
+                    .with_context(|| format!("the release licence '{source}' is missing"))
             })
             .collect::<anyhow::Result<Vec<_>>>()?
     } else {
         Vec::new()
     };
 
+    let nam_notice = if bundling {
+        Some(
+            fs::read(root.join("nice-nam/NOTICE.txt"))
+                .context("NAM's upstream NOTICE.txt is missing")?,
+        )
+    } else {
+        None
+    };
+    let third_party = if bundling {
+        let (packages, args) = bundle_args(&std::env::args().skip(2).collect::<Vec<_>>())?;
+        if std::env::args().nth(1).as_deref() == Some("bundle-universal") {
+            let mut combined: Option<notices::Notices> = None;
+            for target in ["x86_64-apple-darwin", "aarch64-apple-darwin"] {
+                let mut args = args.clone();
+                args.extend(["--target".into(), target.into()]);
+                let next = notices::Notices::collect(&root, &packages, &args, &[])?;
+                match &mut combined {
+                    None => combined = Some(next),
+                    Some(previous) => previous.merge(next),
+                }
+            }
+            combined
+        } else {
+            Some(notices::Notices::collect(&root, &packages, &args, &[])?)
+        }
+    } else {
+        None
+    };
     run_command(&root, std::env::args().skip(1).collect())?;
 
     let mut modified_bundles = std::collections::BTreeSet::new();
     for (name, licence) in licences {
-        modified_bundles.extend(ship_font_licence(&root, name, &licence)?);
+        modified_bundles.extend(ship_bundle_licence(&root, name, &licence)?);
+    }
+    if let Some(notice) = nam_notice {
+        modified_bundles.extend(ship_bundle_licence(&root, "NOTICE.txt", &notice)?);
+    }
+    if let Some(notices) = &third_party {
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(root.join("Cargo.toml"))
+            .no_deps()
+            .exec()?;
+        let bundled = metadata.target_directory.join("bundled");
+        notices.write(bundled.as_std_path())?;
     }
     // The public bundler signs during assembly. Resource writes invalidate
     // that seal, so sign again only after every licence has been installed.
-    for bundle in modified_bundles {
+    for bundle in &modified_bundles {
         if bundle.join("Contents/MacOS").is_dir() {
-            sign_and_verify(&bundle)?;
+            sign_and_verify(bundle)?;
         }
     }
     Ok(())
 }
 
-/// Write the font's licence text into every bundle just built.
+/// Write a common licence, or NAM's upstream notice, into matching bundles.
 ///
 /// Directory bundles (VST3 and macOS CLAP) carry notices in Contents/Resources.
 /// Single-file CLAP exports carry their notices beside the binary.
-fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<Vec<PathBuf>> {
-    // `nice-plug-xtask` resolves the real target directory through
-    // `cargo metadata`; this repeats the part of that rule a build here can hit. A
-    // `[build] target-dir` in a cargo config would land elsewhere, and that case
-    // becomes the error below rather than a silence.
-    let bundled = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("target"))
-        .join("bundled");
+fn ship_bundle_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<Vec<PathBuf>> {
+    let metadata = cargo_metadata::MetadataCommand::new()
+        .manifest_path(root.join("Cargo.toml"))
+        .no_deps()
+        .exec()?;
+    let bundled = metadata.target_directory.join("bundled");
+    ship_licence(bundled.as_std_path(), name, licence)
+}
 
-    let entries = fs::read_dir(&bundled).with_context(|| {
+fn ship_licence(bundled: &Path, name: &str, licence: &[u8]) -> anyhow::Result<Vec<PathBuf>> {
+    let entries = fs::read_dir(bundled).with_context(|| {
         format!(
-            "no bundle directory at '{}'; a `[build] target-dir` set in a cargo config is not \
-             followed by this step",
+            "no bundle directory at '{}' after bundling",
             bundled.display()
         )
     })?;
@@ -113,6 +170,9 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        if name == "NOTICE.txt" && path.file_stem().and_then(|s| s.to_str()) != Some("Nice NAM") {
+            continue;
+        }
         if path.is_dir() && (bundle_name.ends_with(".vst3") || bundle_name.ends_with(".clap")) {
             let target = path.join("Contents").join("Resources").join(name);
             let dir = target
@@ -121,7 +181,7 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
             fs::create_dir_all(dir)?;
             fs::write(&target, licence)?;
             println!(
-                "Added the font licence to the plugin bundle at '{}'",
+                "Added the licence/notice to the plugin bundle at '{}'",
                 target.display()
             );
             modified.push(path);
@@ -133,10 +193,14 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
 
     if single_file_bundles > 0 {
         // One copy per bundle directory rather than per plugin: same font, same text.
-        let target = bundled.join(name);
+        let target = bundled.join(if name == "NOTICE.txt" {
+            "NOTICE-NeuralAmpModeler-rs.txt"
+        } else {
+            name
+        });
         fs::write(&target, licence)?;
         println!(
-            "Added the font licence at '{}' — a CLAP is a single file, so this text travels in \
+            "Added the licence/notice at '{}' — a CLAP is a single file, so this text travels in \
              whatever archive carries it",
             target.display()
         );
@@ -146,9 +210,9 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
     // `nice-plug-xtask::main` returned Ok, so it built something. If none of it is
     // here, the reasoning above is wrong, and the last thing this step should do is
     // say nothing.
-    if written == 0 {
+    if written == 0 && name != "NOTICE.txt" {
         bail!(
-            "bundling succeeded but no `.vst3` or `.clap` was found in '{}', so the font licence \
+            "bundling succeeded but no `.vst3` or `.clap` was found in '{}', so the licence \
              went nowhere",
             bundled.display()
         );
@@ -251,6 +315,63 @@ fn bundle_args(args: &[String]) -> anyhow::Result<(Vec<String>, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    pub(super) struct Scratch(pub PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    pub(super) fn scratch() -> Scratch {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "frost-release-notices-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        Scratch(path)
+    }
+    #[test]
+    fn bundle_notices_cover_both_layouts_without_attributing_other_plugins_to_nam() {
+        let scratch = scratch();
+        let dir = &scratch.0;
+        fs::create_dir(dir.join("Nice NAM.vst3")).unwrap();
+        fs::create_dir(dir.join("Nice Echo.clap")).unwrap();
+        fs::write(dir.join("Nice NAM.clap"), b"plugin").unwrap();
+        fs::write(dir.join("Nice Tuner.clap"), b"plugin").unwrap();
+        for (_, name) in COMMON_LICENCES {
+            ship_licence(dir, name, name.as_bytes()).unwrap();
+            for product in ["Nice NAM.vst3", "Nice Echo.clap"] {
+                assert_eq!(
+                    fs::read(dir.join(product).join("Contents/Resources").join(name)).unwrap(),
+                    name.as_bytes()
+                );
+            }
+            assert_eq!(fs::read(dir.join(name)).unwrap(), name.as_bytes());
+        }
+        let modified = ship_licence(dir, "NOTICE.txt", b"nam attribution").unwrap();
+        assert_eq!(modified, [dir.join("Nice NAM.vst3")]);
+        assert_eq!(
+            fs::read(dir.join("Nice NAM.vst3/Contents/Resources/NOTICE.txt")).unwrap(),
+            b"nam attribution"
+        );
+        assert!(!dir
+            .join("Nice Echo.clap/Contents/Resources/NOTICE.txt")
+            .exists());
+        assert_eq!(
+            fs::read(dir.join("NOTICE-NeuralAmpModeler-rs.txt")).unwrap(),
+            b"nam attribution"
+        );
+    }
+    #[test]
+    fn nam_notice_is_not_added_to_a_release_containing_only_other_plugins() {
+        let scratch = scratch();
+        fs::write(scratch.0.join("Nice Tuner.clap"), b"plugin").unwrap();
+        assert!(ship_licence(&scratch.0, "NOTICE.txt", b"nam")
+            .unwrap()
+            .is_empty());
+        assert!(!scratch.0.join("NOTICE-NeuralAmpModeler-rs.txt").exists());
+    }
     #[test]
     fn package_selection_keeps_cargo_build_options_intact() {
         let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();

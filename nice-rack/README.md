@@ -372,3 +372,12 @@ Remaining boundaries from the threading audit:
 
 No new unsafe operations or dependency changes are required by the shutdown
 queue. Windows visibility repair uses the existing project-owned Win32 boundary.
+
+## Inspiration and non-affiliation
+
+These are independent frost projects, not products sponsored, approved or
+endorsed by the manufacturers or authors of referenced equipment. Third-party
+names identify sources and inspiration only; trademarks belong to their
+respective owners. An "inspired by" description does not claim an exact circuit,
+measured sonic match, or trademark clearance. See the shared
+[inspiration and reference notes](../docs/plugin-inspiration.md).

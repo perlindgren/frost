@@ -1,4 +1,4 @@
-//! The Nice Echo editor view.
+//! The Nice Brain Lag Multi editor view.
 //!
 //! **This is the family's face, worn by this machine.** It gives every control
 //! a place on screen and a readout, so the plugin, its parameters, the host's
@@ -712,7 +712,7 @@ impl Process for EchoUi {
             return;
         }
         let Some(params) = self.params.clone() else {
-            self.text(ctx, 0.0, 0.0, "NICE ECHO".into(), 24.0, MUTED);
+            self.text(ctx, 0.0, 0.0, "NICE BRAIN LAG MULTI".into(), 24.0, MUTED);
             return;
         };
         let (w, h) = ctx.size();
@@ -871,7 +871,7 @@ impl Process for EchoUi {
 
         // ---- drawing, back to front ----
         let title_size = 21.0 * fit;
-        let title = "NICE ECHO";
+        let title = "NICE BRAIN LAG MULTI";
         let title_w = self.text_width(ctx, title, title_size);
         self.text(
             ctx,

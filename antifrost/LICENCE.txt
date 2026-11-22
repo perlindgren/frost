@@ -1,0 +1,52 @@
+Antifrost (Ember Hill) — copyright and rights reservation
+
+Copyright in original game material belongs to its respective copyright
+holders. All rights reserved, subject to the exceptions below.
+
+Scope
+
+This notice applies only to copyright interests held by the game's authors
+or other persons who have authorised this reservation, in the original game
+code, artwork, audio, text and other original material in this directory.
+It does not assert that those persons own every file or every part of a file.
+
+The repository's MIT and Apache-2.0 licences for the Frost engine do not,
+merely by their presence at the repository root, license this original game
+material. Conversely, this notice does not restrict the Frost engine or any
+other separately licensed component.
+
+Reservation of rights
+
+Except where permission already exists under a separate licence, an earlier
+valid grant, applicable law or the hosting platform's applicable terms, no
+permission to reproduce, modify, distribute, sell, sublicense or otherwise
+exploit the covered material is granted by this notice. Availability of the
+source does not by itself grant such permission. For additional permissions,
+contact the relevant copyright holder through the repository maintainers.
+
+Third-party material and existing permissions
+
+Dependencies, fonts, artwork, sounds and other third-party material remain
+subject to their own applicable licences and rights. Their copyright holders
+retain their rights. This notice neither replaces those terms nor narrows
+permissions they grant, including permissions to redistribute qualifying
+components separately from the game.
+
+In particular, Frost remains available under MIT OR Apache-2.0, and Fira Code
+remains subject to the SIL Open Font License in ../assets/fonts/OFL.txt.
+See ../docs/licensing.md for the current provenance ledger and known gaps.
+An absent attribution or an incomplete provenance record is not a claim of
+ownership or an assertion of permission to use or distribute that material.
+
+This notice does not revoke or narrow any valid licence previously granted
+for any version of the material. It also does not restrict permissions to
+view or fork the repository granted under applicable hosting-platform terms.
+
+Statutory rights
+
+Nothing in this notice limits uses permitted by applicable law, mandatory
+user rights, or material outside copyright protection. It asserts no
+exclusive copyright over ideas, game rules, methods or public-domain material.
+
+This is a statement of copyright scope and reserved rights, not a complete
+end-user licence agreement or a warranty of ownership of third-party assets.

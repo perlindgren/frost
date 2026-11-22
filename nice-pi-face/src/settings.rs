@@ -1,4 +1,4 @@
-//! Standalone Pi-Fase preferences, kept in the same file as the audio
+//! Standalone Pi Face preferences, kept in the same file as the audio
 //! settings.
 //!
 //! The fourteen parameters are what the standalone remembers between runs. Each

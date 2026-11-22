@@ -61,7 +61,7 @@ impl Knob {
                 Self::Output => "OUTPUT",
             };
         }
-        if model == Variant::Rat {
+        if model == Variant::Cat {
             return match self {
                 Self::Drive => "DISTORTION",
                 Self::Tone => "FILTER",
@@ -277,7 +277,7 @@ impl DistUi {
             ctx,
             0.0,
             -30.0 * fit,
-            "TS808 / TS9 / OD-1 / SD-1 / RAT / CLONE — oversampled circuit models.".into(),
+            "BS808 / BS9 / OH-1 / SH-1 / CAT / CLONE — oversampled circuit models.".into(),
             12.0 * fit,
             MUTED,
         );
@@ -666,6 +666,19 @@ impl Process for DistUi {
             11.0 * fit,
             MUTED,
         );
+        if hover == Some(Hover::Variant) && !self.variant_open {
+            let model = self.variant(&params);
+            nice_common::tooltip::draw(
+                ctx,
+                &self.font,
+                &format!(
+                    "{}: inspired by {}. Independent; no affiliation.",
+                    model.label(),
+                    model.inspiration()
+                ),
+                fit,
+            );
+        }
         // Shared selector draws last and owns all pointer/wheel input while open.
         if self.variant_open {
             let items: Vec<_> = Variant::ALL

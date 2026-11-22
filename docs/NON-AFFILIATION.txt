@@ -1,0 +1,11 @@
+The frost nice-* plugins and standalone applications are independent projects.
+They are not affiliated with, sponsored, approved, or endorsed by the
+manufacturers of the equipment or the authors of the third-party projects
+referenced in their documentation.
+
+Third-party names and marks identify reference equipment, sources, inspiration,
+or compatibility only. They remain the property of their respective owners.
+Our model names and "inspired by" descriptions do not claim trademark clearance,
+manufacturer approval, an exact circuit reproduction, or a measured sonic match.
+See PLUGIN-INSPIRATION.md for the source mapping, references, and limitations.
+This statement does not replace any third-party software license or attribution.

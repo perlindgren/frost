@@ -251,16 +251,16 @@ in [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE), and
 [assets/fonts/OFL.txt](assets/fonts/OFL.txt) carries the SIL Open Font License
 under which Fira Code is redistributed.
 
-What is built *with* the engine is not free in the same way. `antifrost/` and
-`immortal/` are the games, and they are under no licence: all rights reserved,
-deliberately not inheriting the workspace terms, so "the engine is open" and "a
-game built on it is open" are separate decisions. `immortal/` was an example
-*target* of the engine's own package until 2026-10-29, which meant the only
-licence statement anywhere near it was a claim about a crate it was not; as a
-package it names no `license`, and naming nothing is how a manifest says all
-rights reserved. The art follows the same split — 78 files live in
-`immortal/assets/`, the ten the engine's examples draw as well stayed at the
-repository root, and both homes are addressed by the same keys.
+The games have separate rights notices: [Antifrost (Ember Hill)](antifrost/LICENCE.txt)
+and [Immortal](immortal/LICENCE.txt). These reserve rights only in original
+material covered by those notices, while preserving third-party licences,
+earlier valid grants and statutory rights. The engine's open-source licences
+do not automatically license a game built with it. Conversely, the game notices
+do not restrict the engine or other separately licensed components.
+
+Cargo licence metadata and package boundaries describe the intended separation;
+they do not establish ownership or revoke existing permissions. Shared assets
+require their own provenance and permission checks.
 
 [docs/licensing.md](docs/licensing.md) is the ledger: which package carries
 which terms, which assets the engine shares with the games, and what is still

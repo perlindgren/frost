@@ -11,7 +11,7 @@ pub(crate) fn create(
     nice_plugin::Editor::new(
         shared.clone(),
         nice_plugin::WindowConfig {
-            title: "Nice Ecomplex",
+            title: "Nice Brain Lag Tube",
             min_size: MIN_SIZE,
             resize_hint: RESIZE_HINT,
         },
