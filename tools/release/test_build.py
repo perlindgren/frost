@@ -9,7 +9,8 @@ class WindowsDependencies(unittest.TestCase):
                          {'KERNEL32.dll', 'USER32.dll'})
 
     def test_system_imports(self):
-        check_windows_imports({'KERNEL32.dll', 'api-ms-win-core-synch-l1-2-0.dll'})
+        check_windows_imports({'KERNEL32.dll', 'bcryptprimitives.dll',
+                               'BCRYPTPRIMITIVES.DLL', 'api-ms-win-core-synch-l1-2-0.dll'})
 
     def test_dynamic_runtime_rejected(self):
         for dll in ('VCRUNTIME140.dll', 'MSVCP140.dll', 'ucrtbase.dll',

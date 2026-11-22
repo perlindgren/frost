@@ -28,8 +28,10 @@ def windows_imports(output):
 
 def check_windows_imports(imports):
     # OS components remain dynamic; third-party runtimes must not be required.
+    # BCryptPrimitives is the built-in Windows ProcessPrng provider:
+    # https://learn.microsoft.com/en-us/windows/win32/seccng/processprng
     system = set('kernel32 user32 gdi32 gdi32full advapi32 ole32 oleaut32 shell32 '
-                 'shlwapi uuid ws2_32 bcrypt ncrypt crypt32 secur32 winmm imm32 '
+                 'shlwapi uuid ws2_32 bcrypt bcryptprimitives ncrypt crypt32 secur32 winmm imm32 '
                  'comdlg32 comctl32 dwmapi dwrite d2d1 d3d11 d3d12 dxgi dxguid '
                  'opengl32 version setupapi cfgmgr32 avrt propsys winspool winhttp '
                  'wininet dbghelp psapi powrprof hid usp10 msimg32 uxtheme ntdll '
