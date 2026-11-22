@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
             flags: '-Ctarget-cpu=apple-m1'
           - runner: windows-2025
@@ -44,6 +44,14 @@ jobs:
           python-version: '3.x'
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
+      - name: Select the Microsoft linker explicitly
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/link.exe'
+          if (!(Test-Path $linker)) { throw "Microsoft linker not found: $linker" }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+          Write-Host "Cargo linker: $linker"
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -53,15 +61,17 @@ jobs:
         with:
           key: release-${{ matrix.target }}-${{ matrix.flags }}
           workspaces: '. -> target/release-ci'
-      - name: Test packaging and verify legal evidence
-        shell: bash
-        run: |
-          set -euo pipefail
-          python nice-tuner/xtask/scripts/check-release-licenses.py
-          python -m unittest discover -s tools/release -p 'test_*.py'
-          cargo test -p xtask --locked
+      - name: Verify legal evidence
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+        run: python nice-tuner/xtask/scripts/check-release-licenses.py
+      - name: Test dependency inspection
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+        run: python -m unittest discover -s tools/release -p 'test_*.py'
+      - name: Test packaging
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+        run: cargo test -p xtask --locked
       - name: Build and verify release downloads
-        shell: bash
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         env:
           RELEASE_TARGET: ${{ matrix.target }}
         run: python tools/release/build.py
