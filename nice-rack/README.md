@@ -358,9 +358,15 @@ Remaining boundaries from the threading audit:
   isolation; moving the call to an arbitrary Rust thread is not a valid fix.
 - Device opening and stream release already use workers. The DSP path remains
   serial, and graph changes occur after cooperative block-boundary shutdown.
-- Linux/XWayland editor-loop startup and frame creation still have synchronous
-  waits, each bounded at ten seconds. Converting these needs a separate pending
-  window-request state machine; these waits have not been removed here.
+- Linux/XWayland editor-loop startup and frame creation are pending requests,
+  polled once per UI tick with ten-second deadlines. Native plugin attachment
+  still runs on the main thread after the hidden frame is ready. Removing a
+  card or closing the rack cancels pending frames; a cancelled or late startup
+  reply shuts down its loop. Cancelled frame cleanup is ordered after creation
+  and before a replacement request, so it cannot close a replacement editor.
+  Synchronous startup/open helpers remain only in explicit integration tests.
+  Xlib notification and native API calls themselves can still enter system code;
+  asynchronous replies remove host-side channel waits, not that boundary.
 - Offline host probe/render helpers synchronously service and wait for their
   workers. The live rack does not invoke these helpers for audio processing.
 

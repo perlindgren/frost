@@ -7,6 +7,8 @@ use winit::{
     event_loop::ActiveEventLoop,
     window::{Window, WindowId},
 };
+#[cfg(any(target_os = "linux", test))]
+mod request;
 #[cfg(target_os = "linux")]
 mod x11;
 /// The frame an editor hangs from.
@@ -53,6 +55,10 @@ pub(crate) struct Windows {
     /// at the next asking rather than remembered as broken.
     #[cfg(target_os = "linux")]
     x11: Option<x11::Service>,
+    #[cfg(target_os = "linux")]
+    x11_starting: Option<request::Request<x11::Service>>,
+    #[cfg(target_os = "linux")]
+    x11_pending: BTreeMap<NodeId, x11::OpenRequest>,
     /// Whether frost's window is a Wayland surface, read once from its own
     /// handle. `None` means not yet looked.
     #[cfg(target_os = "linux")]
@@ -115,8 +121,14 @@ impl Windows {
     /// rebuild does not bring it back. The window belongs to the caller, and by
     /// the time this runs it is gone.
     fn forget(&mut self, id: NodeId) {
+        #[cfg(target_os = "linux")]
+        self.x11_pending.remove(&id);
         self.wanted.retain(|wanted| *wanted != id);
         self.pending.retain(|pending| *pending != id);
+        #[cfg(target_os = "linux")]
+        if self.wanted.is_empty() && self.x11.is_none() {
+            self.x11_starting = None;
+        }
     }
     /// Take a frame down without giving up on the editor. The plugin its editor
     /// was drawn by is gone; the card that names that plugin is still in the rack,
@@ -200,6 +212,11 @@ impl Windows {
         }
     }
     pub fn close(&mut self, runtime: &mut Runtime) {
+        #[cfg(target_os = "linux")]
+        {
+            self.x11_pending.clear();
+            self.x11_starting = None;
+        }
         self.capture(runtime);
         if let Some(session) = &mut runtime.session {
             session.close_editors();
@@ -435,10 +452,28 @@ impl Windows {
         runtime: &mut Runtime,
     ) -> Result<(), String> {
         if self.x11.is_none() {
-            self.x11 = Some(x11::Service::start()?);
+            let pending = self.x11_starting.get_or_insert_with(x11::Service::begin);
+            match pending.poll() {
+                Ok(Some(service)) => {
+                    self.x11 = Some(service);
+                    self.x11_starting = None;
+                }
+                Ok(None) => return Ok(()),
+                Err(error) => {
+                    self.x11_starting = None;
+                    return Err(error);
+                }
+            }
         }
         let service = self.x11.as_ref().ok_or("the X11 editor loop is gone")?;
-        let opened = service.open(id, title, saved.and_then(|g| g.position))?;
+        let pending = self
+            .x11_pending
+            .entry(id)
+            .or_insert_with(|| service.begin_open(id, title, saved.and_then(|g| g.position)));
+        let Some(opened) = pending.poll()? else {
+            return Ok(());
+        };
+        self.x11_pending.remove(&id);
         // The frame's own scale, not the main window's: these are different
         // outputs as far as XWayland is concerned.
         let size = saved.map(|g| {
@@ -471,6 +506,11 @@ impl Windows {
         for event in events {
             match event {
                 x11::WorkerEvent::Resized { id, size, scale } => {
+                    // A hidden frame can emit configuration events before the
+                    // pending reply has been attached to a plugin.
+                    if !matches!(self.windows.get(&id), Some(Frame::X11(_))) {
+                        continue;
+                    }
                     if let Some(Frame::X11(frame)) = self.windows.get_mut(&id) {
                         frame.inner = size;
                         frame.scale = scale;

@@ -42,8 +42,9 @@
 //! X connection dies mid-session, Xlib ends the process, as it does for
 //! every other X11 client.
 
+use super::request::{Cancellable, Request};
 use crate::routing::NodeId;
-use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
+use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CString, c_int, c_ulong};
 use std::ptr::{self, NonNull};
@@ -134,54 +135,72 @@ pub(crate) struct Service {
 }
 
 impl Service {
-    /// Start the loop, waiting for it to say it is up. An editor is opened on
-    /// the strength of that answer, so a machine without XWayland should hear
-    /// why now rather than watch a click do nothing.
-    pub(crate) fn start() -> Result<Self, String> {
+    /// Start connection setup on its owner thread; the UI only polls the reply.
+    pub(crate) fn begin() -> Request<Self> {
         let (commands_tx, commands_rx) = crossbeam::channel::unbounded();
         let (ready_tx, ready_rx) = crossbeam::channel::bounded(1);
         let (events_tx, events_rx) = crossbeam::channel::unbounded();
-        std::thread::spawn(move || run(commands_rx, events_tx, ready_tx));
-        match ready_rx.recv_timeout(WAIT) {
-            Ok(Ok(connection)) => Ok(Self {
-                commands: commands_tx,
-                connection,
-                events: events_rx,
-            }),
-            Ok(Err(error)) => Err(format!("The X11 editor loop could not start: {error}")),
-            Err(RecvTimeoutError::Timeout) => Err(
-                "Opening plugin editors needs XWayland, and it did not answer in time".to_string(),
+        std::thread::spawn(move || run(commands_rx, commands_tx, events_tx, events_rx, ready_tx));
+        Request::new(
+            ready_rx,
+            WAIT,
+            "Opening plugin editors needs XWayland, and it did not answer in time",
+            "The X11 editor loop died before it started",
+        )
+    }
+    pub(crate) fn begin_open(
+        &self,
+        id: NodeId,
+        title: &str,
+        position: Option<[i32; 2]>,
+    ) -> OpenRequest {
+        let (reply, result) = crossbeam::channel::bounded(1);
+        self.send(Command::Open {
+            id,
+            reply,
+            title: title.to_string(),
+            position,
+        });
+        let commands = self.commands.clone();
+        let connection = self.connection.clone();
+        Cancellable::new(
+            Request::new(
+                result,
+                WAIT,
+                "The X11 editor loop did not answer in time",
+                "The X11 editor loop has stopped",
             ),
-            Err(RecvTimeoutError::Disconnected) => {
-                Err("The X11 editor loop died before it started".to_string())
+            move || {
+                // FIFO after Open, even if the frame appears after cancellation.
+                let _ = commands.send(Command::Close { id });
+                connection.notify();
+            },
+        )
+    }
+    // Synchronous convenience belongs only to explicit native integration tests.
+    #[cfg(test)]
+    pub(crate) fn start() -> Result<Self, String> {
+        let pending = Self::begin();
+        loop {
+            if let Some(service) = pending.poll()? {
+                return Ok(service);
             }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
-
-    /// Ask the loop for a frame for `id`, waiting for it to be built: the
-    /// plugin is attached to its handle right after, and the handle has to be
-    /// real by then.
+    #[cfg(test)]
     pub(crate) fn open(
         &self,
         id: NodeId,
         title: &str,
         position: Option<[i32; 2]>,
     ) -> Result<Opened, String> {
-        let (reply_tx, reply_rx) = crossbeam::channel::bounded(1);
-        self.send(Command::Open {
-            id,
-            reply: reply_tx,
-            title: title.to_string(),
-            position,
-        });
-        match reply_rx.recv_timeout(WAIT) {
-            Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => {
-                Err("The X11 editor loop did not answer in time".to_string())
+        let mut pending = self.begin_open(id, title, position);
+        loop {
+            if let Some(opened) = pending.poll()? {
+                return Ok(opened);
             }
-            Err(RecvTimeoutError::Disconnected) => {
-                Err("The X11 editor loop has stopped".to_string())
-            }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -239,26 +258,48 @@ impl Service {
     }
 }
 
+// A cancelled/late startup reply owns a Service too. Dropping it wakes and
+// quits the loop, including the race where its answer was already buffered.
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.quit();
+    }
+}
+
+pub(crate) type OpenRequest = Cancellable<Opened>;
+
 /// The loop's thread. It lives as long as the rack wants X11 frames and dies
 /// on `Quit`, which the rack sends only after every editor is closed.
 fn run(
     commands: Receiver<Command>,
+    command_sender: Sender<Command>,
     events: Sender<WorkerEvent>,
-    ready: Sender<Result<Arc<Connection>, String>>,
+    event_receiver: Receiver<WorkerEvent>,
+    ready: Sender<Result<Service, String>>,
 ) {
     let connection = match Connection::open() {
         Ok(connection) => Arc::new(connection),
         Err(error) => {
-            let _ = ready.send(Err(error));
+            let _ = ready.send(Err(format!("The X11 editor loop could not start: {error}")));
             return;
         }
     };
-    if ready.send(Ok(Arc::clone(&connection))).is_err() {
+    if ready
+        .send(Ok(Service {
+            commands: command_sender,
+            connection: connection.clone(),
+            events: event_receiver,
+        }))
+        .is_err()
+    {
         // The rack stopped waiting for this loop — it timed out while the
         // connection was being opened. Nobody will ever send a command here;
         // let the connection drop and go.
         return;
     }
+    // A one-shot reply sender must not survive into the event loop. Otherwise
+    // a buffered, cancelled Service could retain the very loop it must quit.
+    drop(ready);
     let mut pump = Loop {
         connection,
         windows: BTreeMap::new(),
