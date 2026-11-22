@@ -30,20 +30,37 @@ def check_windows_imports(imports):
     # OS components remain dynamic; third-party runtimes must not be required.
     # BCryptPrimitives is the built-in Windows ProcessPrng provider:
     # https://learn.microsoft.com/en-us/windows/win32/seccng/processprng
+    # ComBase provides Windows COM/WinRT activation APIs:
+    # https://learn.microsoft.com/en-us/windows/win32/api/roapi/nf-roapi-roregisteractivationfactories
     system = set('kernel32 user32 gdi32 gdi32full advapi32 ole32 oleaut32 shell32 '
                  'shlwapi uuid ws2_32 bcrypt bcryptprimitives ncrypt crypt32 secur32 winmm imm32 '
-                 'comdlg32 comctl32 dwmapi dwrite d2d1 d3d11 d3d12 dxgi dxguid '
+                 'combase comdlg32 comctl32 dwmapi dwrite d2d1 d3d11 d3d12 dxgi dxguid '
                  'opengl32 version setupapi cfgmgr32 avrt propsys winspool winhttp '
                  'wininet dbghelp psapi powrprof hid usp10 msimg32 uxtheme ntdll '
                  'rpcrt4 normaliz cabinet msvcrt mmdevapi windowscodecs runtimeobject '
                  'dcomp d3dcompiler_47 win32u msctf wintrust cryptbase msasn1 '
                  'dnsapi iphlpapi userenv netapi32 wtsapi32'.split())
-    for name in imports:
+    errors = []
+    for name in sorted(imports):
         stem = name.lower().removesuffix('.dll')
         if stem.startswith(('vcruntime', 'msvcp', 'ucrtbase', 'api-ms-win-crt')):
-            raise RuntimeError(f'Dynamic MSVC/UCRT runtime dependency: {name}')
+            errors.append(f'Dynamic MSVC/UCRT runtime dependency: {name}')
+            continue
         if stem not in system and not stem.startswith(('api-ms-win-', 'ext-ms-win-')):
-            raise RuntimeError(f'Unreviewed external DLL dependency: {name}')
+            errors.append(f'Unreviewed external DLL dependency: {name}')
+    if errors:
+        raise RuntimeError('\n'.join(errors))
+
+
+def check_windows_binaries(binaries):
+    errors = []
+    for name, imports in binaries:
+        try:
+            check_windows_imports(imports)
+        except RuntimeError as error:
+            errors.append(f'{name}:\n{error}')
+    if errors:
+        raise RuntimeError('Windows dependency verification failed:\n' + '\n'.join(errors))
 
 
 def main():
@@ -71,6 +88,7 @@ def main():
     output = Path(os.environ.get('CARGO_TARGET_DIR', 'target')) / 'downloads'
     directory = output / f'frost-nice-{target}'
     report = []
+    windows_binaries = []
     count = 0
     for path in sorted(directory.rglob('*')):
         if not path.is_file():
@@ -82,7 +100,7 @@ def main():
             imports = windows_imports(run('dumpbin', '/DEPENDENTS', str(path)))
             if not imports:
                 raise RuntimeError(f'Could not read PE imports: {path}')
-            check_windows_imports(imports)
+            windows_binaries.append((relative, imports))
             report.append(relative + ': ' + ', '.join(sorted(imports)))
         elif magic in (b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf'):
             # LC_ID_DYLIB is an identity, not an external dependency.
@@ -105,11 +123,11 @@ def main():
     # Nine plugins in two formats, plus ten standalone executables.
     if count != 28:
         raise RuntimeError(f'Expected 28 native binaries, inspected {count}')
+    print('\n'.join(report), flush=True)
+    check_windows_binaries(windows_binaries)
     archive = output / f'frost-nice-{target}.tar.gz'
     subprocess.run([sys.executable, 'nice-tuner/xtask/scripts/check-release-licenses.py',
                     str(archive)], cwd=ROOT, check=True)
-    # Keep inspection evidence in the workflow log (not mixed into legal notices).
-    print('\n'.join(report), flush=True)
     print(f'SHA256 {hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()} {archive.name}')
 
 
