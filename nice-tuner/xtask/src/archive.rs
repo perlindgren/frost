@@ -47,7 +47,7 @@ pub(super) fn create(
     if artifact.is_file() {
         // Single-file CLAP exports cannot contain their own notices.
         for (path, _) in &expected {
-            command.arg(path.strip_prefix(parent)?);
+            command.arg(member_name(path.strip_prefix(parent)?)?);
         }
     }
     let output = command
@@ -85,7 +85,7 @@ fn verify(archive: &Path, expected: &[(PathBuf, Vec<u8>)]) -> anyhow::Result<()>
         let output = Command::new("tar")
             .arg("-xOzf")
             .arg(archive)
-            .arg(name)
+            .arg(member_name(name)?)
             .output()?;
         if !output.status.success() || output.stdout != *bytes {
             bail!("archive notice missing or changed: {}", name.display());
@@ -93,9 +93,27 @@ fn verify(archive: &Path, expected: &[(PathBuf, Vec<u8>)]) -> anyhow::Result<()>
     }
     Ok(())
 }
+// Tar member names use forward slashes on every OS, unlike filesystem paths.
+fn member_name(path: &Path) -> anyhow::Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                parts.push(part.to_str().context("non-UTF-8 archive member")?);
+            }
+            _ => bail!("archive member must be relative: {}", path.display()),
+        }
+    }
+    let name = parts.join("/");
+    validate_entry(&name)?;
+    Ok(name)
+}
 fn validate_entry(name: &str) -> anyhow::Result<()> {
     let path = Path::new(name);
-    if path.is_absolute()
+    if name.is_empty()
+        || name.starts_with('/')
+        || name.contains(':')
+        || path.is_absolute()
         || name.contains('\\')
         || path.components().any(|c| {
             matches!(
@@ -124,7 +142,7 @@ mod tests {
     #[test]
     fn archives_are_read_back_and_missing_or_corrupted_notices_are_rejected() {
         let scratch = crate::tests::scratch();
-        let product = scratch.0.join("app");
+        let product = scratch.0.join("Nice app");
         fs::create_dir(&product).unwrap();
         fs::write(product.join("app"), b"binary").unwrap();
         let common = vec![("LICENSE-MIT", b"license".to_vec())];
@@ -134,18 +152,33 @@ mod tests {
         };
         notices.write(&product).unwrap();
         let archive = create(&product, &product, &common, &notices, None).unwrap();
+        // Joining creates native backslashes on Windows; selectors must still
+        // address the forward-slash member stored by tar.
+        let native = PathBuf::from("Nice app").join("LICENSE-MIT");
+        assert_eq!(member_name(&native).unwrap(), "Nice app/LICENSE-MIT");
+        verify(&archive, &[(native, b"license".to_vec())]).unwrap();
         assert!(verify(
             &archive,
-            &[(PathBuf::from("app/LICENSE-MIT"), b"wrong".to_vec())]
+            &[(PathBuf::from("Nice app/LICENSE-MIT"), b"wrong".to_vec())]
         )
         .is_err());
-        assert!(verify(&archive, &[(PathBuf::from("app/missing"), b"".to_vec())]).is_err());
+        assert!(verify(
+            &archive,
+            &[(PathBuf::from("Nice app/missing"), b"".to_vec())]
+        )
+        .is_err());
     }
     #[test]
     fn private_settings_unreviewed_assets_and_traversal_are_rejected() {
         for name in [
             "../escape",
             "/absolute",
+            "C:/absolute",
+            "C:relative",
+            r"app\windows-separator",
+            "app/../escape",
+            "app/file:stream",
+            "",
             "app/model.nam",
             "app/cab.wav",
             "app/nice-rack-settings.json",
