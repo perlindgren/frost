@@ -400,7 +400,7 @@ impl Windows {
                 }
                 self.close_window(node);
                 self.forget(node);
-                runtime.persist();
+                runtime.persist_document();
             }
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 let size = api_dimensions(window, *size);
@@ -515,7 +515,7 @@ impl Windows {
                     // `event`; the loop is told only after the plugin let go.
                     self.close_window(id);
                     self.forget(id);
-                    runtime.persist();
+                    runtime.persist_document();
                 }
             }
         }

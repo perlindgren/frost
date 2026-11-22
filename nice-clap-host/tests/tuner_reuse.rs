@@ -150,3 +150,47 @@ fn a_rebuilt_chain_keeps_the_instance_the_edit_did_not_touch() {
     );
     stop(&mut replaced, audio);
 }
+
+#[test]
+#[ignore = "requires NICE_RACK_TEST_CLAP pointing to a repository nice-tuner CLAP export"]
+fn state_capture_tracks_initial_queued_and_applied_parameter_changes() {
+    let path = std::env::var_os("NICE_RACK_TEST_CLAP").expect("Set NICE_RACK_TEST_CLAP");
+    // SAFETY: explicit opt-in to this repository's plugin export.
+    let entry = unsafe { Entry::load(std::path::Path::new(&path)).unwrap() };
+    let graph = chain();
+    let bindings = BTreeMap::from([(
+        NodeId(1),
+        Binding {
+            entry,
+            class: TUNER.into(),
+        },
+    )]);
+    let (mut session, audio) =
+        LiveSession::prepare(&graph, &bindings, 48000.0, BLOCK, &BTreeMap::new()).unwrap();
+    assert_eq!(session.dirty_instances(), vec![NodeId(1)]);
+    assert!(
+        session
+            .save_changed_states()
+            .unwrap()
+            .contains_key(&NodeId(1))
+    );
+    assert!(session.save_changed_states().unwrap().is_empty());
+    let mute = session
+        .parameters(NodeId(1))
+        .into_iter()
+        .find(|p| p.name == "Mute")
+        .unwrap();
+    // Capture before the audio side applies the queued event, then ensure the
+    // applied value still causes another capture rather than being lost.
+    session.set_parameter(NodeId(1), mute.id, 1.0).unwrap();
+    session.save_changed_states().unwrap();
+    let (audio, _) = block(audio);
+    assert_eq!(session.dirty_instances(), vec![NodeId(1)]);
+    let updated = session.save_changed_states().unwrap();
+    assert!(updated.contains_key(&NodeId(1)));
+    assert!(session.dirty_instances().is_empty());
+    assert_eq!(value(&mut session, mute.id), 1.0);
+    // Cached metadata must not cache the old parameter value.
+    assert_eq!(value(&mut session, mute.id), 1.0);
+    stop(&mut session, audio);
+}
