@@ -327,3 +327,42 @@ for further instrumentation. Standalone transport/resampler timing,
 processor-only timing, and new GUI timing displays are not yet connected; Frost's
 existing GUI diagnostics are unchanged. No third-party sources or versions were
 changed.
+
+### Shutdown and UI-thread boundaries
+
+Both normal DSP shutdown and audio-off plugin retirement are cooperative. The UI
+requests a stop and continues servicing the session, then joins only after the
+worker reports completion. Audio-off retirement keeps configuration changes busy
+until its worker finishes; close cannot destroy that session prematurely.
+
+If a runtime is unexpectedly dropped before its worker finishes, its session,
+editor parents, streams and worker handles enter a queue owned by the same UI
+thread. Later runtime ticks service that queue and destroy completed native
+instances on their owning thread. Drivers are released on a cleanup thread.
+There is no unconditional DSP join in Runtime::drop. If the UI thread exits
+with unfinished retirements, those resources are intentionally retained for
+process lifetime: a host cannot safely kill foreign code, unload it while it is
+executing, or move main-thread-only instances to a cleanup thread. This fallback
+is for forced teardown, not a replacement for close-and-poll. A future embedded
+rack must arrange continued retirement polling in its host event loop.
+
+Windows editor visibility repair now makes one scan per UI tick, for up to
+500 ms; it no longer sleeps on the UI thread while another GUI thread creates
+its child. The existing editor frame-pump thread is otherwise unchanged.
+
+Remaining boundaries from the threading audit:
+
+- Plugin loading/initialization, activation/deactivation, state serialization,
+  callbacks and native editor creation/destruction still call foreign code on
+  its required main thread. A hung plugin inside such a call needs process
+  isolation; moving the call to an arbitrary Rust thread is not a valid fix.
+- Device opening and stream release already use workers. The DSP path remains
+  serial, and graph changes occur after cooperative block-boundary shutdown.
+- Linux/XWayland editor-loop startup and frame creation still have synchronous
+  waits, each bounded at ten seconds. Converting these needs a separate pending
+  window-request state machine; these waits have not been removed here.
+- Offline host probe/render helpers synchronously service and wait for their
+  workers. The live rack does not invoke these helpers for audio processing.
+
+No new unsafe operations or dependency changes are required by the shutdown
+queue. Windows visibility repair uses the existing project-owned Win32 boundary.

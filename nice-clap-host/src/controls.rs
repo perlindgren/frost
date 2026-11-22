@@ -16,6 +16,17 @@ use raw_window_handle::RawWindowHandle;
 pub(in crate::graph) struct Editor {
     // Holds the native parent alive until after PluginGui::destroy.
     _parent: Arc<dyn HasWindowHandle>,
+    reveal_until: Option<std::time::Instant>,
+}
+impl Editor {
+    pub(in crate::graph) fn service(&mut self) {
+        if let Some(deadline) = self.reveal_until
+            && (std::time::Instant::now() >= deadline
+                || ensure_editor_child_shown(self._parent.as_ref()))
+        {
+            self.reveal_until = None;
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Parameter {
@@ -185,14 +196,17 @@ impl LiveSession {
             // before releasing it. All operations use the main-thread handle.
             unsafe { gui.set_parent(&handle, window) }.map_err(|e| e.to_string())?;
             gui.show(&handle).map_err(|e| e.to_string())?;
-            ensure_editor_child_shown(parent.as_ref());
             start_editor_frame_pump(parent.as_ref());
             Ok(([size.width, size.height], resizable))
         })();
         if result.is_err() {
             gui.destroy(&handle);
         } else {
-            owner.editor = Some(Editor { _parent: parent });
+            owner.editor = Some(Editor {
+                _parent: parent,
+                reveal_until: cfg!(target_os = "windows")
+                    .then(|| std::time::Instant::now() + std::time::Duration::from_millis(500)),
+            });
         }
         result
     }
@@ -404,10 +418,9 @@ fn platform_api() -> GuiApiType<'static> {
 /// any plugin whose toolkit answers the request as literally. `ShowWindowAsync`
 /// and not `ShowWindow`: the child belongs to the plugin's GUI thread, and a post
 /// cannot freeze the rack if that thread stops listening. The child may not exist
-/// yet either — it is created on that other thread — hence the short wait, which
-/// returns the moment a visible child is there. That is the ordinary case, and it
-/// costs one `FindWindowExW`; the half second it can spend is what an editor open
-/// may wait when the other thread is the one being slow.
+/// yet either — it is created on that other thread. Editor::service retries
+/// once per UI tick for up to half a second; opening never sleeps waiting for
+/// another GUI thread to create or show its child.
 ///
 /// The cost of doing it by window rather than by plugin: a toolkit that kept a
 /// helper window of its own hidden *directly inside* our editor window would get
@@ -416,58 +429,36 @@ fn platform_api() -> GuiApiType<'static> {
 /// have done it already — is what left the editor empty, so the visible-by-default
 /// guarantee wins here.
 #[allow(unsafe_code)]
-fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) {
+fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
     #[cfg(target_os = "windows")]
     {
         use std::ptr::null;
-        use std::thread::sleep;
-        use std::time::{Duration, Instant};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             FindWindowExW, GWL_STYLE, GetWindowLongPtrW, SW_SHOW, ShowWindowAsync, WS_VISIBLE,
         };
-
         let Ok(handle) = parent.window_handle() else {
-            return;
+            return true;
         };
         let RawWindowHandle::Win32(win32) = handle.as_raw() else {
-            return;
+            return true;
         };
-        let parent_hwnd = win32.hwnd.get();
-        let deadline = Instant::now() + Duration::from_millis(500);
-        let mut requests = 0;
-        loop {
-            // Walk the direct children of our editor window. The window exists
-            // to hold this one plugin's GUI, so any child inside it is the
-            // plugin's and is meant to be seen.
-            let mut child = unsafe { FindWindowExW(parent_hwnd, 0, null(), null()) };
-            let mut seen = false;
-            let mut hidden = None;
-            while child != 0 {
-                seen = true;
-                let style = unsafe { GetWindowLongPtrW(child, GWL_STYLE) };
-                if (style as u32) & WS_VISIBLE == 0 {
-                    hidden = Some(child);
-                    break;
-                }
-                child = unsafe { FindWindowExW(parent_hwnd, child, null(), null()) };
+        let mut child = unsafe { FindWindowExW(win32.hwnd.get(), 0, null(), null()) };
+        let mut seen = false;
+        let mut all_visible = true;
+        while child != 0 {
+            seen = true;
+            if (unsafe { GetWindowLongPtrW(child, GWL_STYLE) } as u32) & WS_VISIBLE == 0 {
+                all_visible = false;
+                unsafe { ShowWindowAsync(child, SW_SHOW) };
             }
-            if let Some(child) = hidden {
-                if requests < 3 {
-                    unsafe { ShowWindowAsync(child, SW_SHOW) };
-                    requests += 1;
-                }
-            } else if seen {
-                return;
-            }
-            if Instant::now() >= deadline {
-                return;
-            }
-            sleep(Duration::from_millis(5));
+            child = unsafe { FindWindowExW(win32.hwnd.get(), child, null(), null()) };
         }
+        seen && all_visible
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = parent;
+        true
     }
 }
 /// Keep the plugin editor drawing when our own UI thread cannot clock it.

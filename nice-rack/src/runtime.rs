@@ -1,4 +1,5 @@
 //! Main-thread lifecycle controller. Device transport and DSP are separate owners.
+mod retirement;
 use crate::{
     Settings,
     routing::{Channels, Connection, NodeId, NodeKind, RackGraph},
@@ -939,6 +940,7 @@ pub struct Runtime {
     /// and [`Runtime::persist_document`] is the only thing that puts it in a file.
     meter_gate_db: f32,
     worker: Option<JoinHandle<Endpoints>>,
+    stopping: Option<JoinHandle<()>>,
     io: Option<DeviceStreams>,
     /// The rings of `io` while no worker owns them. `spawn_dsp` returns them
     /// when its owner stops, so an edit that only changes the chain can hand
@@ -1086,6 +1088,7 @@ impl Runtime {
             meter_gate_db: remembered_gate(settings.preferences.meter_gate_db),
             persistence_path: None,
             worker: None,
+            stopping: None,
             io: None,
             idle: None,
             live_settings: None,
@@ -1133,7 +1136,7 @@ impl Runtime {
             .map(|(graph, _)| junctions(&graph))
     }
     pub fn busy(&self) -> bool {
-        self.action.is_some() || self.opening.is_some() || self.closing
+        self.action.is_some() || self.opening.is_some() || self.stopping.is_some() || self.closing
     }
     pub fn apply(&mut self, settings: Settings) -> Result<Receiver<Result<(), String>>, String> {
         if self.busy() {
@@ -1214,7 +1217,10 @@ impl Runtime {
         }
     }
     pub fn stopped(&self) -> bool {
-        self.worker.is_none() && self.opening.is_none() && self.io.is_none()
+        self.worker.is_none()
+            && self.stopping.is_none()
+            && self.opening.is_none()
+            && self.io.is_none()
     }
     /// Take the session off the running chain and hold it for the one on its way.
     ///
@@ -1231,7 +1237,20 @@ impl Runtime {
         }
     }
     pub fn tick(&mut self) {
+        retirement::poll();
         let mut native_error = None;
+        if self.stopping.as_ref().is_some_and(JoinHandle::is_finished) {
+            if self.stopping.take().unwrap().join().is_err() {
+                self.diagnostic = Some("Plugin retirement worker panicked".into());
+                self.message = "Audio off — plugin retirement worker panicked".into();
+            }
+            if let Some(session) = &mut self.session
+                && let Err(error) = session.service()
+            {
+                self.diagnostic = Some(error.clone());
+                self.message = error;
+            }
+        }
         if let Some(session) = &mut self.session
             && let Err(error) = session.service()
         {
@@ -1300,7 +1319,7 @@ impl Runtime {
             }
         }
         if self.closing {
-            if self.worker.is_none() {
+            if self.worker.is_none() && self.stopping.is_none() {
                 self.persist();
                 self.session = None;
                 self.retired = None;
@@ -1368,6 +1387,7 @@ impl Runtime {
             });
         }
         if self.worker.is_none()
+            && self.stopping.is_none()
             && self.opening.is_none()
             && let Some(action) = self.action.take()
         {
@@ -1465,7 +1485,7 @@ impl Runtime {
                     let route = Route::of(&opening.action.settings);
                     let (graph, bindings) =
                         refuse(chain(&opening.action.cards, route), &opening.action.cards)?;
-                    let (mut session, mut audio) = LiveSession::reusing(
+                    let (session, mut audio) = LiveSession::reusing(
                         self.retired.take(),
                         &graph,
                         &bindings,
@@ -1474,12 +1494,9 @@ impl Runtime {
                         &self.states,
                     )?;
                     session.request_stop();
-                    std::thread::spawn(move || {
+                    self.stopping = Some(std::thread::spawn(move || {
                         let _ = audio.process(&[], &mut [], 0);
-                    })
-                    .join()
-                    .map_err(|_| "Plugin retirement worker panicked")?;
-                    session.service()?;
+                    }));
                     self.session = Some(session);
                     return Ok(());
                 };
@@ -1803,14 +1820,18 @@ impl Drop for Runtime {
         if let Some(session) = &self.session {
             session.request_stop();
         }
-        // The DSP worker does not depend on device callbacks, so it will wake,
-        // stop and return its graph even after both streams have died.
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-        if let Some(session) = &mut self.session {
-            let _ = session.service();
-        }
+        let pending = retirement::Pending {
+            session: self.session.take(),
+            retired: self.retired.take(),
+            worker: self.worker.take(),
+            stopping: self.stopping.take(),
+            io: self.io.take(),
+            idle: self.idle.take(),
+        };
+        // Drop cannot keep pumping an event loop. Retain native ownership on
+        // this thread and let subsequent UI ticks collect completed workers.
+        retirement::defer(pending);
+        retirement::poll();
     }
 }
 /// One block's linear true-peak reading of a stereo pair. Each channel keeps
@@ -1936,6 +1957,58 @@ mod tests {
         let (capture, input) = rtrb::RingBuffer::new(64);
         let (output, consumer) = rtrb::RingBuffer::new(64);
         (Endpoints { input, output }, capture, consumer)
+    }
+    #[test]
+    fn dropping_a_runtime_does_not_wait_for_a_stalled_dsp_worker() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let (reported, done) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let (io, _capture, _playback) = endpoints();
+            let mut runtime = Runtime::new(Settings::default());
+            runtime.worker = Some(std::thread::spawn(move || {
+                wait.recv().unwrap();
+                io
+            }));
+            drop(runtime);
+            reported.send(()).unwrap();
+            // The stalled worker is retained on the owning thread until it
+            // finishes; collect it here rather than relying on TLS shutdown.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                retirement::poll();
+                if retirement::empty() {
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        });
+        let responsive = done.recv_timeout(Duration::from_secs(2)).is_ok();
+        release.send(()).unwrap();
+        owner.join().unwrap();
+        assert!(responsive, "Runtime::drop waited for the DSP worker");
+    }
+    #[test]
+    fn audio_off_retirement_keeps_configuration_busy_and_prevents_early_close() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let mut runtime = Runtime::new(Settings::default());
+        runtime.action = None;
+        runtime.stopping = Some(std::thread::spawn(move || {
+            wait.recv().unwrap();
+        }));
+        assert!(runtime.busy());
+        assert!(!runtime.stopped());
+        assert!(runtime.apply(Settings::default()).is_err());
+        runtime.close();
+        runtime.tick();
+        assert!(!runtime.stopped());
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !runtime.stopped() {
+            runtime.tick();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
     }
     /// A route wide at both ends: the convention the rack carried before the
     /// device was ever asked, and the shape the DSP tests feed it.

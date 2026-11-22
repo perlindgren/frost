@@ -44,6 +44,9 @@ impl Drop for Owner {
 }
 impl Owner {
     fn service(&mut self) {
+        if let Some(editor) = &mut self.editor {
+            editor.service();
+        }
         pump(&mut self.instance, &self.signals);
         if !self.instance.is_active()
             && self.signals.0.process.swap(false, Ordering::AcqRel)
