@@ -62,16 +62,12 @@ jobs:
           key: release-${{ matrix.target }}-${{ matrix.flags }}
           workspaces: '. -> target/release-ci'
       - name: Verify legal evidence
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         run: python nice-tuner/xtask/scripts/check-release-licenses.py
       - name: Test dependency inspection
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         run: python -m unittest discover -s tools/release -p 'test_*.py'
       - name: Test packaging
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         run: cargo test -p xtask --locked
       - name: Build and verify release downloads
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         env:
           RELEASE_TARGET: ${{ matrix.target }}
         run: python tools/release/build.py
