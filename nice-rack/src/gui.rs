@@ -2765,26 +2765,22 @@ impl Process for RackUi {
                     }
                 }
             }
+            self.timing_meters.entry(card.id).or_default().summary =
+                self.runtime.timings.summary(card.id);
             self.timing_meters.entry(card.id).or_default().tick(
                 self.runtime.timings.sample(card.id),
                 dt,
                 self.runtime.paused(card.id.0),
             );
         }
-        // The `OUT` card meters the whole rack. Every card's reading is
-        // wall-clock spent since the block began, so the busiest card is
-        // the last one the audio passed through, and its total is the
-        // rack's whole DSP cost — the utilization the DAC runs at.
-        let busiest = self
-            .runtime
-            .cards
-            .iter()
-            .filter_map(|card| self.runtime.timings.sample(card.id))
-            .max_by(|left, right| left.total().total_cmp(&right.total()));
-        self.timing_meters
+        // Measure the complete graph through final mixing/output copies, rather
+        // than estimating it from the last plugin's cumulative timestamp.
+        let master = self
+            .timing_meters
             .entry(NodeId(MASTER_WIRE_KEY))
-            .or_default()
-            .tick(busiest, dt, false);
+            .or_default();
+        master.summary = self.runtime.timings.graph_summary();
+        master.tick(self.runtime.timings.graph_sample(), dt, false);
         let (w, h) = ctx.size();
         let mouse = ctx.mouse_position();
         let native_mouse = ctx.window().and_then(rack_window_input::cursor).or(mouse);

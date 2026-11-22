@@ -916,6 +916,15 @@ impl PreparedRack {
             .timings
             .as_ref()
             .map_or(1.0, |(_, rate)| frames as f64 / rate);
+        let graph_observation = self
+            .timings
+            .as_ref()
+            .zip(started)
+            .map(|((times, _), started)| timing::GraphObservation {
+                times,
+                started,
+                budget: deadline,
+            });
         for index in 0..self.nodes.len() {
             let (before, after) = self.nodes.split_at_mut(index);
             let node = &mut after[0];
@@ -1092,6 +1101,7 @@ impl PreparedRack {
                         added: end.duration_since(node_started).as_secs_f64() / deadline,
                     },
                     end,
+                    end.duration_since(started),
                 );
             }
         }
@@ -1105,6 +1115,7 @@ impl PreparedRack {
                 destination[..frames].copy_from_slice(&source[..frames]);
             }
         }
+        drop(graph_observation);
         Ok(())
     }
     /// Call on the processing thread before handing the plan back for destruction.

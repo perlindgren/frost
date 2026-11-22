@@ -363,3 +363,41 @@ fn cost_of_per_card_timing() {
         );
     }
 }
+
+/// Individual-block tails complement the chunk averages above. These maxima
+/// are observations on this run, never a guaranteed worst-case execution time.
+#[test]
+#[ignore = "manual release timing distribution; scheduler-dependent"]
+fn timing_distribution() {
+    let (left, right) = signal();
+    let mut out_left = [0.0; FRAMES];
+    let mut out_right = [0.0; FRAMES];
+    for frames in [32, 64, 128] {
+        for cards in [1, 5, 16] {
+            for enabled in [false, true] {
+                let mut graph = rack(cards);
+                if enabled {
+                    graph.attach_processing_times(Arc::new(ProcessingTimes::new(cards)), 48_000.0);
+                }
+                let mut samples = Vec::with_capacity(20_000);
+                for iteration in 0..21_000 {
+                    let mut group = [&mut out_left[..], &mut out_right[..]];
+                    let mut outputs = [&mut group[..]];
+                    let start = Instant::now();
+                    graph
+                        .process(black_box(&[&left, &right]), &mut outputs, frames)
+                        .unwrap();
+                    let ns = start.elapsed().as_nanos();
+                    if iteration >= 1000 {
+                        samples.push(ns);
+                    }
+                }
+                samples.sort_unstable();
+                eprintln!(
+                    "frames={frames} cards={cards} timing={enabled}: ns median={} p99={} max={}",
+                    samples[10_000], samples[19_800], samples[19_999]
+                );
+            }
+        }
+    }
+}

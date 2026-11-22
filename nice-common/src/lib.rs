@@ -25,6 +25,7 @@ pub mod fonts;
 pub mod knob;
 pub mod meter;
 pub mod oversample;
+pub mod timing;
 #[cfg(feature = "widgets")]
 pub mod tooltip;
 /// The peak a meter should publish: the crest of the reconstruction between the

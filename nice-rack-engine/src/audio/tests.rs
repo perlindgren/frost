@@ -244,3 +244,33 @@ fn a_rebuild_keeps_the_switch_on_the_wire_that_survives_it() {
     let (out_left, _) = run(&mut prepared, &left, &right);
     assert!(loud(&out_left), "and closing it lets the rack run again");
 }
+
+#[test]
+fn timing_observes_each_short_block_without_allocating_or_changing_audio() {
+    let (mut measured, _) = rack(2);
+    let (mut plain, _) = rack(2);
+    let times = Arc::new(ProcessingTimes::new(2));
+    measured.attach_processing_times(times.clone(), 48_000.0);
+    let input = [0.25; FRAMES];
+    let mut a = [[0.0; FRAMES]; 2];
+    let mut b = [[0.0; FRAMES]; 2];
+    for frames in [32, 64, 128, 1] {
+        let [left, right] = &mut a;
+        let mut group = [&mut left[..], &mut right[..]];
+        let allocations = allocation_counter::measure(|| {
+            measured
+                .process(&[&input, &input], &mut [&mut group], frames)
+                .unwrap();
+        });
+        assert_eq!(allocations.count_total, 0);
+        let [left, right] = &mut b;
+        let mut group = [&mut left[..], &mut right[..]];
+        plain
+            .process(&[&input, &input], &mut [&mut group], frames)
+            .unwrap();
+        assert_eq!(a, b);
+    }
+    assert_eq!(times.graph_summary().unwrap().calls, 4);
+    assert_eq!(times.summary(NodeId(1)).unwrap().calls, 4);
+    assert_eq!(times.summary(NodeId(3)).unwrap().calls, 4);
+}

@@ -11,6 +11,7 @@ pub(super) struct TimingMeter {
     overload: f32,
     paused: bool,
     host_overhead: f64,
+    pub summary: Option<nice_common::timing::Snapshot>,
 }
 impl TimingMeter {
     pub fn tick(&mut self, sample: Option<ProcessingTime>, dt: f32, paused: bool) {
@@ -127,13 +128,34 @@ impl TimingMeter {
                     self.value.incoming * 100.0,
                     self.value.added * 100.0
                 ),
-                "100% = one audio block's deadline".into(),
+                self.summary.map_or_else(
+                    || "100% = one audio block's deadline".into(),
+                    |s| {
+                        format!(
+                            "Peak {:.1}% | max {:.0} us | over {}/{}",
+                            s.maximum_budget * 100.0,
+                            s.maximum_ns as f64 / 1000.0,
+                            s.overruns,
+                            s.calls
+                        )
+                    },
+                ),
             ]
         } else {
             [
                 "Audio budget".into(),
                 "No live processing timing".into(),
-                "Purple: before  |  Green: this card".into(),
+                self.summary.filter(|s| s.calls > 0).map_or_else(
+                    || "Purple: before  |  Green: this card".into(),
+                    |s| {
+                        format!(
+                            "Saved peak {:.1}%; overruns {}/{}",
+                            s.maximum_budget * 100.0,
+                            s.overruns,
+                            s.calls
+                        )
+                    },
+                ),
             ]
         };
         for (i, row) in rows.into_iter().enumerate() {

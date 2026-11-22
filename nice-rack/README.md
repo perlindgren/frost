@@ -284,3 +284,46 @@ parameter setter whenever a persisted asset path or gate changes. The paths
 stay in serialized instance state. This avoids dependency changes, but adds a
 parameter solely for notification; a dedicated state-dirty API would express
 the intent more clearly. No upstream issue or message has been submitted.
+
+### Processing timing
+
+The card bars show elapsed wall time relative to the actual block budget
+(`frames / sample_rate`), including short blocks. Purple is time before a card;
+green includes that card's routing, trims, metering and processor. It is not a
+processor-only measurement or an operating-system CPU percentage. Parallel
+branches are currently processed serially; their elapsed costs accumulate.
+
+Tooltips retain the maximum cumulative budget fraction, maximum cumulative
+elapsed time, and count of blocks that exceeded the deadline at that point.
+Every observed block contributes, whether or not the editor was reading it.
+The maximum fraction and maximum time can belong to different blocks when block
+sizes change. Statistics reset when a graph is registered/rebuilt, and remain
+available after live readings expire. A deadline overrun here is not proof of an
+audible dropout; device buffering and scheduling are separate measurements.
+
+OUT measures the complete graph, including final mixing and output copies,
+rather than estimating the total from the last plugin. This also works for an
+empty graph. Graph observations include returns caused by processor failures;
+invalid buffers rejected before processing are not timed. A failed card has no
+completed card observation. Graph timing includes the cost of publishing card
+statistics; final graph-statistics publication itself is outside its boundary.
+
+The audio thread reads the monotonic clock and publishes fixed atomic fields.
+GUI reads make one attempt and never spin; no allocation, locks or logging are
+introduced in processing. Timing remains optional at the engine API: a plan
+without `attach_processing_times` performs no timing clock reads. Maxima are
+observed worst cases, not guaranteed worst-case execution bounds.
+
+The release-only, ignored `timing_distribution` benchmark in nice-rack-engine
+compares timing enabled/disabled at 32, 64 and 128 frames for 1, 5 and 16 cheap
+test cards, reporting median, p99 and maximum individual block times. On an
+Apple-silicon macOS run, 64-frame/16-card median time was 583 ns disabled and
+1166 ns enabled. Maximum observations were 26083 ns and 66292 ns respectively;
+these separate-run maxima include scheduling noise and must not be subtracted
+to claim instrumentation overhead. Run the benchmark on each deployment platform.
+
+`nice_common::timing` provides a safe every-call recorder with coherent snapshots
+for further instrumentation. Standalone transport/resampler timing,
+processor-only timing, and new GUI timing displays are not yet connected; Frost's
+existing GUI diagnostics are unchanged. No third-party sources or versions were
+changed.
