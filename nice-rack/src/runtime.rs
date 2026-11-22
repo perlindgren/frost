@@ -910,9 +910,8 @@ pub struct Runtime {
     /// attached to.
     retired: Option<LiveSession>,
     pub(crate) editor_geometry: BTreeMap<NodeId, crate::EditorGeometry>,
-    last_save: Instant,
+    persistence: crate::persistence::Persistence,
     pub(crate) persistence_path: Option<PathBuf>,
-    saved_plugins: Vec<crate::SavedPlugin>,
     /// The gain staging the rack remembers: every wire's trim in dB, keyed
     /// `(card id, is output)`. The GUI holds the copy the operator drags and
     /// types; this is the copy the rack keeps, written by [`Runtime::set_trim`]
@@ -937,24 +936,8 @@ pub struct Runtime {
     /// The level a wire's minimised meter has to reach to light up, in dBFS —
     /// the rack's one view preference, held next to the trims because it is
     /// remembered the same way: the GUI reads and writes this copy every frame
-    /// and [`Runtime::persist`] is the only thing that puts it in a file.
+    /// and [`Runtime::persist_document`] is the only thing that puts it in a file.
     meter_gate_db: f32,
-    /// The gate the file at `persistence_path` was last written with, for the
-    /// same reason [`Runtime::saved_plugins`] exists: it is what tells
-    /// `persist` a gate change is waiting.
-    saved_meter_gate_db: f32,
-    /// The OUT jack's trim the file was last written with. The live copy is
-    /// not a field of its own: it rides in [`Runtime::trims`] under
-    /// `(u64::MAX, false)`, the same map a card's wire trims live in, so the
-    /// one place that clamps and remembers a trim serves the output stage
-    /// too. This is only what `persist` compares against to know the master
-    /// trim moved.
-    saved_output_gain_db: f32,
-    /// The IN jack's trim the file was last written with, for the same reason
-    /// [`Runtime::saved_output_gain_db`] exists. The live copy rides in
-    /// [`Runtime::trims`] under `(0, true)` — the capture node's id and its
-    /// output side, the one side of that wire the engine meters.
-    saved_input_gain_db: f32,
     worker: Option<JoinHandle<Endpoints>>,
     io: Option<DeviceStreams>,
     /// The rings of `io` while no worker owns them. `spawn_dsp` returns them
@@ -1054,7 +1037,7 @@ impl Runtime {
                 .iter()
                 .filter_map(|p| p.editor.map(|g| (NodeId(p.id), g)))
                 .collect(),
-            saved_plugins: settings.preferences.plugins.clone(),
+            persistence: crate::persistence::Persistence::new(settings.preferences.clone()),
             // The OUT jack's trim rides in the card trims' own map, under the
             // id no card can ever have, so a resumed rack starts the output
             // stage at the level it was left at. A file written before the
@@ -1101,15 +1084,6 @@ impl Runtime {
                 .map(|saved| saved.id)
                 .collect(),
             meter_gate_db: remembered_gate(settings.preferences.meter_gate_db),
-            // The file's own number, sane or not, so a gate the rack had to
-            // look past is one `persist` writes back proper.
-            saved_meter_gate_db: settings.preferences.meter_gate_db,
-            // The file's own number again, so a trim the rack had to clamp
-            // (or a `NaN` it had to ignore) is one `persist` writes back
-            // proper, and once written the comparison rests.
-            saved_output_gain_db: settings.preferences.output_gain_db,
-            saved_input_gain_db: settings.preferences.input_gain_db,
-            last_save: Instant::now(),
             persistence_path: None,
             worker: None,
             io: None,
@@ -1590,7 +1564,7 @@ impl Runtime {
                 }
             }
         }
-        if !self.busy() && self.last_save.elapsed() > Duration::from_secs(2) {
+        if !self.busy() && self.persistence.due() {
             self.persist();
         }
     }
@@ -1633,7 +1607,7 @@ impl Runtime {
     /// Take ownership of a wire's trim. Every way a trim changes in the GUI —
     /// a drag, a typed number, a value arriving from a saved file — goes
     /// through the one place that writes the meter and the engine, and that
-    /// place calls this, so [`Runtime::persist`] needs to know nothing about
+    /// place calls this, so [`Runtime::persist_document`] needs to know nothing about
     /// where a trim came from. A non-finite number is refused rather than
     /// remembered: the engine already declines to apply one, and a `NaN`
     /// written into the settings file would come back as a file the rack
@@ -1653,7 +1627,7 @@ impl Runtime {
     /// Take ownership of a wire's break, for the same reason
     /// [`Runtime::set_trim`] takes ownership of a trim: the right-click that
     /// throws the switch is one of several ways it moves — a saved file and an
-    /// undo are others — and [`Runtime::persist`] should not have to care which
+    /// undo are others — and [`Runtime::persist_document`] should not have to care which
     /// one moved it. Closing a wire takes its entry out again rather than
     /// recording a `false`, so the set stays a list of the cables actually
     /// broken and a rack with nothing broken saves out as one.
@@ -1672,7 +1646,7 @@ impl Runtime {
     }
     /// Take ownership of the meter gate, for the same reason [`Runtime::set_trim`]
     /// takes ownership of a trim: the settings page is one of several ways the
-    /// number can move, and [`Runtime::persist`] should not have to care which
+    /// number can move, and [`Runtime::persist_document`] should not have to care which
     /// one moved it. A non-finite number is refused; the gate stays where it
     /// was, and the next save writes the value the rack is actually using.
     pub(crate) fn set_meter_gate(&mut self, db: f32) {
@@ -1681,14 +1655,14 @@ impl Runtime {
         }
     }
     pub(crate) fn persist(&mut self) {
-        if self.action.is_some() || self.opening.is_some() {
+        if self.action.is_some() || self.opening.is_some() || self.persistence_path.is_none() {
             return;
         }
-        let Some(path) = self.persistence_path.clone() else {
-            return;
-        };
+        self.persistence.attempted();
         if let Some(session) = &mut self.session {
-            match session.save_states() {
+            // New instances start dirty; subsequent capture is driven by
+            // state/parameter notifications, never by elapsed time alone.
+            match session.save_changed_states() {
                 Ok(states) => self.states.extend(states),
                 Err(error) => {
                     self.message = error;
@@ -1696,6 +1670,25 @@ impl Runtime {
                 }
             }
         }
+        self.persist_document();
+    }
+    /// Geometry, routing and rack controls save cached plugin bytes, without
+    /// entering unrelated plugin state callbacks from window-event handling.
+    pub(crate) fn persist_document(&mut self) {
+        if self.action.is_some() || self.opening.is_some() {
+            return;
+        }
+        let Some(path) = self.persistence_path.clone() else {
+            return;
+        };
+        let preferences = self.document_preferences();
+        match self.persistence.save(&path, &preferences) {
+            Ok(true) => self.applied.preferences = preferences,
+            Ok(false) => {}
+            Err(error) => self.message = error,
+        }
+    }
+    fn document_preferences(&self) -> crate::RackPreferences {
         // A legacy file with crossing spans can still be saved without
         // inventing a structured interpretation or panicking during autosave.
         let routing = flow(&self.cards).ok();
@@ -1728,47 +1721,12 @@ impl Runtime {
                 paused: self.paused(card.id.0),
             })
             .collect();
-        // One write covers every preference the rack keeps changing under the
-        // operator's hands: the cards with their trims and breaks, the gate
-        // the stub boxes are coloured against, and the two jack trims on the
-        // ends of the rack. Any of them moving is enough to rewrite the file,
-        // because a settings file holds one snapshot of all and cannot be
-        // brought half up to date. A break needs no extra comparison of its
-        // own: it travels on the card it belongs to, so a wire thrown open
-        // makes the cards differ from the last thing written. The jack trims
-        // need none either beyond their own numbers: each is one value, read
-        // from the same map the cards' trims were just read out of.
-        let output_gain_db = self.trim(u64::MAX, false).unwrap_or_default();
-        let input_gain_db = self.trim(0, true).unwrap_or_default();
-        if plugins != self.saved_plugins
-            || self.meter_gate_db != self.saved_meter_gate_db
-            || output_gain_db != self.saved_output_gain_db
-            || input_gain_db != self.saved_input_gain_db
-        {
-            let (mut settings, warning) = Settings::load_from(&path);
-            if let Some(warning) = warning {
-                self.message = warning;
-                return;
-            }
-            settings.preferences.plugins = plugins.clone();
-            settings.preferences.meter_gate_db = self.meter_gate_db;
-            settings.preferences.output_gain_db = output_gain_db;
-            settings.preferences.input_gain_db = input_gain_db;
-            match settings.save_to(&path) {
-                Ok(()) => {
-                    self.applied.preferences.plugins = plugins.clone();
-                    self.applied.preferences.meter_gate_db = self.meter_gate_db;
-                    self.applied.preferences.output_gain_db = output_gain_db;
-                    self.applied.preferences.input_gain_db = input_gain_db;
-                    self.saved_plugins = plugins;
-                    self.saved_meter_gate_db = self.meter_gate_db;
-                    self.saved_output_gain_db = output_gain_db;
-                    self.saved_input_gain_db = input_gain_db;
-                }
-                Err(error) => self.message = error,
-            }
+        crate::RackPreferences {
+            plugins,
+            meter_gate_db: self.meter_gate_db,
+            output_gain_db: self.trim(u64::MAX, false).unwrap_or_default(),
+            input_gain_db: self.trim(0, true).unwrap_or_default(),
         }
-        self.last_save = Instant::now();
     }
     /// Ask for the state a refused opening goes back out of. Once something has
     /// been applied there is a state worth going back to, and that is what gets
@@ -2635,7 +2593,7 @@ mod tests {
         assert!(!runtime.audio_running());
 
         runtime.persistence_path = Some(file.clone());
-        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
         runtime.tick();
         let (saved, warning) = Settings::load_from(&file);
         assert_eq!(warning, None);
@@ -2674,7 +2632,7 @@ mod tests {
         settle(&mut runtime);
         assert_eq!(runtime.cards.len(), 2);
         assert!(!runtime.audio_running());
-        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
         runtime.tick();
         let (saved, warning) = Settings::load_from(&file);
         assert_eq!(warning, None);
@@ -2860,7 +2818,7 @@ mod tests {
         runtime.edit(vec![card]);
         settle(&mut runtime);
         runtime.persistence_path = Some(file.clone());
-        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
         runtime.tick();
         let (saved, warning) = Settings::load_from(&file);
         assert_eq!(warning, None);
@@ -2876,7 +2834,7 @@ mod tests {
 
         runtime.set_trim(2, true, -6.0);
         runtime.set_trim(2, false, 3.5);
-        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
         runtime.tick();
         let (saved, warning) = Settings::load_from(&file);
         assert_eq!(warning, None);
@@ -2916,7 +2874,7 @@ mod tests {
         // rack left with a cable pulled is that rack, and a resume that
         // quietly closed it would be rewiring the thing behind the operator.
         runtime.set_open_circuit(2, true, true);
-        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
         runtime.tick();
         let (saved, warning) = Settings::load_from(&file);
         assert_eq!(warning, None);
@@ -2955,7 +2913,7 @@ mod tests {
     /// The OUT jack's trim is remembered the way a card's wire trims are, and
     /// needs no plugin to prove it: it rides in the same map, goes through the
     /// same clamping door on the way in from a file, and is one of the numbers
-    /// [`Runtime::persist`] writes back out. The rack here has no cards and no
+    /// [`Runtime::persist_document`] writes back out. The rack here has no cards and no
     /// backend at all — what is on trial is the record, and a master trim
     /// before the first plugin is a record like any other.
     #[test]
@@ -2977,7 +2935,7 @@ mod tests {
         // the OUT jack and walks away. Nothing else about the rack moved, so
         // it is the master trim alone that makes the file worth rewriting.
         runtime.set_trim(u64::MAX, false, -4.5);
-        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
         runtime.tick();
         let (saved, warning) = Settings::load_from(&file);
         assert_eq!(warning, None);
@@ -3035,7 +2993,7 @@ mod tests {
         // The same ordinary debounce as the master's: nothing else about the
         // rack moved, so it is the input trim alone that rewrites the file.
         runtime.set_trim(0, true, 3.0);
-        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
         runtime.tick();
         let (saved, warning) = Settings::load_from(&file);
         assert_eq!(warning, None);
@@ -3325,7 +3283,7 @@ mod tests {
         assert!(!runtime.audio_running());
         assert_eq!(runtime.cards.len(), 1, "{}", runtime.message);
 
-        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
         runtime.tick();
         let (saved, warning) = Settings::load_from(&file);
         assert_eq!(warning, None);
@@ -3473,6 +3431,80 @@ mod tests {
             );
             std::thread::yield_now();
         }
+    }
+    #[test]
+    #[ignore = "requires NICE_RACK_TEST_CLAP pointing to a repository nice-tuner CLAP export"]
+    #[allow(unsafe_code)]
+    fn idle_autosave_keeps_cached_state_until_the_plugin_reports_a_change() {
+        let path = PathBuf::from(
+            std::env::var_os("NICE_RACK_TEST_CLAP").expect("Set NICE_RACK_TEST_CLAP"),
+        );
+        // SAFETY: explicit opt-in to this repository's own tuner export.
+        let entry = unsafe { Entry::load(&path).unwrap() };
+        let card = Card::new(
+            NodeId(2),
+            path,
+            entry,
+            "com.nice-tuner.nice-tuner".into(),
+            "Tuner".into(),
+        )
+        .unwrap();
+        let mut runtime = Runtime::new(Settings::default());
+        settle(&mut runtime);
+        runtime.edit(vec![card]);
+        settle(&mut runtime);
+        let file = frost::scratch::claim("rack-selective-autosave").join("settings.ron");
+        runtime.persistence_path = Some(file.clone());
+        runtime.persist(); // new instances are captured once
+        assert!(runtime.states.contains_key(&NodeId(2)));
+        assert!(
+            runtime
+                .session
+                .as_ref()
+                .unwrap()
+                .dirty_instances()
+                .is_empty()
+        );
+
+        // State bytes are opaque to the rack. A recognizable cached value
+        // witnesses whether idle saves or document edits ask the plugin again.
+        let cached = b"cached state must not be recaptured while clean".to_vec();
+        runtime.states.insert(NodeId(2), cached.clone());
+        runtime.set_trim(2, false, -3.0);
+        runtime.persist_document();
+        for _ in 0..3 {
+            runtime.persistence.last_attempt = Instant::now() - Duration::from_secs(3);
+            runtime.tick();
+            assert_eq!(runtime.states[&NodeId(2)], cached);
+        }
+        assert_eq!(
+            Settings::load_from(&file).0.preferences.plugins[0].state,
+            Some(cached.clone())
+        );
+        let mute = runtime
+            .session
+            .as_mut()
+            .unwrap()
+            .parameters(NodeId(2))
+            .into_iter()
+            .find(|p| p.name == "Mute")
+            .unwrap();
+        runtime
+            .session
+            .as_mut()
+            .unwrap()
+            .set_parameter(NodeId(2), mute.id, 1.0)
+            .unwrap();
+        runtime.persist();
+        assert_ne!(runtime.states[&NodeId(2)], cached);
+        assert!(
+            runtime
+                .session
+                .as_ref()
+                .unwrap()
+                .dirty_instances()
+                .is_empty()
+        );
     }
     #[test]
     fn recovery_retries_are_bounded_and_keep_the_failure_text() {

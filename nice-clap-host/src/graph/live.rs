@@ -1,6 +1,7 @@
 #[path = "../controls.rs"]
 mod controls;
-pub(super) use controls::Editor;
+mod state;
+pub(super) use controls::{Editor, ParameterMetadata};
 pub use controls::{EditorEvent, Parameter};
 // Main-thread ownership and a separate callback-side prepared graph.
 use super::*;
@@ -199,18 +200,6 @@ impl Entry {
     }
 }
 impl LiveSession {
-    pub fn snapshot(&mut self) -> Result<BTreeMap<NodeId, Vec<u8>>, String> {
-        if !self.stopped {
-            return Err("Stop the graph before saving state".into());
-        }
-        let mut states = BTreeMap::new();
-        for (&id, owner) in &mut self.owners {
-            if let Some(bytes) = save_state(&mut owner.instance)? {
-                states.insert(id, bytes);
-            }
-        }
-        Ok(states)
-    }
     pub fn prepare(
         graph: &RackGraph,
         bindings: &BTreeMap<NodeId, Binding>,

@@ -144,9 +144,10 @@ both channels.
 The standalone settings include a vector of plugin instances: stable instance ID,
 serial/parallel stage, entry path, class ID, native serialized state (when CLAP
 state is supported), and editor position/size. Duplicate instances remain
-independent. State is checked every two seconds and at editor/application close;
-unchanged records do not rewrite the file. Saved entries are loaded again on
-launch and must remain trusted native code. A missing/unloadable entry reports
+independent. New and dirty instances are captured on the save interval; clean
+instances are not periodically serialized. Editor close saves cached state, and
+application shutdown captures pending changes. Unchanged records do not rewrite
+the file. Saved entries are loaded again on launch and must remain trusted native code. A missing/unloadable entry reports
 an error rather than silently overwriting the saved rack.
 
 Editor positions use physical screen coordinates; content sizes use logical
@@ -241,3 +242,45 @@ expression, including nested independent branches. Both internal drags and CLAP
 file drops use the same target resolver. See [graph-editing.md](docs/graph-editing.md)
 for the operations, normalization rules, complete worked sequence and RON
 compatibility behavior.
+
+## Persistence boundaries
+
+`src/persistence.rs` owns the save interval and the last successfully written
+rack preferences. `Runtime` assembles the document and asks `LiveSession` for
+native plugin state. Editor-close and generic-overlay-close paths save cached
+plugin bytes without invoking every plugin's state callback. Capture attempts
+advance the retry deadline before calling plugins, including on failure.
+
+Autosave captures only new or dirty plugin instances. The two-second interval
+coalesces pending saves; it does not trigger periodic state serialization for
+clean plugins. Plugin dirty callbacks, parameter-value events and host parameter
+edits trigger capture. Recovery may still explicitly snapshot a stopped graph.
+
+NAM uses a hidden, non-automatable `asset_revision` parameter to notify the host
+when its persisted model path, cabinet path or gate changes. The paths remain
+private instance state; the revision has no DSP effect. This works around the
+absence of a direct non-parameter dirty-notification method in nice-plug 0.4.2's
+public `GuiContext`, without changing dependency sources. Third-party plugins
+must report state changes through the CLAP state/parameter contracts too.
+
+This separation does not itself make plugin callbacks or file writes
+asynchronous. Native state callbacks remain main-thread operations; moving disk
+I/O to a worker and asynchronous device discovery are separate follow-up work.
+
+### Possible suggestion to nice-plug developers
+
+Expose a safe `GuiContext::mark_state_dirty()` method for changes to persisted
+non-parameter fields, such as model and cabinet file paths. For CLAP, the wrapper
+would deliver `clap_host_state.mark_dirty()` on the host's main thread, arranging
+a main-thread callback when the editor runs on a separate thread. Other plugin
+formats would use their corresponding supported state-change mechanism. This
+would notify the host without serializing or reloading the plugin state, changing
+audio parameters, or restarting processing. State remains private to each instance;
+the host decides when to request serialization and save its project.
+
+The application-side workaround now implemented in NAM is a hidden,
+non-automatable numeric `asset_revision` parameter, changed through the normal
+parameter setter whenever a persisted asset path or gate changes. The paths
+stay in serialized instance state. This avoids dependency changes, but adds a
+parameter solely for notification; a dedicated state-dirty API would express
+the intent more clearly. No upstream issue or message has been submitted.

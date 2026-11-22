@@ -70,8 +70,8 @@ impl NamWindow {
             window: window.clone(),
             engine: RefCell::new(None),
             shared: Arc::clone(&shared),
-            _params: params,
-            _gui_context: gui_context,
+            params,
+            gui_context,
         });
         let this = Self {
             window,
@@ -294,8 +294,8 @@ struct FrameDriver {
     window: WindowContext,
     engine: RefCell<Option<NamEngine>>,
     shared: Arc<NamSharedState>,
-    _params: Arc<NamParams>,
-    _gui_context: Option<nice_plug::context::gui::GuiContext>,
+    params: Arc<NamParams>,
+    gui_context: Option<nice_plug::context::gui::GuiContext>,
 }
 impl FrameDriver {
     fn spawn_engine(&self) -> Result<(), HandlerError> {
@@ -343,7 +343,10 @@ impl FrameDriver {
         surface.configure(&device, &surface_config);
         let format = surface_config.format;
 
-        let ui = crate::ui::NamUi::new(Arc::clone(&self.shared), font());
+        let mut ui = crate::ui::NamUi::new(Arc::clone(&self.shared), font());
+        if let Some(context) = &self.gui_context {
+            ui.set_host(Arc::clone(&self.params), context.clone());
+        }
         let scene = crate::ui::static_scene();
 
         // The instance and the adapter move in: frost keeps both for capability

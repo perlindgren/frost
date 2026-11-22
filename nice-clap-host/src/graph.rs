@@ -28,6 +28,7 @@ struct Owner {
     returned: Receiver<ReturnHandle>,
     failure: Option<String>,
     editor: Option<live::Editor>,
+    parameters: Option<Vec<live::ParameterMetadata>>,
     changes: rtrb::Producer<clack_host::events::event_types::ParamValueEvent>,
 }
 impl Drop for Owner {
@@ -52,7 +53,7 @@ impl Owner {
             params.flush(
                 &mut handle,
                 &InputEvents::empty(),
-                &mut OutputEvents::void(),
+                &mut OutputEvents::from(&mut OutputChanges::new(&self.signals.0.changed)),
             );
         }
         if let Ok((stopped, failure)) = self.returned.try_recv() {
@@ -222,12 +223,18 @@ impl Processor for ClapProcessor {
             &inputs,
             &mut outputs,
             &InputEvents::from_buffer(&self.events),
-            &mut OutputEvents::void(),
+            &mut OutputEvents::from(&mut OutputChanges::new(&self.restart.0.changed)),
             Some(self.steady_time),
             None,
         ) {
             self.failure = Some(error);
             return Err(ProcessError::ProcessorFailed);
+        }
+        if !self.events.is_empty() {
+            // A state capture may have run between the GUI queueing this
+            // edit and the audio side applying it. Report the applied change
+            // too, so that capture cannot acknowledge an unapplied edit.
+            self.restart.0.changed.store(true, Ordering::Release);
         }
         self.steady_time = self.steady_time.wrapping_add(frames as u64);
         Ok(())
@@ -512,6 +519,7 @@ impl Entry {
                 .unwrap_or(0)
         };
         signals.0.latency_changed.store(false, Ordering::Release);
+        signals.0.changed.store(true, Ordering::Release);
         Ok((
             Owner {
                 instance,
@@ -520,6 +528,7 @@ impl Entry {
                 returned: receiver,
                 failure: None,
                 editor: None,
+                parameters: None,
                 changes,
             },
             ClapProcessor {

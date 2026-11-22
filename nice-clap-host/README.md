@@ -131,3 +131,21 @@ handles on the main thread before reopening streams. `Binding` and
 `LiveSession::prepare` support classes from multiple loaded entries, retaining
 entry lifetimes across card edits; `Entry::prepare_live` remains a single-entry
 convenience. See nice-rack/README.md for the current GUI and limits.
+
+## Change tracking and state capture
+
+The live adapter records `clap_host_state.mark_dirty`, parameter-value rescans,
+host parameter edits, and plugin-emitted parameter-value events. Audio-side event
+observation only sets an atomic flag; it allocates nothing and retains no events.
+New instances start dirty. `dirty_instances()` observes pending IDs, while
+`save_changed_states()` captures only those instances. `save_states()` captures
+all instances, and `snapshot()` additionally requires a stopped graph for
+recovery. All three use one serialization path on the main thread.
+
+A failed capture batch acknowledges no instances. Notifications arriving during
+capture remain pending, and host edits queued for DSP are marked again after
+application so an earlier capture cannot swallow them. The caller owns the
+captured bytes and must retain them if a subsequent disk write fails.
+
+Generic controls cache parameter metadata and formatted values. Rescan/clear
+callbacks invalidate that cache; current values are still queried when displayed.

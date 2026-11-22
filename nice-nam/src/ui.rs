@@ -173,6 +173,7 @@ pub fn static_scene() -> Scene {
 }
 pub struct NamUi {
     shared: Arc<NamSharedState>,
+    host: Option<(Arc<crate::NamParams>, nice_plug::context::gui::GuiContext)>,
     font: Arc<[u8]>,
     icon_font: Arc<[u8]>,
     input_meter: nice_common::meter::PeakMeter,
@@ -198,9 +199,32 @@ pub struct NamUi {
     diag: frost::Diagnostics,
 }
 impl NamUi {
+    pub fn set_host(
+        &mut self,
+        params: Arc<crate::NamParams>,
+        context: nice_plug::context::gui::GuiContext,
+    ) {
+        self.host = Some((params, context));
+    }
+    fn edit_assets(&self, change: impl FnOnce(&mut crate::settings::NamPreferences)) {
+        crate::asset_revision::edit(&self.shared.engine.paths, change, || {
+            if let Some((params, context)) = &self.host {
+                let revision = crate::asset_revision::next(
+                    &self.shared.asset_sequence,
+                    params.asset_revision.value(),
+                );
+                let setter = context.param_setter();
+                setter.begin_set_parameter(&params.asset_revision);
+                setter.set_parameter(&params.asset_revision, revision);
+                setter.end_set_parameter(&params.asset_revision);
+            }
+        });
+    }
+
     pub fn new(shared: Arc<NamSharedState>, font: Arc<[u8]>) -> Self {
         Self {
             shared,
+            host: None,
             font: font.clone(),
             icon_font: nice_common::fonts::icon_font(),
             input_meter: nice_common::meter::PeakMeter::new(crate::now_ms()),
@@ -352,9 +376,10 @@ impl NamUi {
     }
     /// The chosen model, handed to the loader the same way from either road.
     fn accept_model(&mut self, path: PathBuf) {
-        let mut paths = self.shared.engine.paths.lock().unwrap();
-        paths.model_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
-        paths.model_path = Some(path);
+        self.edit_assets(|paths| {
+            paths.model_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
+            paths.model_path = Some(path);
+        });
         self.shared.engine.revision.fetch_add(1, Ordering::Release);
     }
     /// Pick a cabinet impulse. The same dialog, on the same road as a model: the
@@ -375,7 +400,7 @@ impl NamUi {
     /// Reloading is what puts it in the chain: the revision bump is how the
     /// preparation thread learns that the paths it was given have changed.
     fn accept_cab(&mut self, path: PathBuf) {
-        self.shared.engine.paths.lock().unwrap().cabinet_path = Some(path);
+        self.edit_assets(|paths| paths.cabinet_path = Some(path));
         self.shared.engine.revision.fetch_add(1, Ordering::Release);
     }
 }
@@ -680,7 +705,7 @@ impl Process for NamUi {
                 let gate = items[index].1.parse::<f32>().unwrap();
                 self.shared.gate_db.store(gate);
                 let value = (gate != -60.0).then_some(gate);
-                self.shared.engine.paths.lock().unwrap().gate_db = value;
+                self.edit_assets(|paths| paths.gate_db = value);
                 #[cfg(feature = "standalone")]
                 if crate::STANDALONE_MODE.load(Ordering::Relaxed) {
                     let mut settings = Settings::load().0;
@@ -709,7 +734,7 @@ impl Process for NamUi {
                 match row {
                     0 => self.choose_model(),
                     1 => self.choose_cab(),
-                    2 => self.shared.engine.paths.lock().unwrap().cabinet_path = None,
+                    2 => self.edit_assets(|paths| paths.cabinet_path = None),
                     _ => {}
                 }
             }

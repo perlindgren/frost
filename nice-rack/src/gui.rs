@@ -4529,7 +4529,7 @@ impl RackUi {
                 ))
         {
             self.overlay = None;
-            self.runtime.persist();
+            self.runtime.persist_document();
             return;
         }
         let parameters = self

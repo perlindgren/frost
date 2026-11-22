@@ -56,6 +56,40 @@ impl HostStateImpl for Callbacks {
         self.0.changed.store(true, Ordering::Release);
     }
 }
+// Observe changes without retaining events or allocating on the audio thread.
+// Publish after process/flush returns, so a simultaneous state capture cannot
+// acknowledge the notification before the plugin applies the change.
+// MIDI/note output routing is still outside this adapter's scope.
+struct OutputChanges<'a> {
+    dirty: &'a AtomicBool,
+    observed: bool,
+}
+impl<'a> OutputChanges<'a> {
+    fn new(dirty: &'a AtomicBool) -> Self {
+        Self {
+            dirty,
+            observed: false,
+        }
+    }
+}
+impl clack_host::events::io::OutputEventBuffer for OutputChanges<'_> {
+    fn try_push(
+        &mut self,
+        event: &clack_host::events::UnknownEvent,
+    ) -> Result<(), clack_host::events::io::TryPushError> {
+        self.observed |= event
+            .as_event::<clack_host::events::event_types::ParamValueEvent>()
+            .is_some();
+        Ok(())
+    }
+}
+impl Drop for OutputChanges<'_> {
+    fn drop(&mut self) {
+        if self.observed {
+            self.dirty.store(true, Ordering::Release);
+        }
+    }
+}
 struct Host;
 impl HostHandlers for Host {
     type Shared<'a> = Callbacks;
@@ -399,5 +433,53 @@ mod tests {
         assert!(!callbacks.0.callback.load(Ordering::Acquire));
         assert!(callbacks.0.restart.load(Ordering::Acquire));
         assert!(callbacks.0.process.load(Ordering::Acquire));
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+    use clack_host::events::io::OutputEventBuffer;
+    use clack_host::events::{
+        Event, Pckn,
+        event_types::{NoteOnEvent, ParamValueEvent},
+    };
+
+    #[test]
+    fn dirty_notifications_are_shared_with_the_audio_observer() {
+        let signals = Callbacks::default();
+        let audio = signals.clone();
+        signals.mark_dirty();
+        assert!(audio.0.changed.swap(false, Ordering::AcqRel));
+        let event = ParamValueEvent::new(0, ClapId::new(3), Pckn::match_all(), 0.5);
+        {
+            let mut output = OutputChanges::new(&audio.0.changed);
+            output.try_push(event.as_unknown()).unwrap();
+            assert!(!signals.0.changed.load(Ordering::Acquire));
+        }
+        assert!(signals.0.changed.load(Ordering::Acquire));
+    }
+    #[test]
+    fn parameter_events_mark_state_dirty_without_audio_thread_allocations() {
+        let signals = Callbacks::default();
+        let event = ParamValueEvent::new(0, ClapId::new(3), Pckn::match_all(), 0.5);
+        let allocations = allocation_counter::measure(|| {
+            let mut output = OutputChanges::new(&signals.0.changed);
+            for _ in 0..256 {
+                output.try_push(event.as_unknown()).unwrap();
+            }
+        });
+        assert_eq!(allocations.count_total, 0);
+        assert!(signals.0.changed.load(Ordering::Acquire));
+    }
+    #[test]
+    fn notes_do_not_trigger_state_capture() {
+        let signals = Callbacks::default();
+        let event = NoteOnEvent::new(0, Pckn::match_all(), 1.0);
+        {
+            let mut output = OutputChanges::new(&signals.0.changed);
+            output.try_push(event.as_unknown()).unwrap();
+        }
+        assert!(!signals.0.changed.load(Ordering::Acquire));
     }
 }

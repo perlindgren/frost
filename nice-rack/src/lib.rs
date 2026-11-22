@@ -172,6 +172,7 @@ impl nice_common::Preferences for RackPreferences {
 
 mod editors;
 mod gui;
+mod persistence;
 pub mod runtime;
 pub use gui::run;
 

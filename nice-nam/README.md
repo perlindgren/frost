@@ -176,3 +176,13 @@ and cabinet. Click the input meter to choose its gate threshold (default −60 d
 hovering shows the current value. The standalone saves `gate_db` in
 `nice-nam-settings.ron`. Gate gain opens over 5 ms and closes over 50 ms before
 the model; its threshold is evaluated on each processing chunk's input RMS.
+
+## Hosted asset-change notifications
+
+Model and cabinet paths and the input gate remain private, serialized instance
+state. A hidden, non-automatable `asset_revision` parameter notifies CLAP/VST3
+hosts when these fields change; it does not affect audio processing. It is a
+compatibility workaround for nice-plug 0.4.2's lack of a public non-parameter
+state-dirty notification. Host calls happen only after releasing the preferences
+mutex, so a synchronous state save cannot re-enter that lock. Standalone builds
+continue to save their own RON configuration without requiring a host context.

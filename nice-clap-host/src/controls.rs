@@ -29,6 +29,46 @@ pub struct Parameter {
     pub stepped: bool,
     pub readonly: bool,
 }
+pub(in crate::graph) struct ParameterMetadata {
+    id: ClapId,
+    name: String,
+    module: String,
+    min: f64,
+    max: f64,
+    flags: ParamInfoFlags,
+    formatted: Option<(f64, String)>,
+}
+impl Owner {
+    fn refresh_parameters(&mut self) {
+        if self.signals.0.params_changed.swap(false, Ordering::AcqRel) {
+            self.parameters = None;
+        }
+        if self.parameters.is_some() {
+            return;
+        }
+        let handle = self.instance.plugin_handle();
+        let mut scratch = ParamInfoBuffer::new();
+        self.parameters = Some(handle.get_extension::<PluginParams>().map_or_else(
+            Vec::new,
+            |params| {
+                (0..params.count(&handle).min(16384))
+                    .filter_map(|index| {
+                        let info = params.get_info(&handle, index, &mut scratch)?;
+                        Some(ParameterMetadata {
+                            id: info.id,
+                            name: String::from_utf8_lossy(info.name).into_owned(),
+                            module: String::from_utf8_lossy(info.module).into_owned(),
+                            min: info.min_value,
+                            max: info.max_value,
+                            flags: info.flags,
+                            formatted: None,
+                        })
+                    })
+                    .collect()
+            },
+        ));
+    }
+}
 #[derive(Debug)]
 pub enum EditorEvent {
     Resize(u32, u32),
@@ -65,7 +105,10 @@ impl HostParamsImplShared for Callbacks {
     }
 }
 impl HostParamsImplMainThread for Callbacks {
-    fn rescan(&self, _: ParamRescanFlags) {
+    fn rescan(&self, flags: ParamRescanFlags) {
+        if flags.intersects(ParamRescanFlags::VALUES | ParamRescanFlags::ALL) {
+            self.0.changed.store(true, Ordering::Release);
+        }
         self.0.params_changed.store(true, Ordering::Release);
     }
     fn clear(&self, _: ClapId, _: ParamClearFlags) {
@@ -240,30 +283,37 @@ impl LiveSession {
         let Some(owner) = self.owners.get_mut(&id) else {
             return Vec::new();
         };
+        owner.refresh_parameters();
         let handle = owner.instance.plugin_handle();
         let Some(params) = handle.get_extension::<PluginParams>() else {
             return Vec::new();
         };
-        let mut scratch = ParamInfoBuffer::new();
         let mut text = [0u8; 256];
-        (0..params.count(&handle).min(16384))
-            .filter_map(|index| {
-                let info = params.get_info(&handle, index, &mut scratch)?;
+        owner
+            .parameters
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .filter_map(|info| {
                 if info.flags.contains(ParamInfoFlags::IS_HIDDEN) {
                     return None;
                 }
                 let value = params.get_value(&handle, info.id)?;
-                Some(Parameter {
-                    id: info.id.get(),
-                    name: String::from_utf8_lossy(info.name).into_owned(),
-                    module: String::from_utf8_lossy(info.module).into_owned(),
-                    min: info.min_value,
-                    max: info.max_value,
-                    value,
-                    text: params
+                if info.formatted.as_ref().is_none_or(|(old, _)| *old != value) {
+                    let label = params
                         .value_to_text(&handle, info.id, value, &mut text)
                         .map(|s| String::from_utf8_lossy(s).into_owned())
-                        .unwrap_or_else(|_| format!("{value:.3}")),
+                        .unwrap_or_else(|_| format!("{value:.3}"));
+                    info.formatted = Some((value, label));
+                }
+                Some(Parameter {
+                    id: info.id.get(),
+                    name: info.name.clone(),
+                    module: info.module.clone(),
+                    min: info.min,
+                    max: info.max,
+                    value,
+                    text: info.formatted.as_ref().unwrap().1.clone(),
                     stepped: info.flags.contains(ParamInfoFlags::IS_STEPPED),
                     readonly: info.flags.contains(ParamInfoFlags::IS_READONLY),
                 })
@@ -278,19 +328,19 @@ impl LiveSession {
             .owners
             .get_mut(&id)
             .ok_or("Plugin instance not found")?;
+        owner.refresh_parameters();
+        let info = owner
+            .parameters
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|info| info.id.get() == param)
+            .map(|info| (info.id, info.flags, info.min, info.max))
+            .ok_or("Parameter not found")?;
         let handle = owner.instance.plugin_handle();
         let params = handle
             .get_extension::<PluginParams>()
             .ok_or("Plugin has no parameters")?;
-        let mut buffer = ParamInfoBuffer::new();
-        let info = (0..params.count(&handle).min(16384))
-            .find_map(|i| {
-                params
-                    .get_info(&handle, i, &mut buffer)
-                    .filter(|info| info.id.get() == param)
-                    .map(|info| (info.id, info.flags, info.min_value, info.max_value))
-            })
-            .ok_or("Parameter not found")?;
         if info.1.contains(ParamInfoFlags::IS_READONLY) {
             return Err("Parameter is read only".into());
         }
@@ -312,21 +362,11 @@ impl LiveSession {
             params.flush(
                 &mut handle,
                 &InputEvents::from_buffer(&event),
-                &mut OutputEvents::void(),
+                &mut OutputEvents::from(&mut OutputChanges::new(&owner.signals.0.changed)),
             );
         }
         owner.signals.0.changed.store(true, Ordering::Release);
         Ok(())
-    }
-    /// CLAP state save is a main-thread operation and is permitted while active.
-    pub fn save_states(&mut self) -> Result<BTreeMap<NodeId, Vec<u8>>, String> {
-        let mut states = BTreeMap::new();
-        for (&id, owner) in &mut self.owners {
-            if let Some(bytes) = save_state(&mut owner.instance)? {
-                states.insert(id, bytes);
-            }
-        }
-        Ok(states)
     }
 }
 fn platform_api() -> GuiApiType<'static> {
@@ -546,5 +586,24 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = parent;
+    }
+}
+
+#[cfg(test)]
+mod parameter_change_tests {
+    use super::*;
+    #[test]
+    fn a_value_rescan_marks_state_dirty_and_invalidates_metadata() {
+        let signals = Callbacks::default();
+        signals.rescan(ParamRescanFlags::VALUES);
+        assert!(signals.0.changed.load(Ordering::Acquire));
+        assert!(signals.0.params_changed.load(Ordering::Acquire));
+    }
+    #[test]
+    fn text_rescan_invalidates_formatting_without_claiming_a_state_change() {
+        let signals = Callbacks::default();
+        signals.rescan(ParamRescanFlags::TEXT);
+        assert!(!signals.0.changed.load(Ordering::Acquire));
+        assert!(signals.0.params_changed.load(Ordering::Acquire));
     }
 }

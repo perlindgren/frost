@@ -1,6 +1,7 @@
 //! Nice NAM: shared hosted/standalone processing with an embedded frost editor.
 #![deny(unsafe_code)]
 
+mod asset_revision;
 mod dsp;
 mod editor;
 mod engine;
@@ -68,6 +69,7 @@ pub struct NamSharedState {
     pub input_channel: AtomicCell<u32>,
     pub buffer_frames: AtomicU32,
     engine: Arc<engine::EngineState>,
+    asset_sequence: AtomicU32,
 }
 impl NamSharedState {
     fn logical_size(&self) -> LogicalSize<f32> {
@@ -93,10 +95,20 @@ pub struct NamPlugin {
     tp_out: TruePeak,
     worker: engine::Worker,
 }
-#[derive(Default, Params)]
+#[derive(Params)]
 struct NamParams {
+    #[id = "asset_revision"]
+    asset_revision: IntParam,
     #[persist = "assets"]
     paths: Arc<Mutex<settings::NamPreferences>>,
+}
+impl Default for NamParams {
+    fn default() -> Self {
+        Self {
+            asset_revision: asset_revision::parameter(),
+            paths: Arc::default(),
+        }
+    }
 }
 impl Default for NamPlugin {
     fn default() -> Self {
@@ -128,6 +140,7 @@ impl Default for NamPlugin {
             input_channel: AtomicCell::new(1),
             buffer_frames: AtomicU32::new(0),
             engine,
+            asset_sequence: AtomicU32::new(0),
         });
         Self {
             params,
