@@ -5,7 +5,6 @@ mod asset_revision;
 mod dsp;
 mod editor;
 mod engine;
-mod gui;
 pub mod settings;
 #[cfg(feature = "standalone")]
 pub mod standalone;
@@ -188,10 +187,10 @@ impl Plugin for NamPlugin {
     }
 
     fn editor(&mut self, _: AsyncExecutor<Self>) -> Option<Self::Editor> {
-        Some(NamEditor {
-            params: self.params.clone(),
-            shared: self.shared.clone(),
-        })
+        Some(crate::editor::create(
+            self.params.clone(),
+            self.shared.clone(),
+        ))
     }
     fn activate(
         &mut self,

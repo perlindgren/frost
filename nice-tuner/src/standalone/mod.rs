@@ -6,7 +6,7 @@ pub mod control;
 mod jack_audio;
 mod process;
 
-use crate::{TunerEditor, TunerEditorHandle, TunerPlugin, settings::Settings};
+use crate::{TunerEditorHandle, TunerPlugin, settings::Settings};
 use audio::{Failure, Session};
 use crossbeam::channel::{Receiver, bounded};
 use nice_plug::editor::EditorHandle;
@@ -164,10 +164,7 @@ fn audio_worker(
 /// Closing the window drops the command endpoint and joins the audio owner.
 pub fn run(settings: Settings) -> Result<(), String> {
     let plugin = TunerPlugin::default();
-    let editor = TunerEditor {
-        params: Arc::clone(&plugin.params),
-        shared: Arc::clone(&plugin.shared),
-    };
+    let editor = crate::editor::create(Arc::clone(&plugin.params), Arc::clone(&plugin.shared));
     let plugin = Arc::new(Mutex::new(plugin));
     let (sender, commands) = bounded(1);
     let pending = Arc::new(AtomicBool::new(false));

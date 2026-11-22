@@ -637,3 +637,25 @@ mod colour {
         );
     }
 }
+
+/// Energy and inter-sample peak of a bounded planar block. Channel order and
+/// estimator history are preserved across calls; RMS normalization is the
+/// caller's policy. Shared by the mono/stereo plugin processing adapters.
+pub fn block_stats<const N: usize>(
+    scratch: &[[f32; N]; 2],
+    channels: usize,
+    n: usize,
+    tp: &mut [crate::true_peak::TruePeak; 2],
+) -> (f64, f32) {
+    let mut energy = 0.0f64;
+    let mut peak = 0.0f32;
+    for (channel, meter) in scratch[..channels].iter().zip(&mut tp[..channels]) {
+        meter.process(&channel[..n]);
+        peak = peak.max(meter.take());
+        energy += channel[..n]
+            .iter()
+            .map(|&x| f64::from(x).powi(2))
+            .sum::<f64>();
+    }
+    (energy, peak)
+}

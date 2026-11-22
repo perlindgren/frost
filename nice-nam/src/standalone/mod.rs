@@ -6,7 +6,7 @@ pub mod control;
 mod jack_audio;
 mod process;
 
-use crate::{NamEditor, NamEditorHandle, NamPlugin, settings::Settings};
+use crate::{NamEditorHandle, NamPlugin, settings::Settings};
 use audio::{Failure, Session};
 use crossbeam::channel::{Receiver, bounded};
 use nice_plug::editor::EditorHandle;
@@ -153,10 +153,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         // never recorded one.
         *plugin.shared.pending_geom.lock().unwrap() = window.x.zip(window.y);
     }
-    let editor = NamEditor {
-        params: Arc::clone(&plugin.params),
-        shared: Arc::clone(&plugin.shared),
-    };
+    let editor = crate::editor::create(Arc::clone(&plugin.params), Arc::clone(&plugin.shared));
     let plugin = Arc::new(Mutex::new(plugin));
     let (sender, commands) = bounded(1);
     let pending = Arc::new(AtomicBool::new(false));

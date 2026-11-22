@@ -24,7 +24,6 @@
 
 mod dsp;
 mod editor;
-mod gui;
 #[cfg(feature = "standalone")]
 pub mod settings;
 #[cfg(feature = "standalone")]
@@ -33,6 +32,7 @@ mod ui;
 
 use crossbeam::atomic::AtomicCell;
 use editor::EchoEditor;
+use nice_common::meter::block_stats;
 use nice_common::true_peak::TruePeak;
 use nice_plug::editor::dpi::LogicalSize;
 use std::num::NonZeroU32;
@@ -312,38 +312,6 @@ impl EchoParams {
     }
 }
 
-/// The metering's two questions to one block of scratch: total energy, and
-/// the loudest *true* peak — the inter-sample crest, not the loudest sample.
-/// Over the channel dimension first and the sample
-/// dimension second — nice-wah's comment carries the reason this is a
-/// function with a test rather than four expressions inlined twice: a mixup
-/// of those two crashed the metering inside a real host while every in-crate
-/// test stayed green.
-///
-/// The caller lends the per-channel estimators, which is what makes the peak
-/// honest across a block boundary: a crest straddling two blocks belongs to
-/// both of them partly, and an estimator that forgot its history at every
-/// block would report the smaller of the two readings. Both answers come from
-/// the one pass over the scratch, as they must on the audio thread.
-fn block_stats(
-    scratch: &[[f32; dsp::BLOCK]; 2],
-    channels: usize,
-    n: usize,
-    tp: &mut [TruePeak; 2],
-) -> (f64, f32) {
-    let mut energy = 0.0f64;
-    let mut peak = 0.0f32;
-    for (channel, meter) in scratch[..channels].iter().zip(&mut tp[..channels]) {
-        meter.process(&channel[..n]);
-        peak = peak.max(meter.take());
-        energy += channel[..n]
-            .iter()
-            .map(|&x| f64::from(x).powi(2))
-            .sum::<f64>();
-    }
-    (energy, peak)
-}
-
 pub struct EchoPlugin {
     params: Arc<EchoParams>,
     shared: Arc<EchoSharedState>,
@@ -480,10 +448,10 @@ impl Plugin for EchoPlugin {
     }
 
     fn editor(&mut self, _: AsyncExecutor<Self>) -> Option<Self::Editor> {
-        Some(EchoEditor {
-            params: self.params.clone(),
-            shared: self.shared.clone(),
-        })
+        Some(crate::editor::create(
+            self.params.clone(),
+            self.shared.clone(),
+        ))
     }
 
     fn activate(

@@ -2011,21 +2011,15 @@ name = "nice-clone"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "baseview",
  "crossbeam",
  "frost",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "plugin-buffer",
- "pollster",
  "ron",
  "rtrb 0.4.1",
  "serde",
- "wgpu",
- "window-position",
 ]
 
 [[package]]
@@ -2049,21 +2043,15 @@ name = "nice-dist"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "baseview",
  "crossbeam",
  "frost",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "plugin-buffer",
- "pollster",
  "ron",
  "rtrb 0.4.1",
  "serde",
- "wgpu",
- "window-position",
 ]
 
 [[package]]
@@ -2071,21 +2059,15 @@ name = "nice-echo"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "baseview",
  "crossbeam",
  "frost",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "plugin-buffer",
- "pollster",
  "ron",
  "rtrb 0.4.1",
  "serde",
- "wgpu",
- "window-position",
 ]
 
 [[package]]
@@ -2093,21 +2075,15 @@ name = "nice-ecomplex"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "baseview",
  "crossbeam",
  "frost",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "plugin-buffer",
- "pollster",
  "ron",
  "rtrb 0.4.1",
  "serde",
- "wgpu",
- "window-position",
 ]
 
 [[package]]
@@ -2128,26 +2104,20 @@ dependencies = [
  "NeuralAmpModeler-rs 3.0.0",
  "allocation-counter",
  "audio-float",
- "baseview",
  "cpal",
  "crossbeam",
  "frost",
  "jack",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "plugin-buffer",
- "pollster",
  "rfd",
  "ron",
  "rtrb 0.4.1",
  "serde",
  "serde_json",
  "tracing",
- "wgpu",
- "window-position",
 ]
 
 [[package]]
@@ -2155,21 +2125,15 @@ name = "nice-phase"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "baseview",
  "crossbeam",
  "frost",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "plugin-buffer",
- "pollster",
  "ron",
  "rtrb 0.4.1",
  "serde",
- "wgpu",
- "window-position",
 ]
 
 [[package]]
@@ -2177,21 +2141,15 @@ name = "nice-pi-face"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "baseview",
  "crossbeam",
  "frost",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "plugin-buffer",
- "pollster",
  "ron",
  "rtrb 0.4.1",
  "serde",
- "wgpu",
- "window-position",
 ]
 
 [[package]]
@@ -2275,6 +2233,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nice-plugin"
+version = "0.1.0"
+dependencies = [
+ "baseview",
+ "crossbeam",
+ "frost",
+ "keyboard-types",
+ "macos-frame-sync",
+ "macos-metal-view",
+ "nice-common",
+ "nice-plug",
+ "plugin-buffer",
+ "pollster",
+ "wgpu",
+ "window-position",
+]
+
+[[package]]
 name = "nice-rack"
 version = "0.1.0"
 dependencies = [
@@ -2313,26 +2289,20 @@ name = "nice-tuner"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "baseview",
  "cpal",
  "crossbeam",
  "frost",
  "jack",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "pitch",
  "plugin-buffer",
- "pollster",
  "ron",
  "rtrb 0.4.1",
  "serde",
  "tracing",
  "tracing-subscriber",
- "wgpu",
- "window-position",
 ]
 
 [[package]]
@@ -2340,21 +2310,15 @@ name = "nice-wah"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "baseview",
  "crossbeam",
  "frost",
- "keyboard-types",
- "macos-frame-sync",
- "macos-metal-view",
  "nice-common",
  "nice-plug",
+ "nice-plugin",
  "plugin-buffer",
- "pollster",
  "ron",
  "rtrb 0.4.1",
  "serde",
- "wgpu",
- "window-position",
 ]
 
 [[package]]

@@ -20,7 +20,7 @@ default = []
 # Application-owned standalone host. ASIO comes with it on Windows, and is
 # absent on every other platform; the alias below says how a feature that cannot
 # be platform-specific manages that.
-standalone = ["nice-common/ui", "nice-common/standalone", "dep:cpal", "dep:jack", "dep:plugin-buffer", "dep:tracing", "asio-host"]
+standalone = ["nice-plugin/standalone", "nice-common/ui", "nice-common/standalone", "dep:cpal", "dep:jack", "dep:plugin-buffer", "dep:tracing", "asio-host"]
 # The name `src/standalone/audio.rs` gates its ASIO halves on, in the spelling
 # nice-common gates its own with: `all(windows, feature = "asio-host")`. An alias
 # and not a dependency, because the scoping belongs with the thing scoped — `azo`
@@ -31,14 +31,11 @@ asio-host = ["nice-common/asio-host"]
 # left it, or centred in the primary work area when no position was ever stored.
 # The unsafe code stays inside the wrapper crate; nice-nam keeps denying it, and a
 # window inside a host is never touched — the host owns its children.
-unsafe = ["dep:window-position", "window-position/unsafe"]
+unsafe = ["nice-plugin/unsafe"]
 diag = []
 
 [dependencies]
-baseview = { version = "=0.3.3", features = ["tracing"] }
-wgpu = "30"
-pollster = "0.4"
-keyboard-types = "0.8.3"
+nice-plugin = { path = "../nice-plugin" }
 crossbeam = "0.8"
 rtrb = "0.4"
 plugin-buffer = { path = "../nice-tuner/crates/plugin-buffer", optional = true }
@@ -76,16 +73,6 @@ nam_engine = { package = "NeuralAmpModeler-rs", version = "=2.0.0", default-feat
 # a moving branch rather than to a number anyone can re-resolve. Until that
 # release exists, this commit is what a Windows build of this plugin is.
 nam_windows = { package = "NeuralAmpModeler-rs", git = "https://github.com/fabiohl/NeuralAmpModeler-rs", rev = "dc82417778ffdead48a4a69d5f4e90309ec4c28d", default-features = false }
-# No ASIO here, and none needed: the transport is `azo`, a `cfg(windows)`
-# dependency of nice-common that the `asio-host` alias switches on, scoped where
-# it is scoped and invisible to every other platform from there.
-# Placement is implemented only by our opt-in Windows wrapper, which is also the
-# only place in this build that contains unsafe code.
-window-position = { path = "../nice-tuner/crates/window-position", optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
-macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }
 
 [target.'cfg(not(windows))'.dependencies]
 # The CoreAudio/ALSA/JACK road. On Windows the model runs on the ASIO driver

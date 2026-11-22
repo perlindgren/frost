@@ -22,7 +22,7 @@ default = []
 # the same opener the rack runs — and the settings page is the shared
 # `AudioPanel`, so this crate adds no device code of its own: only the plugin
 # adapter between the two rings.
-standalone = [
+standalone = ["nice-plugin/standalone",
     "nice-common/ui",
     "nice-common/audio-io",
     "nice-common/asio-host",
@@ -33,28 +33,16 @@ standalone = [
 # left it, or centred when no position was ever stored. The unsafe code stays
 # inside the wrapper crate; nice-dist keeps denying it, and a window inside a
 # host is never touched — the host owns its children.
-unsafe = ["dep:window-position", "window-position/unsafe"]
+unsafe = ["nice-plugin/unsafe"]
 
 [dependencies]
-baseview = { version = "=0.3.3", features = ["tracing"] }
-wgpu = "30"
-pollster = "0.4"
-keyboard-types = "0.8.3"
+nice-plugin = { path = "../nice-plugin" }
 crossbeam = "0.8"
 plugin-buffer = { path = "../nice-tuner/crates/plugin-buffer", optional = true }
 nice-common = { path = "../nice-common", features = ["widgets"] }
 nice-plug = { version = "0.4.2", default-features = false, features = ["editor", "vst3", "assert_process_allocs"] }
 frost = { path = ".." }
 serde = { version = "1", features = ["derive"], optional = true }
-
-[target.'cfg(windows)'.dependencies]
-# Window placement is implemented only by our opt-in Windows wrapper, which
-# is also the only place in this build that contains unsafe code.
-window-position = { path = "../nice-tuner/crates/window-position", optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
-macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }
 
 [dev-dependencies]
 # The settings round-trip test reads the saved file as RON.

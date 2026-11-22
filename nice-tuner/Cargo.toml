@@ -36,10 +36,10 @@ diag = []
 # target for its games' sound and gamepads. The plugin simply never calls
 # `frost::Audio::new`; the linker still meets ALSA and udev, on Linux as on
 # any other platform where frost plays a sound.
-standalone = ["dep:jack", "dep:cpal", "dep:tracing", "dep:tracing-subscriber", "nice-common/ui", "nice-common/standalone", "dep:plugin-buffer", "asio-host"]
+standalone = ["nice-plugin/standalone", "dep:jack", "dep:cpal", "dep:tracing", "dep:tracing-subscriber", "nice-common/ui", "nice-common/standalone", "dep:plugin-buffer", "asio-host"]
 # Opt in to native Windows placement inside the wrapper crate only.
 # nice-tuner itself always denies unsafe code.
-unsafe = ["dep:window-position", "window-position/unsafe"]
+unsafe = ["nice-plugin/unsafe"]
 # ASIO arrives with `standalone` and nowhere else. `asio-host` is a plain alias
 # for the nice-common feature of the same name, and it exists so that the cfgs in
 # `src/standalone/audio.rs` have a name of their own to read — the same spelling
@@ -61,6 +61,7 @@ unsafe = ["dep:window-position", "window-position/unsafe"]
 asio-host = ["nice-common/asio-host"]
 
 [dependencies]
+nice-plugin = { path = "../nice-plugin" }
 nice-common = { path = "../nice-common", features = ["widgets"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
@@ -71,19 +72,7 @@ nice-plug = { version = "0.4.2", default-features = false, features = [
     # Debug-build guard: fails loudly if `process()` allocates.
     "assert_process_allocs",
 ] }
-# Pinned to what nice-plug 0.4.2's byo_gui_wgpu example was built against.
-# NOTE: baseview 0.3.7+ moved the WindowHandler trait; nice-plug `main` already
-# tracks baseview 0.4.1 — revisit this pin when nice-plug releases again.
-baseview = { version = "=0.3.3", features = ["tracing"] }
-# The same wgpu the engine builds against, and it has to be: a `wgpu::Surface`
-# and `wgpu::Device` cross the boundary into `frost::embedded`, and two copies
-# of wgpu would be two types with one name — a type error, not a slower build.
-# The lock resolves both to 30.0.1; re-check that after any lock refresh.
-wgpu = "30"
-pollster = "0.4"
 crossbeam = "0.8"
-# baseview 0.3.3 does not re-export it; its Event::Keyboard carries this type
-keyboard-types = "0.8.3"
 # Settings panel persistence (main thread only; never touched by the audio path)
 serde = { version = "1", features = ["derive"] }
 # The settings panel's device enumeration and the standalone's streams, on the
@@ -114,14 +103,6 @@ cpal = { version = "0.18", optional = true }
 cpal = { version = "0.18", features = ["jack"], optional = true }
 # Public JACK control API; same version already pulled in by CPAL.
 jack = { version = "0.13.5", optional = true }
-
-[target.'cfg(windows)'.dependencies]
-# Native placement is implemented only by our opt-in Windows wrapper.
-window-position = { path = "crates/window-position", optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
-macos-frame-sync = { path = "crates/macos-frame-sync" }
 
 [dev-dependencies]
 ron = "=0.12.2"

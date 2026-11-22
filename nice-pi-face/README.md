@@ -295,3 +295,7 @@ What none of that tests is the three named assumptions — a 4 kHz top of the sw
 4 ms filament, a knee at half scale. No test can check an assumption against a
 document that does not state it; those three are `TODO.md`'s, and they are what an
 afternoon with a scope and a PH3A lamp would retire.
+
+The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
+Plugin-specific view construction lives in `src/editor.rs`; standalone
+activation follows the shared activate/reset sequence.

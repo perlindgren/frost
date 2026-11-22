@@ -1163,15 +1163,6 @@ impl Process for EchoUi {
 
 /// baseview's button names to frost's; anything frost has no word for is simply
 /// not a button.
-pub fn map_mouse(button: baseview::MouseButton) -> Option<frost::MouseButton> {
-    Some(match button {
-        baseview::MouseButton::Left => frost::MouseButton::Left,
-        baseview::MouseButton::Right => frost::MouseButton::Right,
-        baseview::MouseButton::Middle => frost::MouseButton::Middle,
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Dial, Layout, Placement, Switch, mode_detent};

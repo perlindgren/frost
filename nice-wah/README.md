@@ -127,3 +127,7 @@ links without nice-plug, whose debug allocator and the counter's allocator
 cannot share a binary. The standalone tests need no hardware: the pump moves
 ring buffers through a real plugin instance, the settings file round-trips,
 and the dummy backend resolves to exactly the silence it promises.
+
+The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
+Plugin-specific view construction lives in `src/editor.rs`; standalone
+activation follows the shared activate/reset sequence.

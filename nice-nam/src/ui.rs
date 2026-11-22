@@ -199,7 +199,7 @@ pub struct NamUi {
     diag: frost::Diagnostics,
 }
 impl NamUi {
-    pub fn set_host(
+    pub(crate) fn set_host(
         &mut self,
         params: Arc<crate::NamParams>,
         context: nice_plug::context::gui::GuiContext,
@@ -749,73 +749,6 @@ impl Process for NamUi {
         #[cfg(feature = "diag")]
         self.diag.process(ctx, _dt);
     }
-}
-
-pub fn map_key(key: &keyboard_types::Key) -> Option<frost::KeyCode> {
-    use keyboard_types::{Key, NamedKey};
-    match key {
-        Key::Character(s) => match s.as_str() {
-            "a" | "A" => Some(frost::KeyCode::KeyA),
-            "b" | "B" => Some(frost::KeyCode::KeyB),
-            "c" | "C" => Some(frost::KeyCode::KeyC),
-            "d" | "D" => Some(frost::KeyCode::KeyD),
-            "e" | "E" => Some(frost::KeyCode::KeyE),
-            "f" | "F" => Some(frost::KeyCode::KeyF),
-            "g" | "G" => Some(frost::KeyCode::KeyG),
-            "h" | "H" => Some(frost::KeyCode::KeyH),
-            "i" | "I" => Some(frost::KeyCode::KeyI),
-            "j" | "J" => Some(frost::KeyCode::KeyJ),
-            "k" | "K" => Some(frost::KeyCode::KeyK),
-            "l" | "L" => Some(frost::KeyCode::KeyL),
-            "m" | "M" => Some(frost::KeyCode::KeyM),
-            "n" | "N" => Some(frost::KeyCode::KeyN),
-            "o" | "O" => Some(frost::KeyCode::KeyO),
-            "p" | "P" => Some(frost::KeyCode::KeyP),
-            "q" | "Q" => Some(frost::KeyCode::KeyQ),
-            "r" | "R" => Some(frost::KeyCode::KeyR),
-            "s" | "S" => Some(frost::KeyCode::KeyS),
-            "t" | "T" => Some(frost::KeyCode::KeyT),
-            "u" | "U" => Some(frost::KeyCode::KeyU),
-            "v" | "V" => Some(frost::KeyCode::KeyV),
-            "w" | "W" => Some(frost::KeyCode::KeyW),
-            "x" | "X" => Some(frost::KeyCode::KeyX),
-            "y" | "Y" => Some(frost::KeyCode::KeyY),
-            "z" | "Z" => Some(frost::KeyCode::KeyZ),
-            "0" => Some(frost::KeyCode::Digit0),
-            "1" => Some(frost::KeyCode::Digit1),
-            "2" => Some(frost::KeyCode::Digit2),
-            "3" => Some(frost::KeyCode::Digit3),
-            "4" => Some(frost::KeyCode::Digit4),
-            "5" => Some(frost::KeyCode::Digit5),
-            "6" => Some(frost::KeyCode::Digit6),
-            "7" => Some(frost::KeyCode::Digit7),
-            "8" => Some(frost::KeyCode::Digit8),
-            "9" => Some(frost::KeyCode::Digit9),
-            " " => Some(frost::KeyCode::Space),
-            _ => None,
-        },
-        Key::Named(named) => Some(match named {
-            NamedKey::Escape => frost::KeyCode::Escape,
-            NamedKey::Enter => frost::KeyCode::Enter,
-            NamedKey::Tab => frost::KeyCode::Tab,
-            NamedKey::Backspace => frost::KeyCode::Backspace,
-            NamedKey::Delete => frost::KeyCode::Delete,
-            NamedKey::ArrowLeft => frost::KeyCode::ArrowLeft,
-            NamedKey::ArrowRight => frost::KeyCode::ArrowRight,
-            NamedKey::ArrowUp => frost::KeyCode::ArrowUp,
-            NamedKey::ArrowDown => frost::KeyCode::ArrowDown,
-            _ => return None,
-        }),
-    }
-}
-
-pub fn map_mouse(button: baseview::MouseButton) -> Option<frost::MouseButton> {
-    Some(match button {
-        baseview::MouseButton::Left => frost::MouseButton::Left,
-        baseview::MouseButton::Right => frost::MouseButton::Right,
-        baseview::MouseButton::Middle => frost::MouseButton::Middle,
-        _ => return None,
-    })
 }
 
 #[cfg(test)]

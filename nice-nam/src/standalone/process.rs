@@ -1,69 +1,21 @@
 //! Adapter for the same Plugin activation and process calls used by VST3/CLAP.
 use crate::NamPlugin;
 use nice_common::sample::Level;
-use nice_plug::context::process::SendEventError;
 use nice_plug::prelude::*;
 use std::sync::{Arc, Mutex};
 
 pub(super) const BLOCK: usize = 1024;
 
-pub(super) struct Context {
-    transport: Transport,
-}
-impl Context {
-    pub fn new(rate: f32) -> Self {
-        Self {
-            transport: Transport::new(rate),
-        }
-    }
-}
-// NamPlugin has no MIDI, background tasks, latency or polyphonic voices.
-impl ActivateContext<NamPlugin> for Context {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Standalone
-    }
-    fn execute(&self, _: ()) {}
-    fn set_latency_samples(&self, _: u32) {}
-    fn set_current_voice_capacity(&self, _: u32) {}
-}
-impl ProcessContext<NamPlugin> for Context {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Standalone
-    }
-    fn execute_background(&self, _: ()) {}
-    fn execute_gui(&self, _: ()) {}
-    fn transport(&self) -> &Transport {
-        &self.transport
-    }
-    fn next_event(&mut self) -> Option<PluginNoteEvent<NamPlugin>> {
-        None
-    }
-    fn try_send_event(
-        &mut self,
-        event: PluginNoteEvent<NamPlugin>,
-    ) -> Result<(), (PluginNoteEvent<NamPlugin>, SendEventError)> {
-        Err((event, SendEventError::NoOutputBuffer))
-    }
-    fn set_latency_samples(&self, _: u32) {}
-    fn request_restart(&self) {}
-    fn set_current_voice_capacity(&self, _: u32) {}
-}
+type Context = nice_plugin::standalone::Context<NamPlugin>;
 
 pub(super) fn activate(plugin: &mut NamPlugin, _channels: usize, rate: f32) -> Result<(), String> {
-    plugin.deactivate();
-    if !plugin.activate(
-        &NamPlugin::AUDIO_IO_LAYOUTS[0],
-        &BufferConfig {
-            sample_rate: rate,
-            min_buffer_size: None,
-            max_buffer_size: BLOCK as u32,
-            process_mode: ProcessMode::Realtime,
-        },
+    nice_plugin::lifecycle::activate(
+        plugin,
+        rate,
+        BLOCK,
         &mut Context::new(rate),
-    ) {
-        return Err("NAM could not activate".into());
-    }
-    Ok(())
+        "NAM could not activate",
+    )
 }
 
 pub(super) struct Processor {

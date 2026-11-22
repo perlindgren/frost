@@ -1,53 +1,12 @@
 //! Adapter for the same Plugin activation and process calls used by VST3/CLAP.
 use crate::TunerPlugin;
 use nice_common::sample::Level;
-use nice_plug::context::process::SendEventError;
 use nice_plug::prelude::*;
 use std::sync::{Arc, Mutex};
 
 pub(super) const BLOCK: usize = 1024;
 
-pub(super) struct Context {
-    transport: Transport,
-}
-impl Context {
-    pub fn new(rate: f32) -> Self {
-        Self {
-            transport: Transport::new(rate),
-        }
-    }
-}
-// TunerPlugin has no MIDI, background tasks, latency or polyphonic voices.
-impl ActivateContext<TunerPlugin> for Context {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Standalone
-    }
-    fn execute(&self, _: ()) {}
-    fn set_latency_samples(&self, _: u32) {}
-    fn set_current_voice_capacity(&self, _: u32) {}
-}
-impl ProcessContext<TunerPlugin> for Context {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Standalone
-    }
-    fn execute_background(&self, _: ()) {}
-    fn execute_gui(&self, _: ()) {}
-    fn transport(&self) -> &Transport {
-        &self.transport
-    }
-    fn next_event(&mut self) -> Option<PluginNoteEvent<TunerPlugin>> {
-        None
-    }
-    fn try_send_event(
-        &mut self,
-        event: PluginNoteEvent<TunerPlugin>,
-    ) -> Result<(), (PluginNoteEvent<TunerPlugin>, SendEventError)> {
-        Err((event, SendEventError::NoOutputBuffer))
-    }
-    fn set_latency_samples(&self, _: u32) {}
-    fn request_restart(&self) {}
-    fn set_current_voice_capacity(&self, _: u32) {}
-}
+type Context = nice_plugin::standalone::Context<TunerPlugin>;
 
 pub(super) fn activate(plugin: &mut TunerPlugin, rate: f32) -> Result<(), String> {
     if let Some(&hz) = super::TEST_FREQUENCY.get()
@@ -60,24 +19,13 @@ pub(super) fn activate(plugin: &mut TunerPlugin, rate: f32) -> Result<(), String
     // The box declares exactly one layout: mono in, mono out. Which of the
     // device's inputs fills that single lane is routing, decided at the edge
     // in `Processor::run`, not a second layout.
-    let layout = TunerPlugin::AUDIO_IO_LAYOUTS
-        .first()
-        .expect("the tuner declares exactly one audio IO layout");
-    plugin.deactivate();
-    if !plugin.activate(
-        layout,
-        &BufferConfig {
-            sample_rate: rate,
-            min_buffer_size: None,
-            max_buffer_size: BLOCK as u32,
-            process_mode: ProcessMode::Realtime,
-        },
+    nice_plugin::lifecycle::activate(
+        plugin,
+        rate,
+        BLOCK,
         &mut Context::new(rate),
-    ) {
-        return Err("The tuner could not activate this audio configuration".into());
-    }
-    plugin.reset();
-    Ok(())
+        "The tuner could not activate this audio configuration",
+    )
 }
 
 pub(super) struct Processor {

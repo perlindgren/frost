@@ -186,3 +186,7 @@ compatibility workaround for nice-plug 0.4.2's lack of a public non-parameter
 state-dirty notification. Host calls happen only after releasing the preferences
 mutex, so a synchronous state save cannot re-enter that lock. Standalone builds
 continue to save their own RON configuration without requiring a host context.
+
+The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
+Plugin-specific view construction lives in `src/editor.rs`; standalone
+activation follows the shared activate/reset sequence.

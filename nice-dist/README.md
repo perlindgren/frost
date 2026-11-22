@@ -265,3 +265,7 @@ latency alignment. See [Nice Clone's circuit documentation](../nice-clone/README
 for component values, reference measurements and modelling limitations.
 The separate Nice Clone package, plugin IDs and preferences remain available.
 Historical timing tables above predate this sixth model.
+
+The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
+Plugin-specific view construction lives in `src/editor.rs`; standalone
+activation follows the shared activate/reset sequence.

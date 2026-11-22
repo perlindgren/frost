@@ -639,12 +639,3 @@ impl Process for CloneUi {
         }
     }
 }
-
-pub fn map_mouse(button: baseview::MouseButton) -> Option<frost::MouseButton> {
-    Some(match button {
-        baseview::MouseButton::Left => frost::MouseButton::Left,
-        baseview::MouseButton::Right => frost::MouseButton::Right,
-        baseview::MouseButton::Middle => frost::MouseButton::Middle,
-        _ => return None,
-    })
-}

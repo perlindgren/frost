@@ -142,3 +142,7 @@ needed to establish and refine a match to a particular Behringer pedal.
 The project-owned DSP implementation lives in `nice-common/src/clone_drive.rs`
 and is shared with Nice Dist's Nice Clone model. `nice-clone/src/dsp.rs` re-exports
 the existing DSP API; the separate plugin identity, settings and behavior remain.
+
+The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
+Plugin-specific view construction lives in `src/editor.rs`; standalone
+activation follows the shared activate/reset sequence.

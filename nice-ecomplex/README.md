@@ -203,3 +203,7 @@ shorthand, the front-end curve and its drive span, the wet taper. No test
 can check an assumption against a
 document that does not state it; those belong to `TODO.md`, and they are
 what an afternoon with the machine and a bench would retire.
+
+The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
+Plugin-specific view construction lives in `src/editor.rs`; standalone
+activation follows the shared activate/reset sequence.

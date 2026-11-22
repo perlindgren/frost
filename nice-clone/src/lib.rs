@@ -4,7 +4,6 @@
 const BLOCK: usize = 128;
 pub mod dsp;
 mod editor;
-mod gui;
 #[cfg(feature = "standalone")]
 pub mod settings;
 #[cfg(feature = "standalone")]
@@ -13,6 +12,7 @@ mod ui;
 
 use crossbeam::atomic::AtomicCell;
 use editor::CloneEditor;
+use nice_common::meter::block_stats;
 use nice_common::true_peak::TruePeak;
 use nice_plug::editor::dpi::LogicalSize;
 use std::num::NonZeroU32;
@@ -112,25 +112,6 @@ impl Default for CloneParams {
                 .non_automatable(),
         }
     }
-}
-
-fn block_stats(
-    scratch: &[[f32; BLOCK]; 2],
-    channels: usize,
-    n: usize,
-    tp: &mut [TruePeak; 2],
-) -> (f64, f32) {
-    let mut energy = 0.0f64;
-    let mut peak = 0.0f32;
-    for (channel, meter) in scratch[..channels].iter().zip(&mut tp[..channels]) {
-        meter.process(&channel[..n]);
-        peak = peak.max(meter.take());
-        energy += channel[..n]
-            .iter()
-            .map(|&x| f64::from(x).powi(2))
-            .sum::<f64>();
-    }
-    (energy, peak)
 }
 
 pub struct ClonePlugin {
@@ -238,10 +219,10 @@ impl Plugin for ClonePlugin {
     }
 
     fn editor(&mut self, _: AsyncExecutor<Self>) -> Option<Self::Editor> {
-        Some(CloneEditor {
-            params: self.params.clone(),
-            shared: self.shared.clone(),
-        })
+        Some(crate::editor::create(
+            self.params.clone(),
+            self.shared.clone(),
+        ))
     }
 
     fn activate(

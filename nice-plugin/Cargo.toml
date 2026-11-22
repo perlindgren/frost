@@ -1,0 +1,30 @@
+[package]
+name = "nice-plugin"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "Project-owned nice-plug/baseview/Frost editor and standalone adapters"
+
+[features]
+default = []
+standalone = ["nice-common/audio-io", "nice-common/asio-host", "dep:plugin-buffer", "dep:crossbeam"]
+unsafe = ["dep:window-position", "window-position/unsafe"]
+
+[dependencies]
+plugin-buffer = { path = "../nice-tuner/crates/plugin-buffer", optional = true }
+crossbeam = { version = "0.8", optional = true }
+nice-common = { path = "../nice-common", features = ["widgets"] }
+frost = { path = ".." }
+baseview = { version = "=0.3.3", features = ["tracing"] }
+nice-plug = { version = "0.4.2", default-features = false, features = ["editor", "vst3", "assert_process_allocs"] }
+wgpu = "30"
+pollster = "0.4"
+keyboard-types = "0.8.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
+macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }
+
+[target.'cfg(windows)'.dependencies]
+window-position = { path = "../nice-tuner/crates/window-position", optional = true }

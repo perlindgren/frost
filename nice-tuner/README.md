@@ -78,7 +78,7 @@ implementations. This is the pattern the example is intended to demonstrate.
 
 ```
 src/lib.rs        plugin: TunerPlugin (params, process), TunerEditor (baseview spawn)
-src/gui.rs        baseview WindowHandler driving `frost::embedded::Embedded` (surface, inputs)
+src/editor.rs     plugin view factory for the shared `nice-plugin` editor bridge
 src/tuner_ui.rs   frost scene: gauge, needle, note readout, input meter (`Process` impl)
 assets/fonts     Fluent System Icons Regular, upstream glyph map and MIT notice
 src/main.rs       standalone target (`--features standalone`)
@@ -550,7 +550,7 @@ One-time verification checklist in Reaper (load the CLAP from `target/bundled`):
 - [x] M2 pitch detector (`crates/pitch`) — 17/17 tests green
 - [x] M3 frost embedded engine (`frost::embedded::Embedded`) — 313 fork tests green,
       winit event loop grep-gated out
-- [x] M4 baseview→frost adapter (`src/gui.rs`) + tuner scene (`src/tuner_ui.rs`)
+- [x] M4 baseview→frost adapter (now shared in `nice-plugin`) + tuner scene (`src/tuner_ui.rs`)
 - [x] M5 DSP→GUI wiring (analysis gated on editor open; shared atomics, zero RT allocs)
 - [x] M6 `scripts/check.sh` all gates green, incl. `Nice Tuner.clap`/`.vst3` bundling
 - [x] Standalone settings panel: backend/device/buffer dropdowns, RON in CWD,
@@ -595,3 +595,7 @@ Mute defaults off and takes effect immediately. Standalone stores `muted` in
 its RON preferences; CLAP/VST3 expose the automatable boolean parameter `mute`,
 saved through the host's plugin state. Mute is separate from host bypass: bypass
 normally passes the input through, while mute writes silence to every output.
+
+The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
+Plugin-specific view construction lives in `src/editor.rs`; standalone
+activation follows the shared activate/reset sequence.

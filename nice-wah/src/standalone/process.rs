@@ -1,170 +1,31 @@
-//! The plugin adapter between nice-common's transport rings and the wah's
-//! own `process()`. This is the entire standalone DSP: the device callbacks,
-//! both backends, the resampling monitor and the ring sizing all live in
-//! `nice_common::audio_io` — the rack runs the same transport — and what the
-//! rack calls `spawn_dsp` is what `pump` is here.
+//! Plugin-specific regression tests for the shared standalone adapter.
 use crate::{WahPlugin, WahSharedState};
 use nice_common::audio_io::Endpoints;
-use nice_common::resample::StereoFrame;
-use nice_plug::context::process::SendEventError;
-use nice_plug::prelude::*;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-/// The same quantum the plugin's own scratch buffers are sized for, so one
-/// block of it is always one call of the filter.
-pub(super) const BLOCK: usize = crate::dsp::BLOCK;
-
-pub(super) struct Context {
-    transport: Transport,
-}
-
-impl Context {
-    pub fn new(rate: f32) -> Self {
-        Self {
-            transport: Transport::new(rate),
-        }
-    }
-}
-
-// The wah has no MIDI, no background tasks, no latency and no voices; the
-// honest answers are the empty ones, and the transport reports a stationary
-// clock at the real sample rate.
-impl ActivateContext<WahPlugin> for Context {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Standalone
-    }
-    fn execute(&self, _: ()) {}
-    fn set_latency_samples(&self, _: u32) {}
-    fn set_current_voice_capacity(&self, _: u32) {}
-}
-
-impl ProcessContext<WahPlugin> for Context {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Standalone
-    }
-    fn execute_background(&self, _: ()) {}
-    fn execute_gui(&self, _: ()) {}
-    fn transport(&self) -> &Transport {
-        &self.transport
-    }
-    fn next_event(&mut self) -> Option<PluginNoteEvent<WahPlugin>> {
-        None
-    }
-    fn try_send_event(
-        &mut self,
-        event: PluginNoteEvent<WahPlugin>,
-    ) -> Result<(), (PluginNoteEvent<WahPlugin>, SendEventError)> {
-        Err((event, SendEventError::NoOutputBuffer))
-    }
-    fn set_latency_samples(&self, _: u32) {}
-    fn request_restart(&self) {}
-    fn set_current_voice_capacity(&self, _: u32) {}
-}
-
-/// (Re)activate for a freshly opened pair of streams, on the plugin's own mono
-/// layout. The device contract in `nice_common::audio_io` is stereo — the rings
-/// carry stereo frames whatever the device layout — so the fold from a captured
-/// frame down to the pedal's one input, and the widening of its one output back
-/// to the device's two lanes, happen in `pump_once` below, at the host's edges.
-/// Width is the host's work; the pedal has one of each.
-pub(super) fn activate(plugin: &mut WahPlugin, rate: f32) -> Result<(), String> {
-    plugin.deactivate();
-    if !plugin.activate(
-        &WahPlugin::AUDIO_IO_LAYOUTS[0],
-        &BufferConfig {
-            sample_rate: rate,
-            min_buffer_size: None,
-            max_buffer_size: BLOCK as u32,
-            process_mode: ProcessMode::Realtime,
-        },
+use std::sync::{Arc, Mutex, atomic::Ordering};
+const BLOCK: usize = crate::dsp::BLOCK;
+type Context = nice_plugin::standalone::Context<WahPlugin>;
+fn activate(plugin: &mut WahPlugin, rate: f32) -> Result<(), String> {
+    nice_plugin::lifecycle::activate(
+        plugin,
+        rate,
+        BLOCK,
         &mut Context::new(rate),
-    ) {
-        return Err("Nice Wah could not activate".into());
-    }
-    Ok(())
+        "activation failed",
+    )
 }
-
-/// One drain of the rings, bounded by the plugin's block: pop up to a block
-/// of captured frames, run the filter over them, push the result to the
-/// monitor. Zero means the capture had nothing to say this moment.
-///
-/// A locked plugin answers with silence rather than stale input: the lock is
-/// the audio owner performing a `deactivate`/`activate` pair for new streams,
-/// and passing a device's live signal through a plugin mid-retuning is worse
-/// than one short gap on a reconfiguration the user asked for.
 fn pump_once(
-    buffer: &mut plugin_buffer::PlanarBuffer<{ BLOCK }>,
+    buffer: &mut plugin_buffer::PlanarBuffer<BLOCK>,
     context: &mut Context,
     plugin: &Arc<Mutex<WahPlugin>>,
     shared: &WahSharedState,
     io: &mut Endpoints,
 ) -> usize {
-    let count = io.input.slots().min(BLOCK);
-    if count == 0 {
-        return 0;
+    let count = nice_plugin::standalone::process_once(buffer, context, plugin, io, BLOCK);
+    if count > 0 {
+        shared.buffer_frames.store(count as u32, Ordering::Relaxed);
     }
-    buffer.with_buffer(count, |buffer| {
-        // The layout asks for exactly one channel, and the ring hands over a
-        // stereo frame: the fold happens here, at the host's edge, and the
-        // pedal never sees two of anything.
-        let channels = buffer.as_slice();
-        let mono = channels
-            .first_mut()
-            .expect("the layout asks for one channel");
-        for slot in mono[..count].iter_mut() {
-            let [left, right] = io.input.pop().expect("slots() promised a frame");
-            *slot = (left + right) * 0.5;
-        }
-        match plugin.try_lock() {
-            Ok(mut instance) => {
-                let _status = instance.process(
-                    buffer,
-                    &mut AuxiliaryBuffers {
-                        inputs: &mut [],
-                        outputs: &mut [],
-                    },
-                    context,
-                );
-            }
-            Err(_) => {
-                for channel in buffer.as_slice() {
-                    channel[..count].fill(0.0);
-                }
-            }
-        }
-        for frame in 0..count {
-            // Back out at the other edge: the one mono answer, duplicated so
-            // both device lanes carry the pedal.
-            let sample = buffer.as_slice_immutable()[0][frame];
-            let _ = io.output.push(StereoFrame([sample, sample]));
-        }
-    });
-    shared.buffer_frames.store(count as u32, Ordering::Relaxed);
     count
 }
-
-/// The pump thread: the rack's `spawn_dsp` shape, parked between drains so
-/// an idle transport costs nothing and a running one nothing extra. The
-/// plugin's own `process()` publishes the meters, so the editor sees a
-/// standalone exactly as a host would see it.
-pub(super) fn pump(
-    plugin: Arc<Mutex<WahPlugin>>,
-    shared: Arc<WahSharedState>,
-    mut io: Endpoints,
-    stop: Arc<AtomicBool>,
-    rate: f32,
-) {
-    let mut buffer = plugin_buffer::PlanarBuffer::<{ BLOCK }>::new(1, BLOCK);
-    let mut context = Context::new(rate);
-    while !stop.load(Ordering::Relaxed) {
-        if pump_once(&mut buffer, &mut context, &plugin, &shared, &mut io) == 0 {
-            std::thread::park_timeout(Duration::from_micros(250));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
