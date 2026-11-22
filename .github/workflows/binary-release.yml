@@ -1,0 +1,104 @@
+name: Binary release
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binary-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            flags: '-Ctarget-cpu=apple-m1'
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            flags: '-Ctarget-cpu=x86-64-v3 -Ctarget-feature=+crt-static'
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            flags: '-Ctarget-cpu=x86-64-v3'
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTFLAGS: ${{ matrix.flags }}
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+      CARGO_TARGET_DIR: target/release-ci
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: rustfmt
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y pkg-config libasound2-dev libudev-dev libjack-jackd2-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}-${{ matrix.flags }}
+          workspaces: '. -> target/release-ci'
+      - name: Test packaging and verify legal evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python nice-tuner/xtask/scripts/check-release-licenses.py
+          python -m unittest discover -s tools/release -p 'test_*.py'
+          cargo test -p xtask --locked
+      - name: Build and verify release downloads
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python tools/release/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frost-nice-${{ matrix.target }}
+          path: target/release-ci/downloads/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloads
+          merge-multiple: true
+      - name: Create complete draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd downloads
+          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 3
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          cp ../docs/binary-releases.md INSTALL.md
+          # A retry may replace draft assets, but must never modify a published release.
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json 2>/dev/null; then
+            python -c 'import json; assert json.load(open("release.json"))["isDraft"], "Refusing to change a published release"'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes --title "$RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" *.tar.gz SHA256SUMS.txt INSTALL.md --clobber

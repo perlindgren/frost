@@ -244,9 +244,11 @@ Build different targets sequentially or use separate target directories.
 
 `release-licenses.yml` checks legal-text provenance, failure-case unit tests and
 metadata inventories for macOS, Windows and Linux. The final downloadable archive
-is checked by the packaging command itself; CI also needs to invoke the Python
-checker on archives it publishes. Publishing/tag-triggered binary workflows are
-not installed by these notice checks.
+is checked by the packaging command itself and the Python checker. The separate
+`binary-release.yml` workflow builds native release archives on tag pushes or
+manual runs, inspects binary dependencies and creates draft releases for tags.
+See [binary release instructions](binary-releases.md) for testing, CPU/runtime
+requirements and publication steps.
 
 See [the provenance collection](third-party-licenses/README.md) for scope and
 upstream omissions. These checks do not establish title to third-party material,

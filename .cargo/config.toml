@@ -53,17 +53,10 @@ xtask = "run --package xtask --"
 # two guards (`.githooks/pre-commit`, the gate's own assertion) stand — and no
 # reason at all left to configure a path to it. `<temp>` is not the tree.
 
-# A decision written down rather than inherited. That `+crt-static` above is the
-# engine's own choice — a game that ships as one file with no VC redist to
-# install — and the plugin joined this workspace under it. A VST3 `.dll` built
-# with a static CRT carries its own C runtime and heap beside the host's, which
-# is a thing a plugin is generally advised not to do; the standalone binary the
-# SDK examples ship is built without it. Nothing here has been measured against
-# a real host, so the honest state is: this flag now applies to the plugin, and
-# a bundle you intend to load in somebody's DAW should be built without it,
-# explicitly, for that one command —
-#
-#     $env:RUSTFLAGS = ""        # the environment wins over `rustflags` above
-#     cargo xtask bundle nice-tuner --release
-#
-# and measured in a host before it is trusted either way.
+# Windows builds default to a static C runtime. The binary-release workflow
+# explicitly retains +crt-static alongside its x86-64-v3 optimization flags,
+# because RUSTFLAGS overrides this target configuration. Its import checks reject
+# dynamic MSVC/UCRT and unreviewed external DLL dependencies in the distributed
+# plugins and executables. Windows system DLLs and audio drivers remain external.
+# Each module owns its runtime state; allocation ownership across plugin ABI
+# boundaries must continue to follow the host/plugin API's rules.
