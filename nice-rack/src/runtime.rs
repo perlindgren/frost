@@ -199,11 +199,26 @@ fn arrange_flow(cards: Vec<Card>, root: crate::layout::Flow) -> Result<Vec<Card>
     }
     Ok(result)
 }
+/// The seat a drop takes when there is nothing to place the card against: a
+/// card alone in a rack has no other card to be moved next to, and a drop
+/// aimed at either of the rack's own ends means the same thing there — the
+/// plugin becomes the whole chain.
+fn solo_seat(mut ids: impl Iterator<Item = NodeId>, moving: NodeId) -> Option<crate::layout::Flow> {
+    match (ids.next(), ids.next()) {
+        (Some(id), None) if id == moving => Some(crate::layout::Flow::series(vec![
+            crate::layout::Flow::Plugin(moving.0),
+        ])),
+        _ => None,
+    }
+}
 pub fn arrange(
     cards: Vec<Card>,
     moving: NodeId,
     target: crate::layout::Target,
 ) -> Result<Vec<Card>, String> {
+    if let Some(root) = solo_seat(cards.iter().map(|card| card.id), moving) {
+        return arrange_flow(cards, root);
+    }
     let root = flow(&cards)?.edit_scoped(
         crate::layout::Edit::Move {
             id: moving.0,
@@ -1165,20 +1180,24 @@ impl Runtime {
     /// making keeps making. Device open refuses the same shapes for the
     /// settings route, so the check below is the same complaint heard one
     /// step earlier rather than a second rule.
-    pub fn edit(&mut self, cards: Vec<Card>) {
+    /// Returns whether the rack took the roster. It does not take it while the
+    /// engine is still busy with the previous edit, or when the roster cannot
+    /// be wired; in both cases `message` says why. The answer is for the
+    /// history, which must not remember a change the rack refused to make.
+    pub fn edit(&mut self, cards: Vec<Card>) -> bool {
         if self.busy() {
-            return;
+            return false;
         }
         let cards = match flow(&cards).and_then(|root| arrange_flow(cards, root)) {
             Ok(cards) => cards,
             Err(error) => {
                 self.message = error;
-                return;
+                return false;
             }
         };
         if let Err(error) = refuse(chain(&cards, self.route()), &cards) {
             self.message = error;
-            return;
+            return false;
         }
         self.halted = false;
         self.retries = 0;
@@ -1188,6 +1207,7 @@ impl Runtime {
             reply: None,
             rollback: false,
         });
+        true
     }
     fn begin(&mut self, action: Action) {
         // The editors stay where they are. A roster edit used to shut every one
@@ -2098,6 +2118,25 @@ mod tests {
             }]
         );
         graph.compile().expect("the split is a legal graph");
+    }
+    #[test]
+    fn a_card_alone_in_the_rack_is_seated_as_the_whole_chain() {
+        // The empty rack's one drop aims at a rack end, and there is no other
+        // card to be placed against: the plugin becomes the chain. The ends
+        // are the same seat seen from either side, so nothing about the
+        // target it came from survives into the routing.
+        assert_eq!(
+            solo_seat([NodeId(1)].into_iter(), NodeId(1)),
+            Some(crate::layout::Flow::Plugin(1))
+        );
+        // Anything else — no cards, more than one, or a card that is not the
+        // one being moved — is placed against what the rack already holds.
+        assert_eq!(solo_seat(std::iter::empty::<NodeId>(), NodeId(1)), None);
+        assert_eq!(
+            solo_seat([NodeId(1), NodeId(3)].into_iter(), NodeId(1)),
+            None
+        );
+        assert_eq!(solo_seat([NodeId(3)].into_iter(), NodeId(1)), None);
     }
     /// Both ends narrow: the rack has nothing to say about width at all, and
     /// the input card hands its one channel straight to the output card.

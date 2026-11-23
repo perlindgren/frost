@@ -3060,6 +3060,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "raw-window-handle",
  "windows-sys 0.52.0",
+ "x11rb",
 ]
 
 [[package]]

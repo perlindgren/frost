@@ -1179,9 +1179,24 @@ impl<P: Process> ApplicationHandler for Frost<P> {
         if let Some(dnd) = self.wayland_drop.as_mut() {
             for event in dnd.pump() {
                 match event {
-                    WaylandDropEvent::HoverStart => {
+                    // The coordinates come from the data device because the
+                    // compositor confines the real pointer to the drag icon it
+                    // draws: winit's cursor events stop when a drag starts, so
+                    // without these the drop has no position and lands at the
+                    // end of the rack. `set_cursor` takes the same
+                    // surface-local logical points `wl_pointer.motion` would
+                    // have carried, which is what makes the pointer behave for
+                    // the rack exactly as it does for a host cursor.
+                    WaylandDropEvent::HoverStart { point } => {
+                        self.set_cursor(point[0] as f64, point[1] as f64);
                         self.process.file_hovered(Some(std::path::PathBuf::new()));
                     }
+                    WaylandDropEvent::HoverMove { point } => {
+                        self.set_cursor(point[0] as f64, point[1] as f64);
+                    }
+                    // The preview clears, the pointer stays: the compositor
+                    // sends `leave` right before `drop`, and the drop has to
+                    // land where the icon was.
                     WaylandDropEvent::HoverEnd => self.process.file_hovered(None),
                     WaylandDropEvent::Dropped(paths) => {
                         // Mirror the winit semantics the window-event arm

@@ -8,6 +8,12 @@ publish = false
 [dependencies]
 raw-window-handle = "0.6"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Speaks the X11 wire protocol itself, so the pointer query needs no libX11 at
+# runtime. Same version winit already builds; no features, which adds nothing
+# to the lock.
+x11rb = "0.13.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSEvent", "NSResponder", "NSView", "NSWindow"] }

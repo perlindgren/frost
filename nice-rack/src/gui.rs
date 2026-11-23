@@ -194,6 +194,32 @@ struct RackUi {
     /// the node the compiled graph gave it. Purely a viewing preference: the
     /// graph is built without it.
     mark_offsets: std::collections::BTreeMap<NodeId, f32>,
+    /// Everything the operator has done that Ctrl-Z can take back, and
+    /// Ctrl-Shift-Z put back. See [`crate::history`] for what a step is and for
+    /// the two rules that make the stack worth trusting.
+    ///
+    /// The stack is written by the setters themselves, not by the places that
+    /// call them, because a step recorded at the call site is a step someone
+    /// forgets to record: the same trim is written by a drag, by a click, by a
+    /// typed number, and by the history itself, and only the setter knows that
+    /// all four of those just happened.
+    history: crate::history::History<crate::history::RackStep>,
+    /// Whether what is being applied right now came out of the history rather
+    /// than out of the operator's hand. Recording is switched off while this is
+    /// set, which is the whole of what keeps an undo from recording itself and
+    /// then undoing the undo.
+    replaying: bool,
+    /// Ctrl (or Super) as it stands right now, tracked off the raw event
+    /// stream. See `note_history_key` for why the rack keeps its own copy of
+    /// this instead of asking frost once a frame.
+    history_control: bool,
+    /// Shift as it stands right now, for the same reason and from the same
+    /// stream: it decides which of the two chords a Z press is.
+    history_shift: bool,
+    /// A step the operator asked for and the rack has not run yet — by the
+    /// chord or by the button beside it. Both routes only ask; the frame runs
+    /// it, because a step moves audio and only a frame may stop it.
+    history_pending: Option<crate::history::Direction>,
 }
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color {
@@ -695,7 +721,7 @@ fn watch_wires(
         }
     }
 }
-fn short(text: &str, count: usize) -> String {
+pub(crate) fn short(text: &str, count: usize) -> String {
     if text.chars().count() <= count {
         text.into()
     } else {
@@ -1646,18 +1672,57 @@ struct WireRun {
 /// Every adjacent pair of a lane's cards offers one run — the wire that
 /// leaves the first card's edge and reaches the next. Pairs that include
 /// the dragged card are skipped: its own stub is not a landing.
-fn wire_runs(groups: &[Vec<GuiLane>], slots: &[Slot], drag: Option<NodeId>) -> Vec<WireRun> {
+///
+/// The `IN` and `OUT` cards end the chain like any other card, so the wire
+/// from `IN` to the head card and the one from the tail card to `OUT` are
+/// runs too. A stage that forks has no single head or tail, and there the
+/// rings carry the drop, so those stretches offer no run.
+fn wire_runs(groups: &[Vec<GuiLane>], frame: &Geometry, drag: Option<NodeId>) -> Vec<WireRun> {
     let mut runs = Vec::new();
+    let slot_of = |id: NodeId| frame.slots.iter().find(|slot| slot.id == id);
+    let end = |stage: &Vec<GuiLane>, first: bool| -> Option<NodeId> {
+        if stage.len() != 1 {
+            return None;
+        }
+        let lane = stage.first()?;
+        if first {
+            lane.ids.first().copied()
+        } else {
+            lane.ids.last().copied()
+        }
+    };
+    if groups.is_empty() {
+        // An empty rack draws the one wire that joins its two ends, and that
+        // wire is a gap like any other: it is where a rack's first plugin
+        // lands. It hangs on the `OUT` card's lead, because that is the end
+        // the chain grows from.
+        return vec![WireRun {
+            card: INPUT_JACK,
+            to: NodeId(MASTER_WIRE_KEY),
+            x0: frame.input.x + CARD_WIDTH / 2.0,
+            x1: frame.output.x - CARD_WIDTH / 2.0,
+            y: frame.flow,
+        }];
+    }
+    let head = groups.first().and_then(|stage| end(stage, true));
+    let tail = groups.last().and_then(|stage| end(stage, false));
+
+    if let Some(to) = head.filter(|id| Some(*id) != drag).and_then(slot_of) {
+        runs.push(WireRun {
+            card: INPUT_JACK,
+            to: to.id,
+            x0: frame.input.x + CARD_WIDTH / 2.0,
+            x1: to.x - CARD_WIDTH / 2.0,
+            y: to.y,
+        });
+    }
     for lane in groups.iter().flat_map(|stage| stage.iter()) {
         for pair in lane.ids.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             if Some(a) == drag || Some(b) == drag {
                 continue;
             }
-            let (Some(a_slot), Some(b_slot)) = (
-                slots.iter().find(|slot| slot.id == a),
-                slots.iter().find(|slot| slot.id == b),
-            ) else {
+            let (Some(a_slot), Some(b_slot)) = (slot_of(a), slot_of(b)) else {
                 continue;
             };
             runs.push(WireRun {
@@ -1668,6 +1733,15 @@ fn wire_runs(groups: &[Vec<GuiLane>], slots: &[Slot], drag: Option<NodeId>) -> V
                 y: a_slot.y,
             });
         }
+    }
+    if let Some(from) = tail.filter(|id| Some(*id) != drag).and_then(slot_of) {
+        runs.push(WireRun {
+            card: from.id,
+            to: NodeId(MASTER_WIRE_KEY),
+            x0: from.x + CARD_WIDTH / 2.0,
+            x1: frame.output.x - CARD_WIDTH / 2.0,
+            y: from.y,
+        });
     }
     runs
 }
@@ -1882,6 +1956,10 @@ fn target_at(
     if let Some(run) = zones.runs.iter().find(|run| {
         run.x0 <= x && x <= run.x1 && (y - run.y).abs() > 14.0 && (y - run.y).abs() <= 50.0
     }) {
+        // The empty rack has one lane and no card to bracket a parallel
+        // around, so a card held by its shoulder wants the same thing a card
+        // held level with it does: to join the chain.
+        let rack_only = run.card == INPUT_JACK && run.to.0 == MASTER_WIRE_KEY;
         return Some(Target {
             scope: None,
             card: if run.card == INPUT_JACK {
@@ -1889,7 +1967,13 @@ fn target_at(
             } else {
                 run.card
             },
-            side: if y > run.y { Side::Above } else { Side::Below },
+            side: if rack_only {
+                Side::Left
+            } else if y > run.y {
+                Side::Above
+            } else {
+                Side::Below
+            },
         });
     }
     let slot = slots
@@ -2063,6 +2147,11 @@ pub fn run(
         moved: false,
         mark_drag: None,
         mark_offsets: Default::default(),
+        history: Default::default(),
+        replaying: false,
+        history_control: false,
+        history_shift: false,
+        history_pending: None,
     };
     let scene = Scene::new(SceneNode {
         shape: Some(Shape::Background {
@@ -2086,6 +2175,12 @@ impl RackUi {
     /// pointer movement and scrolling reuse the cached target identities.
     fn canonical_drop(&mut self, target: Option<Target>, moving: Option<NodeId>) -> Option<Target> {
         let target = target?;
+        // A rack end is not a card, so there is no roster to judge it
+        // against: the empty rack's wire has exactly one answer and it is the
+        // one already aimed at.
+        if target.card == INPUT_JACK || target.card.0 == MASTER_WIRE_KEY {
+            return Some(target);
+        }
         let root = crate::runtime::flow(&self.runtime.cards).ok()?;
         let moving = moving.map(|id| id.0);
         if self
@@ -2122,11 +2217,11 @@ impl RackUi {
                 cards.push(card);
                 if let Some(target) = choosing.placement {
                     match crate::runtime::arrange(cards, id, target) {
-                        Ok(cards) => self.runtime.edit(cards),
+                        Ok(cards) => self.edit(cards),
                         Err(error) => self.runtime.message = error,
                     }
                 } else {
-                    self.runtime.edit(cards);
+                    self.edit(cards);
                 }
             }
             Err(error) => self.runtime.message = error,
@@ -2142,6 +2237,11 @@ impl RackUi {
     /// conversion is the one the tick loop uses, so the two paths can never
     /// drift apart.
     fn set_trim(&mut self, id: u64, side: bool, gain_db: f32) {
+        // Read first, then write: a step is the pair, and the value being
+        // replaced is the half that no longer exists by the time the write is
+        // done. A trim the rack never held for this wire starts at unity,
+        // which is what the meter is born at and what the saved rack says.
+        let from = self.runtime.trim(id, side).unwrap_or_default();
         if let Some(wire) = self.wire_meters.get_mut(&(id, side)) {
             wire.gain_db = gain_db;
         }
@@ -2149,6 +2249,14 @@ impl RackUi {
         if let Some(key) = wire_slot_key(id, side) {
             self.runtime.wires.set_gain(key, 10f32.powf(gain_db / 20.0));
         }
+        let step = crate::history::RackStep::Trim {
+            name: self.owner_name(id),
+            id,
+            side,
+            from,
+            to: gain_db,
+        };
+        self.record(step);
     }
     /// Open or close one wire, written to the same three places a trim is
     /// written to: the rack's meter, which draws the amber stub and the gap in
@@ -2163,6 +2271,7 @@ impl RackUi {
     /// reads as alive, which is the whole difference between a wire that is
     /// unplugged and an amplifier that is turned down.
     fn set_open_circuit(&mut self, id: u64, side: bool, open: bool) {
+        let from = self.runtime.open_circuit(id, side);
         if let Some(wire) = self.wire_meters.get_mut(&(id, side)) {
             wire.open_circuit = open;
         }
@@ -2170,6 +2279,257 @@ impl RackUi {
         if let Some(key) = wire_slot_key(id, side) {
             self.runtime.wires.set_open(key, open);
         }
+        let step = crate::history::RackStep::Circuit {
+            name: self.owner_name(id),
+            id,
+            side,
+            from,
+            to: open,
+        };
+        self.record(step);
+    }
+    /// Say that the operator just did something that Ctrl-Z can take back.
+    ///
+    /// Every writer ends here rather than at its own call site, for the reason
+    /// on the `history` field: the same trim is written by a drag, by a click,
+    /// by a typed number and by the history itself, and only the setter knows
+    /// that all four just happened. The one thing this never does is write
+    /// while the history is being applied — an undo that records itself is an
+    /// undo that can undo itself, and the rack would spend the keystroke
+    /// putting its own undo back.
+    fn record(&mut self, step: crate::history::RackStep) {
+        if self.replaying {
+            return;
+        }
+        self.history.record(step);
+    }
+    /// Who owns one wire, in the words the status line uses. The two runs that
+    /// hang on a jack rather than a card are named for the jack, because there
+    /// is no card to point at; a card that has left the rack still has an entry
+    /// in the trim and switch maps, and its wire's step keeps the name of
+    /// whatever the rack can still see, so the line the history shows is never
+    /// empty even when it has to be vague.
+    fn owner_name(&self, id: u64) -> String {
+        if id == MASTER_WIRE_KEY {
+            return "Output".into();
+        }
+        if id == INPUT_JACK.0 {
+            return "Input".into();
+        }
+        self.runtime
+            .cards
+            .iter()
+            .find(|card| card.id.0 == id)
+            .map(|card| short(&card.name, 20))
+            .unwrap_or_else(|| "card".into())
+    }
+    /// The roster door, with the history standing in it.
+    ///
+    /// `Runtime::edit` is the only way the rack's card list changes, and it
+    /// answers yes or no: it refuses while the audio engine is still busy with
+    /// the last edit, and it refuses a roster that does not fit the jacks. Only
+    /// a yes is worth a step, since a step the rack refused would put something
+    /// in the history that never happened — and the operator would meet it on
+    /// the first Ctrl-Z, which is exactly when a history has to be true.
+    fn edit(&mut self, cards: Vec<Card>) {
+        let before = self.runtime.cards.clone();
+        if !self.runtime.edit(cards.clone()) {
+            return;
+        }
+        let step = crate::history::RackStep::Roster {
+            before,
+            after: cards,
+        };
+        self.record(step);
+    }
+    /// Run one step one way. Every value is written through the same setter the
+    /// operator's own gesture used, for two reasons: a setter is the only place
+    /// that knows all of a value's owners — the meter that draws it, the rack's
+    /// record, the engine's slot table — and an undo that wrote only one of
+    /// them would leave the rack drawing something the audio is not doing.
+    ///
+    /// Returns whether the rack took the step. Only a roster step can refuse;
+    /// a trim or a switch always lands.
+    fn replay(
+        &mut self,
+        step: &crate::history::RackStep,
+        direction: crate::history::Direction,
+    ) -> bool {
+        use crate::history::Direction;
+        // Recording is off for the whole of this: see `record`.
+        let was = std::mem::replace(&mut self.replaying, true);
+        let taken = match step {
+            crate::history::RackStep::Roster { before, after } => self.runtime.edit(
+                match direction {
+                    Direction::Undo => before,
+                    Direction::Redo => after,
+                }
+                .clone(),
+            ),
+            crate::history::RackStep::Trim {
+                id, side, from, to, ..
+            } => {
+                self.set_trim(
+                    *id,
+                    *side,
+                    match direction {
+                        Direction::Undo => *from,
+                        Direction::Redo => *to,
+                    },
+                );
+                true
+            }
+            crate::history::RackStep::Circuit {
+                id, side, from, to, ..
+            } => {
+                self.set_open_circuit(
+                    *id,
+                    *side,
+                    match direction {
+                        Direction::Undo => *from,
+                        Direction::Redo => *to,
+                    },
+                );
+                true
+            }
+            crate::history::RackStep::Bypass { id, from, to, .. } => {
+                self.set_bypass(
+                    *id,
+                    match direction {
+                        Direction::Undo => *from,
+                        Direction::Redo => *to,
+                    },
+                );
+                true
+            }
+            crate::history::RackStep::Pause { id, from, to, .. } => {
+                self.set_pause(
+                    *id,
+                    match direction {
+                        Direction::Undo => *from,
+                        Direction::Redo => *to,
+                    },
+                );
+                true
+            }
+        };
+        self.replaying = was;
+        taken
+    }
+    /// The chord as a pure function: it owns the two modifier flags through
+    /// mutable references and says what this one key event asked for, if
+    /// anything. Split out because the interesting part — which press counts,
+    /// and which one does not — needs neither a window nor a frame to test.
+    ///
+    /// Only a press counts, and only a press that is not the window manager
+    /// repeating a key the operator is still holding: a held Ctrl-Z is one
+    /// step, exactly as it was when the chord was read once a frame.
+    fn history_request(
+        control: &mut bool,
+        shift: &mut bool,
+        code: frost::KeyCode,
+        down: bool,
+        repeat: bool,
+    ) -> Option<crate::history::Direction> {
+        use frost::KeyCode::{
+            ControlLeft, ControlRight, KeyZ, ShiftLeft, ShiftRight, SuperLeft, SuperRight,
+        };
+        match code {
+            ControlLeft | ControlRight | SuperLeft | SuperRight => *control = down,
+            ShiftLeft | ShiftRight => *shift = down,
+            KeyZ if down && !repeat && *control => {
+                return Some(if *shift {
+                    crate::history::Direction::Redo
+                } else {
+                    crate::history::Direction::Undo
+                });
+            }
+            _ => {}
+        }
+        None
+    }
+    /// Ctrl-Z takes the last thing back, Ctrl-Shift-Z puts it back. On macOS
+    /// the command key answers for control, since that is where the operator's
+    /// thumb already is and what every other Mac application says.
+    ///
+    /// The chord is read off the key events rather than off
+    /// `Context::key_down`, because frost keeps the *level* of a key — put
+    /// down on press, taken away on release — and a frame only samples it. A
+    /// quick tap can have both its press and its release fall between two
+    /// frames, and the frame that would have acted then asks and finds
+    /// nothing held: the keystroke is gone, and nothing was ever late or
+    /// busy about it. An event cannot be missed that way. The event is still
+    /// handed back untouched, so every other key reader in the rack sees
+    /// exactly the frost state it saw before.
+    fn note_history_key(&mut self, key: &winit::event::KeyEvent) {
+        let winit::keyboard::PhysicalKey::Code(code) = key.physical_key else {
+            return;
+        };
+        let direction = Self::history_request(
+            &mut self.history_control,
+            &mut self.history_shift,
+            code,
+            key.state == winit::event::ElementState::Pressed,
+            key.repeat,
+        );
+        if let Some(direction) = direction {
+            self.history_pending = Some(direction);
+        }
+    }
+    /// Run a step the operator asked for, by chord or by the button beside
+    /// the settings cog.
+    ///
+    /// Left alone while the operator is doing something that owns the keyboard
+    /// or the pointer: typing a number into a trim — where Ctrl-Z is the
+    /// ordinary undo of a text field and must stay that way — the settings
+    /// page, the plugin picker, and a card mid-drag, which is itself a roster
+    /// edit in progress and would undo the wrong thing.
+    fn apply_history(&mut self, direction: crate::history::Direction) {
+        if self.gain_input.focused()
+            || self.settings_page
+            || self.choosing.is_some()
+            || self.drag.is_some()
+            || self.mark_drag.is_some()
+        {
+            return;
+        }
+        use crate::history::{Command, Direction};
+        let empty = match direction {
+            Direction::Undo => !self.history.can_undo(),
+            Direction::Redo => !self.history.can_redo(),
+        };
+        if empty {
+            // The rack says so instead of saying nothing, because the operator
+            // pressed a key and is entitled to know whether it was heard.
+            self.runtime.message = match direction {
+                Direction::Undo => "Nothing left to undo".into(),
+                Direction::Redo => "Nothing to redo".into(),
+            };
+            return;
+        }
+        if self.runtime.busy() {
+            // The engine is still stopping, rebuilding or starting from the
+            // last edit, and `Runtime::edit` would drop this one on the floor.
+            // Saying so beats looking as though the keystroke was lost.
+            self.runtime.message = "The rack is still settling — try that again".into();
+            return;
+        }
+        let step = match direction {
+            Direction::Undo => self.history.undo(),
+            Direction::Redo => self.history.redo(),
+        };
+        let Some(step) = step else {
+            return;
+        };
+        let step = step.clone();
+        let label = step.label();
+        if !self.replay(&step, direction) {
+            // The rack said no and said why; the step stays where it was,
+            // because nothing moved.
+            return;
+        }
+        self.history.commit(direction);
+        self.runtime.message = format!("{} — {label}", direction.word());
     }
     /// Whether the switch on one wire stands open. The meter is asked rather
     /// than the record, because the meter is what the gap and the amber stub are
@@ -2183,8 +2543,17 @@ impl RackUi {
                 .is_some_and(|wire| wire.open_circuit)
     }
     fn toggle_pause(&mut self, id: u64) {
-        self.gain_click = GainClick::default();
         let paused = !self.runtime.paused(id);
+        self.set_pause(id, paused);
+    }
+    /// Pause or resume one card, and write the change to the history. The
+    /// toggle is the operator's gesture and this is the act, which is what
+    /// lets an undo arrive at the same place a click does: pausing the card
+    /// that is already paused is not a thing that happened, and both paths
+    /// know that here rather than in two places.
+    fn set_pause(&mut self, id: u64, paused: bool) {
+        self.gain_click = GainClick::default();
+        let was = self.runtime.paused(id);
         self.runtime.set_paused(id, paused);
         if self.gain_drag.is_some_and(|(card, _, _)| card == id) {
             self.gain_drag = None;
@@ -2209,10 +2578,23 @@ impl RackUi {
             "Plugin resumed"
         }
         .into();
+        let step = crate::history::RackStep::Pause {
+            name: self.owner_name(id),
+            id,
+            from: was,
+            to: paused,
+        };
+        self.record(step);
     }
     fn toggle_bypass(&mut self, id: u64) {
-        self.gain_click = GainClick::default();
         let bypassed = !self.runtime.bypassed(id);
+        self.set_bypass(id, bypassed);
+    }
+    /// Bypass or restore one card, and write the change to the history. See
+    /// `set_pause` for why the toggle and the act are two functions.
+    fn set_bypass(&mut self, id: u64, bypassed: bool) {
+        self.gain_click = GainClick::default();
+        let was = self.runtime.bypassed(id);
         self.runtime.set_bypassed(id, bypassed);
         if bypassed {
             for side in [false, true] {
@@ -2234,6 +2616,13 @@ impl RackUi {
             "Card enabled"
         }
         .into();
+        let step = crate::history::RackStep::Bypass {
+            name: self.owner_name(id),
+            id,
+            from: was,
+            to: bypassed,
+        };
+        self.record(step);
     }
     /// A right-click on cable outside the meter flips one wire and updates the rack's
     /// message line. Every way of pointing at a wire ends here — the long
@@ -2703,10 +3092,23 @@ impl Process for RackUi {
         if self.windows.event(id, event, &mut self.runtime) {
             return true;
         }
+        // The rack's own shortcuts, read here rather than in the frame: see
+        // `note_history_key`. Everything is handed back — this never returns
+        // true — so frost still tracks every key exactly as it did.
+        if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event {
+            self.note_history_key(key);
+        }
         if matches!(event, winit::event::WindowEvent::CloseRequested) {
             // Shutdown must also complete while hidden, without a draw frame.
             self.runtime.close();
             return true;
+        }
+        if matches!(event, winit::event::WindowEvent::Focused(false)) {
+            // A window that goes away does not say which keys it was holding.
+            // Forgetting them is what keeps a Ctrl pressed before an
+            // alt-tab from turning the next lone Z into an undo.
+            self.history_control = false;
+            self.history_shift = false;
         }
         false
     }
@@ -2715,6 +3117,14 @@ impl Process for RackUi {
         self.external_drag = path.is_some();
     }
     fn file_dropped(&mut self, path: PathBuf) {
+        // A landed file ends the drag as far as this application is concerned,
+        // so end the hover here too instead of waiting for the compositor's
+        // `leave`. The target region is drawn from `external_drag` alone, so a
+        // drag session that stopped talking mid-flight would otherwise leave a
+        // bar following the real cursor until the next drag replaced it. The
+        // landing point is unaffected: an uncaptured drop keeps querying the
+        // live cursor wherever this flag stands.
+        self.external_drag = false;
         if self.drops.len() < 16 {
             self.drops.push_back(Dropped {
                 path,
@@ -2727,6 +3137,14 @@ impl Process for RackUi {
     }
     fn process(&mut self, ctx: &mut Context, dt: f32) {
         self.windows.probe_shell(ctx.window());
+        // Ctrl-Z and Ctrl-Shift-Z, or a click on the buttons beside the cog,
+        // before anything else reads the keyboard, so a frame spent undoing is
+        // not also a frame spent dragging or editing a number the undo has
+        // just taken back. The key is only noted on the event stream; the step
+        // itself runs here, where audio may be stopped.
+        if let Some(direction) = self.history_pending.take() {
+            self.apply_history(direction);
+        }
         // Every wire the rack carries gets its meter here, before anything is
         // drawn, so a clip shows up on a stub nobody has ever clicked. A wire
         // whose card came out of the settings file is born at the trim the rack
@@ -2783,7 +3201,20 @@ impl Process for RackUi {
         master.tick(self.runtime.timings.graph_sample(), dt, false);
         let (w, h) = ctx.size();
         let mouse = ctx.mouse_position();
-        let native_mouse = ctx.window().and_then(rack_window_input::cursor).or(mouse);
+        // A file drag in from the shell produces no cursor events on X11 — the
+        // window server confines the pointer to the drag icon the source draws
+        // — so the drop position comes from the live OS cursor instead. The
+        // query costs a round trip to that server, so it only runs on a frame
+        // that needs it: one with a drag in flight, or one carrying a drop
+        // whose landing point has not been taken yet. Both users are here —
+        // the loop below and `preview_mouse` further down.
+        let native_mouse = if self.external_drag || self.drops.iter().any(|drop| !drop.captured) {
+            ctx.window()
+                .and_then(|window| rack_window_input::cursor(window, window.scale_factor() as f32))
+                .or(mouse)
+        } else {
+            mouse
+        };
         for drop in &mut self.drops {
             if !drop.captured {
                 drop.point = native_mouse;
@@ -2951,7 +3382,7 @@ impl Process for RackUi {
             let drop_runs = canvas
                 .as_ref()
                 .map(|c| c.run_targets(None))
-                .unwrap_or_else(|| wire_runs(&groups, &geometry.slots, None));
+                .unwrap_or_else(|| wire_runs(&groups, &geometry, None));
             let placement = target_at(
                 point.or(mouse),
                 &geometry.slots,
@@ -3011,6 +3442,54 @@ impl Process for RackUi {
         );
         let gx = w / 2.0 - 30.0;
         let gy = h / 2.0 - 32.0;
+        // Undo and redo, to the left of the cog and on its line, so the three
+        // read as one group of window tools — and clickable, because a chord
+        // is not available to everyone and not every rack sits under hands
+        // that know it. Each is drawn dim and answers nothing while its own
+        // half of the stack is empty: a button that would only say "nothing
+        // to undo" is a message, not a button.
+        let undo = [gx - 84.0, gy];
+        let redo = [gx - 42.0, gy];
+        let (can_undo, can_redo) = (self.history.can_undo(), self.history.can_redo());
+        // An empty direction cannot be hot, so the pointer never lights up a
+        // control that will not answer it.
+        let undo_hot = can_undo && hit(mouse, undo[0], undo[1], 18.0, 18.0);
+        let redo_hot = can_redo && hit(mouse, redo[0], redo[1], 18.0, 18.0);
+        // `ic_fluent_arrow_undo_24_regular` (U+F19A) and
+        // `ic_fluent_arrow_redo_24_regular` (U+F16F), the same font the cog is
+        // drawn from; `nice-common/assets/fonts/FluentSystemIcons-Regular.json`
+        // is the name map both numbers come from.
+        for (at, glyph, live, hot) in [
+            (undo, '\u{f19a}', can_undo, undo_hot),
+            (redo, '\u{f16f}', can_redo, redo_hot),
+        ] {
+            ctx.text(
+                at[0],
+                at[1],
+                &self.icons,
+                glyph,
+                28.0,
+                400.0,
+                if !live {
+                    rgb(88, 84, 102)
+                } else if hot {
+                    rgb(103, 237, 175)
+                } else {
+                    rgb(180, 174, 193)
+                },
+                0.2,
+            );
+        }
+        if clicked && self.choosing.is_none() {
+            // Asked for, not done: the step runs at the top of the next frame,
+            // through the same door the chord uses, where the rack is allowed
+            // to stop the audio it has to rebuild.
+            if undo_hot {
+                self.history_pending = Some(crate::history::Direction::Undo);
+            } else if redo_hot {
+                self.history_pending = Some(crate::history::Direction::Redo);
+            }
+        }
         let cog = hit(mouse, gx, gy, 18.0, 18.0);
         ctx.text(
             gx,
@@ -4082,7 +4561,7 @@ impl Process for RackUi {
                 .filter(|card| card.id != id)
                 .cloned()
                 .collect();
-            self.runtime.edit(cards);
+            self.edit(cards);
             self.drag = None;
         }
         // Cancellation wins over a release delivered in the same frame.
@@ -4124,7 +4603,7 @@ impl Process for RackUi {
             let runs = canvas
                 .as_ref()
                 .map(|c| c.run_targets(self.drag))
-                .unwrap_or_else(|| wire_runs(&groups, &layout.slots, self.drag));
+                .unwrap_or_else(|| wire_runs(&groups, &layout, self.drag));
             let target = target_at(
                 preview_mouse,
                 &layout.slots,
@@ -4139,11 +4618,18 @@ impl Process for RackUi {
             );
             let target = self.canonical_drop(target, self.drag);
             if let Some(target) = target {
+                // A drop can be aimed at a rack end as well as at a card,
+                // and the ends stand outside `slots`: that is where the
+                // first plugin of an empty rack lands.
                 let slot = layout
                     .slots
                     .iter()
                     .find(|slot| slot.id == target.card)
-                    .unwrap();
+                    .unwrap_or(if target.card == INPUT_JACK {
+                        &layout.input
+                    } else {
+                        &layout.output
+                    });
                 let parallel = matches!(target.side, Side::Above | Side::Below);
                 // Mirrors `place`: a ring drop belongs to the whole fork,
                 // so its tick spans every lane; any other drop belongs to
@@ -4193,7 +4679,7 @@ impl Process for RackUi {
                 }
                 if released && let Some(id) = self.drag {
                     match crate::runtime::arrange(self.runtime.cards.clone(), id, target) {
-                        Ok(cards) => self.runtime.edit(cards),
+                        Ok(cards) => self.edit(cards),
                         Err(error) => self.runtime.message = error,
                     }
                     self.drag = None;
@@ -4673,6 +5159,43 @@ mod tests {
             .collect()
     }
     #[test]
+    fn a_tapped_control_z_is_read_once_and_shift_turns_it_into_redo() {
+        use crate::history::Direction;
+        use frost::KeyCode::{ControlLeft, ControlRight, KeyZ, ShiftLeft, ShiftRight};
+        let mut control = false;
+        let mut shift = false;
+        let mut ask = |code, down, repeat| {
+            RackUi::history_request(&mut control, &mut shift, code, down, repeat)
+        };
+        // Z on its own is a letter the rack has no use for.
+        assert_eq!(ask(KeyZ, true, false), None);
+        // The chord: either control, and either shift, and the release says
+        // nothing.
+        assert_eq!(ask(ControlLeft, true, false), None);
+        assert_eq!(ask(KeyZ, true, false), Some(Direction::Undo));
+        assert_eq!(ask(KeyZ, false, false), None);
+        assert_eq!(ask(ControlLeft, false, false), None);
+        assert_eq!(ask(ControlRight, true, false), None);
+        assert_eq!(ask(ShiftRight, true, false), None);
+        assert_eq!(ask(KeyZ, true, false), Some(Direction::Redo));
+        assert_eq!(ask(ShiftRight, false, false), None);
+        assert_eq!(ask(ShiftLeft, true, false), None);
+        assert_eq!(ask(ControlRight, false, false), None);
+        assert_eq!(ask(ControlLeft, true, false), None);
+        assert_eq!(ask(ShiftLeft, true, false), None);
+        assert_eq!(ask(KeyZ, true, false), Some(Direction::Redo));
+        // Held keys repeat: one press is one step, however long it is held.
+        assert_eq!(ask(KeyZ, true, true), None);
+        assert_eq!(ask(KeyZ, true, true), None);
+        // Letting go of shift leaves plain undo, and letting go of control
+        // takes the chord away again.
+        assert_eq!(ask(ShiftLeft, false, false), None);
+        assert_eq!(ask(KeyZ, true, false), Some(Direction::Undo));
+        assert_eq!(ask(ControlLeft, false, false), None);
+        assert_eq!(ask(KeyZ, true, false), None);
+    }
+
+    #[test]
     fn a_ring_drop_names_the_whole_fork_and_a_lane_drop_its_lane() {
         let stages = vec![
             spanning(&[&[1]]),
@@ -5014,11 +5537,39 @@ mod tests {
                 y: 0.0,
             },
         ];
-        let runs = wire_runs(&groups, &slots, None);
-        assert_eq!(runs.len(), 1);
+        let frame = Geometry {
+            slots: slots.to_vec(),
+            input: Slot {
+                id: INPUT_JACK,
+                x: -248.0,
+                y: 0.0,
+            },
+            output: Slot {
+                id: NodeId(MASTER_WIRE_KEY),
+                x: 496.0,
+                y: 0.0,
+            },
+            top: 200.0,
+            bottom: -150.0,
+            flow: 0.0,
+            max_vertical: 0.0,
+        };
+        let runs = wire_runs(&groups, &frame, None);
+        assert_eq!(runs.len(), 3);
+        // The rack's own cards end the chain like any other card, so the
+        // wire `IN` feeds and the one reaching `OUT` are runs too, measured
+        // from the same card edges as the gap between the pair.
         assert_eq!(
-            (runs[0].card, runs[0].x0, runs[0].x1, runs[0].y),
+            (runs[0].card, runs[0].to, runs[0].x0, runs[0].x1),
+            (INPUT_JACK, NodeId(1), -155.0, -93.0)
+        );
+        assert_eq!(
+            (runs[1].card, runs[1].x0, runs[1].x1, runs[1].y),
             (NodeId(1), 93.0, 155.0, 0.0)
+        );
+        assert_eq!(
+            (runs[2].card, runs[2].to, runs[2].x0, runs[2].x1),
+            (NodeId(2), NodeId(MASTER_WIRE_KEY), 341.0, 403.0)
         );
         let pick = |point: [f32; 2]| {
             target_at(
@@ -5061,8 +5612,7 @@ mod tests {
             })
         );
         // Inside a column but past the run's shoulder, the card's own
-        // gap answer rules: above the card is its fork, and a card's own
-        // stub is never a landing: dragging one of the pair leaves no run.
+        // gap answer rules: above the card is its fork.
         assert_eq!(
             pick([40.0, 70.0]),
             Some(Target {
@@ -5071,7 +5621,143 @@ mod tests {
                 side: Side::Above
             })
         );
-        assert!(wire_runs(&groups, &slots, Some(NodeId(1))).is_empty());
+        // A card's own stub is never a landing: dragging the head card
+        // takes the wire it fed with it, and the pair's run closes too —
+        // but the tail's run into `OUT` is a gap of its own and stays open.
+        let dragging_head = wire_runs(&groups, &frame, Some(NodeId(1)));
+        assert_eq!(dragging_head.len(), 1);
+        assert_eq!(
+            (dragging_head[0].card, dragging_head[0].to),
+            (NodeId(2), NodeId(MASTER_WIRE_KEY))
+        );
+    }
+    #[test]
+    fn the_gap_before_the_racks_own_out_card_is_a_gap_like_any_other() {
+        // The chain's last wire runs into the rack's own `OUT` card. Its
+        // bar belongs at that gap's own midpoint, exactly like the bar
+        // between two cards, and the hover that opens it is the same one
+        // that opens any other serial gap — the end of the chain is not a
+        // special case.
+        let groups = vec![spanning(&[&[1]])];
+        let layout = geometry(&groups, 1040.0, 580.0, 0.0, 0.0);
+        let runs = wire_runs(&groups, &layout, None);
+        assert_eq!(runs.len(), 2);
+        let (head, last) = (runs[0], runs[1]);
+        let card = layout.slots[0];
+        assert_eq!((head.card, head.to), (INPUT_JACK, card.id));
+        assert_eq!((last.card, last.to), (card.id, NodeId(MASTER_WIRE_KEY)));
+        let slot = layout.slots.iter().find(|slot| slot.id == card.id).unwrap();
+        let point = serial_drop_point(
+            &Target {
+                scope: None,
+                card: card.id,
+                side: Side::Right,
+            },
+            slot,
+            &runs,
+        );
+        assert_eq!(point, [(last.x0 + last.x1) / 2.0, card.y]);
+        // The bar stands in the open wire, clear of both cards.
+        assert!(point[0] > slot.x + CARD_WIDTH / 2.0);
+        assert!(point[0] < layout.output.x - CARD_WIDTH / 2.0);
+        let zones = DropZones {
+            joins: &[],
+            runs: &runs,
+        };
+        assert_eq!(
+            target_at(
+                Some(point),
+                &layout.slots,
+                None,
+                &zones,
+                layout.top,
+                layout.bottom,
+                1040.0,
+            ),
+            Some(Target {
+                scope: None,
+                card: card.id,
+                side: Side::Right
+            })
+        );
+        // And its mirror at the head of the chain: the wire from `IN` seats
+        // a card to the left of the one it reaches.
+        let point = serial_drop_point(
+            &Target {
+                scope: None,
+                card: card.id,
+                side: Side::Left,
+            },
+            slot,
+            &runs,
+        );
+        assert_eq!(point, [(head.x0 + head.x1) / 2.0, card.y]);
+        assert_eq!(
+            target_at(
+                Some(point),
+                &layout.slots,
+                None,
+                &zones,
+                layout.top,
+                layout.bottom,
+                1040.0,
+            ),
+            Some(Target {
+                scope: None,
+                card: card.id,
+                side: Side::Left
+            })
+        );
+    }
+    #[test]
+    fn an_empty_racks_one_wire_is_a_gap_like_any_other() {
+        // With nothing on it the rack still draws the single wire that joins
+        // `IN` to `OUT`, and that wire is where a rack's first plugin lands:
+        // it offers one run, its bar stands at the wire's own midpoint, and
+        // the pick answers with the chain — an empty rack has no lane to open
+        // a parallel around.
+        let groups: Vec<Vec<GuiLane>> = Vec::new();
+        let layout = geometry(&groups, 1040.0, 580.0, 0.0, 0.0);
+        let runs = wire_runs(&groups, &layout, None);
+        assert_eq!(runs.len(), 1);
+        let run = runs[0];
+        assert_eq!((run.card, run.to), (INPUT_JACK, NodeId(MASTER_WIRE_KEY)));
+        assert_eq!(run.x0, layout.input.x + CARD_WIDTH / 2.0);
+        assert_eq!(run.x1, layout.output.x - CARD_WIDTH / 2.0);
+        assert_eq!(run.y, layout.flow);
+        let target = Target {
+            scope: None,
+            card: NodeId(MASTER_WIRE_KEY),
+            side: Side::Left,
+        };
+        let point = serial_drop_point(&target, &layout.output, &runs);
+        // The same rule as every other gap: the bar stands midway along the
+        // open wire, not beside the card it is aimed at.
+        assert_eq!(point, [(run.x0 + run.x1) / 2.0, layout.flow]);
+        assert_eq!(point[0], (layout.input.x + layout.output.x) / 2.0);
+        assert!(point[0] > layout.input.x + CARD_WIDTH / 2.0);
+        assert!(point[0] < layout.output.x - CARD_WIDTH / 2.0);
+        let zones = DropZones {
+            joins: &[],
+            runs: &runs,
+        };
+        let pick = |point: [f32; 2]| {
+            target_at(
+                Some(point),
+                &layout.slots,
+                None,
+                &zones,
+                layout.top,
+                layout.bottom,
+                1040.0,
+            )
+        };
+        assert_eq!(pick(point), Some(target));
+        // Anywhere along the wire, level with it, the chain answer stands.
+        assert_eq!(pick([run.x0 + 8.0, run.y]), Some(target));
+        // And so it stands by the shoulder, which elsewhere opens a parallel.
+        assert_eq!(pick([point[0], run.y + 26.0]), Some(target));
+        assert_eq!(pick([point[0], run.y - 26.0]), Some(target));
     }
     #[test]
     fn parallel_cards_are_stacked_and_stages_remain_left_to_right() {

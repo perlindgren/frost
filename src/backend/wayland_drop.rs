@@ -48,6 +48,9 @@
 //!
 //! * `data_offer` (opcode 0) is the only `new_id`-creating event; `enter`
 //!   and `selection` carry the offer as a nullable *object reference*.
+//! * `enter` and `motion` carry surface-local coordinates. Those two are the
+//!   pointer for the whole drag — see [`WaylandDropEvent::HoverMove`] — and
+//!   `app.rs` feeds them to the same cursor setter a host cursor uses.
 //! * `offer.accept` on `enter` (with the enter serial) when the offer
 //!   advertises `text/uri-list`, `offer.receive` into a pipe on `drop`, and
 //!   `offer.destroy` to end the transfer — `offer.finish` is a v3 request
@@ -55,6 +58,18 @@
 //! * The pipe body is read on a helper thread (a blocking read must never
 //!   stall the event loop); [`WaylandDrop::pump`] polls the channel with a
 //!   bounded deadline so a source that never writes cannot wedge the app.
+//!
+//! Whether a compositor sends `leave` before or after `drop` (or at all) is
+//! its own choice, and one offer is good for exactly one drag. That sequencing
+//! lives in [`DragState`], which holds no proxies so every transition is
+//! unit-tested without a compositor; the dispatch arms below only translate its
+//! decisions into requests. Two rules there are load-bearing rather than tidy:
+//! the offer must be destroyed once its drag is over ([`Dnd::destroy_offer`]),
+//! because the library only frees an object id when its client destroys the
+//! proxy — a kept offer makes the *next* drag's `data_offer` reuse an id the
+//! library still holds, which it refuses as a protocol error, after which
+//! every later drag is discarded; and an *accepted* offer must survive a
+//! `leave`, or a compositor that orders `leave` first has its `drop` refused.
 //!
 //! The `SAFETY` note at [`WaylandDrop::new`] covers the one unsafe call.
 
@@ -92,8 +107,17 @@ const READ_TIMEOUT: Duration = Duration::from_secs(3);
 /// into the `Process` file-drop API (mirroring the winit `WindowEvent`
 /// variants that work on every other backend).
 pub(crate) enum WaylandDropEvent {
-    /// A drag with file(s) entered our surface.
-    HoverStart,
+    /// A drag with file(s) entered our surface, at the surface-local point the
+    /// compositor named.
+    HoverStart { point: [f32; 2] },
+    /// The drag moved inside our surface, at the new surface-local point.
+    ///
+    /// This is the pointer for the whole drag: the compositor confines a
+    /// real `wl_pointer` to the drag icon it draws, so winit's cursor events
+    /// stop at the moment the drag starts. Without these, an external drop
+    /// has no position and lands at the end of the rack instead of under the
+    /// icon.
+    HoverMove { point: [f32; 2] },
     /// The drag left our surface without dropping.
     HoverEnd,
     /// The drag was released over our surface; the payload was parsed.
@@ -109,12 +133,12 @@ struct Dnd {
     seat: Option<WlSeat>,
     manager: Option<WlDataDeviceManager>,
     device: Option<WlDataDevice>,
-    /// The pending `data_offer` (created via the `data_offer` event), and
-    /// the MIME types it has advertised so far.
+    /// The pending `data_offer` (created via the `data_offer` event). Only
+    /// the offer in this slot is ever accepted or received, and
+    /// [`Dnd::destroy_offer`] is the one way it ends.
     offer: Option<WlDataOffer>,
-    offer_mimes: Vec<String>,
-    /// Whether a `text/uri-list` drag is currently over our surface.
-    hovering: bool,
+    /// The held offer's protocol lifecycle, kept in lockstep with `offer`.
+    drag: DragState,
     /// In-flight `receive` payload reader: channel plus absolute deadline.
     reader: Option<(Receiver<Vec<PathBuf>>, Instant)>,
     /// Events queued by dispatch, drained by [`WaylandDrop::pump`].
@@ -122,6 +146,158 @@ struct Dnd {
     /// Set once the connection is dead; stops dispatch, keeps the reader
     /// deadline active.
     dead: bool,
+}
+
+impl Dnd {
+    /// Destroy the held offer, ending the transfer as far as v1 allows, and
+    /// hand its object id back to the library. Every path that stops caring
+    /// about an offer goes through here; see the module docs for what a
+    /// skipped call costs.
+    fn destroy_offer(&mut self) {
+        if let Some(offer) = self.offer.take() {
+            offer.destroy();
+        }
+    }
+
+    /// Pull the uri-list body out of the accepted offer and start the thread
+    /// that waits for it.
+    ///
+    /// `receive` hands the compositor our pipe's write end; the source writes
+    /// the uri-list there and closes it, which is the EOF the reader thread
+    /// waits for. Our own write-end copy must be dropped after the request is
+    /// queued (the fd is transmitted at request-send time), or EOF never
+    /// arrives.
+    fn receive_offer(&mut self, conn: &Connection) {
+        let Some(offer) = self.offer.as_ref() else {
+            return;
+        };
+        let (mut reader, writer) = match std::io::pipe() {
+            Ok(pair) => pair,
+            Err(err) => {
+                log::warn!("wayland drop receiver: pipe() failed ({err}); ignoring drop");
+                return;
+            }
+        };
+        offer.receive(URI_LIST_MIME.to_owned(), writer.as_fd());
+        let _ = conn.flush();
+        drop(writer);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if reader.read_to_end(&mut buf).is_ok() {
+                let text = String::from_utf8_lossy(&buf);
+                let _ = tx.send(parse_uri_list(&text));
+            }
+        });
+        self.reader = Some((rx, Instant::now() + READ_TIMEOUT));
+    }
+}
+
+/// One drag's protocol lifecycle, free of proxies so the sequencing is
+/// unit-testable without a compositor (see the module docs).
+///
+/// `hovering` is what the application is told — the drag icon is over our
+/// surface. `accepted` is what entitles us to `receive` on a `drop`: we sent
+/// `accept` for this offer with its enter serial. They part company on
+/// compositors that send `leave` *before* `drop`, which is the ordering
+/// `wl_data_device`'s own protocol text describes; collapsing the two into one
+/// flag is what made such a drop do nothing at all, because the `leave` had
+/// already thrown the offer away.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DragState {
+    /// The offer we hold advertised `text/uri-list`.
+    uri_list: bool,
+    /// We called `accept` on the offer we hold.
+    accepted: bool,
+    /// An accepted file drag is currently over our surface.
+    hovering: bool,
+}
+
+/// What an incoming `wl_data_device.leave` asks us to do.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OnLeave {
+    /// The held offer is finished with: destroy it. Kept when we accepted it,
+    /// since a `drop` may still be on its way.
+    destroy: bool,
+    /// Tell the application the hover ended.
+    end_hover: bool,
+}
+
+/// What an incoming `wl_data_device.drop` asks us to do.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OnDrop {
+    /// `receive` the payload on the held offer.
+    receive: bool,
+    /// The drag is over: destroy the held offer.
+    destroy: bool,
+    /// Tell the application the hover ended — always, so a refused drop cannot
+    /// leave it drawing a target for a drag that no longer exists.
+    end_hover: bool,
+}
+
+impl DragState {
+    /// A fresh `data_offer` arrived; anything from before it belongs to an
+    /// earlier drag and must not influence this one. Returns whether the
+    /// application must be told the previous hover ended: a new drag proves the
+    /// old one is over even when the compositor never sent `leave` for it, and
+    /// the next `enter` may be for an offer we will not accept at all.
+    fn offer_arrived(&mut self) -> bool {
+        let end_hover = self.hovering;
+        *self = DragState::default();
+        end_hover
+    }
+
+    /// An `offer` event naming the held offer.
+    fn mime(&mut self, mime: &str) {
+        self.uri_list |= mime == URI_LIST_MIME;
+    }
+
+    /// `enter` on our surface naming the held offer. Returns whether to
+    /// `accept` it with `serial`; a `true` also means the application must be
+    /// told a hover started.
+    fn enter(&mut self) -> bool {
+        if !self.uri_list {
+            return false;
+        }
+        self.accepted = true;
+        // Every accepted `enter` announces a *new* arrival, so the hover is
+        // re-asserted rather than pushed only when not already hovering: a
+        // sequence the compositor ended without `leave` must not be able to
+        // swallow the next drag's start and leave the app with no target.
+        self.hovering = true;
+        true
+    }
+
+    /// `motion`: only ours while a hover is live.
+    fn motion(&self) -> bool {
+        self.hovering
+    }
+
+    fn leave(&mut self, holding_offer: bool) -> OnLeave {
+        let end_hover = self.hovering;
+        self.hovering = false;
+        // An accepted offer survives the leave: this compositor may send
+        // `drop` next, and only that offer can answer it.
+        let destroy = holding_offer && !self.accepted;
+        if destroy {
+            self.uri_list = false;
+            self.accepted = false;
+        }
+        OnLeave { destroy, end_hover }
+    }
+
+    fn drop(&mut self, holding_offer: bool) -> OnDrop {
+        let receive = holding_offer && self.accepted;
+        let end_hover = self.hovering;
+        // The drag is over either way — including a refusal, which must not
+        // strand the application in a hover it will never be told ends.
+        *self = DragState::default();
+        OnDrop {
+            receive,
+            destroy: holding_offer,
+            end_hover,
+        }
+    }
 }
 
 /// Native Wayland file-drop receiver attached to a winit window. See the
@@ -168,8 +344,7 @@ impl WaylandDrop {
             manager: None,
             device: None,
             offer: None,
-            offer_mimes: Vec::new(),
-            hovering: false,
+            drag: DragState::default(),
             reader: None,
             events: VecDeque::new(),
             dead: false,
@@ -198,6 +373,13 @@ impl WaylandDrop {
                         // repeat this. winit will exit through its own
                         // path, so no shutdown logic lives here.
                         self.state.dead = true;
+                        // A dead compositor never sends the `leave` that
+                        // would have ended an in-progress hover, so end it
+                        // here rather than leave the application showing a
+                        // target region for a drag that cannot continue.
+                        if self.state.drag.leave(false).end_hover {
+                            self.state.events.push_back(WaylandDropEvent::HoverEnd);
+                        }
                         log::warn!(
                             "wayland drop receiver: connection error ({err}); ignoring further wayland traffic"
                         );
@@ -326,96 +508,103 @@ impl Dispatch<WlDataDevice, ()> for Dnd {
         match event {
             WlDataDeviceEvent::DataOffer { id } => {
                 // A new drag replaced any offer we were still holding from
-                // a sequence that ended without `leave`/`drop`; destroy
-                // the stale one so the compositor sees v1 hygiene.
-                if let Some(prev) = state.offer.replace(id) {
-                    prev.destroy();
+                // a sequence that ended without `leave`/`drop`. Destroying
+                // the stale one is not hygiene for its own sake: v1 has no
+                // `finish`, `destroy` is the only thing that hands a new-id
+                // back to the library, and an offer we keep alive blocks the
+                // id the next `data_offer` arrives with — which the library
+                // then refuses, poisoning this queue for every later drag.
+                state.destroy_offer();
+                state.offer = Some(id);
+                if state.drag.offer_arrived() {
+                    // A new drag proves the previous one is over even if the
+                    // compositor never said so.
+                    state.events.push_back(WaylandDropEvent::HoverEnd);
                 }
-                state.offer_mimes.clear();
             }
             WlDataDeviceEvent::Enter {
                 serial,
                 surface,
                 id,
-                ..
+                x,
+                y,
             } => {
                 // Ignore drops aimed at foreign surfaces (e.g. editor
                 // child windows created by integrations); their own
                 // toolkits handle them.
                 let ours = surface.id().as_ptr() as usize == state.our_surface;
-                let offer = id.as_ref().filter(|offer| {
+                let tracked = id.as_ref().is_some_and(|offer| {
                     state
                         .offer
                         .as_ref()
-                        .is_some_and(|tracked| same_object(*offer, tracked))
+                        .is_some_and(|held| same_object(offer, held))
                 });
-                let files = ours
-                    && offer.is_some()
-                    && state.offer_mimes.iter().any(|mime| mime == URI_LIST_MIME);
-                if files {
+                if ours && tracked && state.drag.enter() {
                     // The accept must carry the enter serial; sending it
                     // immediately (plus the flush in `pump`) keeps the
                     // round trip short.
                     if let Some(offer) = state.offer.as_ref() {
                         offer.accept(serial, Some(URI_LIST_MIME.to_owned()));
                     }
-                    if !state.hovering {
-                        state.hovering = true;
-                        state.events.push_back(WaylandDropEvent::HoverStart);
-                    }
+                    // Enter and motion coordinates are both surface-local
+                    // `Fixed` — the wire format the generated bindings hand
+                    // us as `f64` — so they carry the same unit and origin
+                    // as the `wl_pointer.motion` a host cursor arrives
+                    // through, and `app.rs` can feed either into the same
+                    // setter. The event goes out on every accepted enter,
+                    // not only the first: a redundant hover costs the
+                    // application one event, while swallowing a real enter
+                    // because a stale flag claims we are still hovering
+                    // hides the target region for the whole drag.
+                    state.events.push_back(WaylandDropEvent::HoverStart {
+                        point: [x as f32, y as f32],
+                    });
                 }
             }
             WlDataDeviceEvent::Leave => {
-                if let Some(offer) = state.offer.take() {
-                    offer.destroy();
-                    state.offer_mimes.clear();
+                // Compositors disagree about whether `leave` precedes
+                // `drop`, so this arm has to work in both orders: an offer
+                // we accepted stays alive for a `drop` that may still be
+                // coming, one we never accepted is finished business.
+                let left = state.drag.leave(state.offer.is_some());
+                if left.destroy {
+                    state.destroy_offer();
                 }
-                if state.hovering {
-                    state.hovering = false;
+                if left.end_hover {
                     state.events.push_back(WaylandDropEvent::HoverEnd);
                 }
             }
             WlDataDeviceEvent::Drop => {
-                // A drop we never accepted (foreign surface / non-file
-                // drag) must not start a receive.
-                let Some(offer) = state.offer.take() else {
-                    return;
-                };
-                if !state.hovering {
-                    offer.destroy();
-                    state.offer_mimes.clear();
-                    return;
+                // A drop we never accepted (foreign surface, non-file drag)
+                // must not start a receive, but its offer is still destroyed:
+                // v1 gives a transfer no other ending, and an offer we keep
+                // alive steals the id the next drag arrives with.
+                let dropped = state.drag.drop(state.offer.is_some());
+                if dropped.receive {
+                    state.receive_offer(conn);
                 }
-                state.hovering = false;
-                state.offer_mimes.clear();
-                // `receive` hands the compositor our pipe's write end; the
-                // source writes the uri-list there and closes it, which is
-                // the EOF the reader thread waits for. Our own write-end
-                // copy must be dropped after the request is queued (the fd
-                // is transmitted at request-send time), or EOF never
-                // arrives.
-                match std::io::pipe() {
-                    Ok((mut reader, writer)) => {
-                        offer.receive(URI_LIST_MIME.to_owned(), writer.as_fd());
-                        let _ = conn.flush();
-                        drop(writer);
-                        let (tx, rx) = std::sync::mpsc::channel();
-                        std::thread::spawn(move || {
-                            let mut buf = Vec::new();
-                            if reader.read_to_end(&mut buf).is_ok() {
-                                let text = String::from_utf8_lossy(&buf);
-                                let _ = tx.send(parse_uri_list(&text));
-                            }
-                        });
-                        state.reader = Some((rx, Instant::now() + READ_TIMEOUT));
-                    }
-                    Err(err) => {
-                        log::warn!("wayland drop receiver: pipe() failed ({err}); ignoring drop");
-                    }
+                if dropped.destroy {
+                    state.destroy_offer();
+                }
+                if dropped.end_hover {
+                    state.events.push_back(WaylandDropEvent::HoverEnd);
                 }
             }
-            // `Motion` carries coordinates we have no use for; `Selection`
-            // is clipboard data (a different offer object we leave alone).
+            WlDataDeviceEvent::Motion { x, y, .. } => {
+                // These are the only pointer coordinates the application sees
+                // for the whole drag: the compositor confines the real pointer
+                // to the drag icon it draws, so winit's cursor events stop
+                // when the drag starts. `hovering` is our own record of the
+                // drag being inside our surface — it stays false for a drag
+                // aimed at a foreign one, whose toolkit needs this motion.
+                if state.drag.motion() {
+                    state.events.push_back(WaylandDropEvent::HoverMove {
+                        point: [x as f32, y as f32],
+                    });
+                }
+            }
+            // `Selection` is clipboard data (a different offer object we
+            // leave alone).
             _ => {}
         }
     }
@@ -433,14 +622,18 @@ impl Dispatch<WlDataOffer, ()> for Dnd {
         _: &QueueHandle<Self>,
     ) {
         // v1 offers only carry `offer`; `source_actions`/`action` are v3.
+        // Offers arrive before `enter` and can arrive after it, so this is
+        // deliberately independent of the hover state: `enter` decides with
+        // whatever has been advertised by the time it runs, and an `offer`
+        // that lands later only matters for a *future* enter, which no
+        // compositor sends for a drag already in progress.
         if let WlDataOfferEvent::Offer { mime_type } = event
             && state
                 .offer
                 .as_ref()
-                .is_some_and(|tracked| same_object(offer, tracked))
-            && !state.offer_mimes.iter().any(|known| known == &mime_type)
+                .is_some_and(|held| same_object(offer, held))
         {
-            state.offer_mimes.push(mime_type);
+            state.drag.mime(&mime_type);
         }
     }
 }
@@ -617,5 +810,119 @@ mod tests {
     #[test]
     fn root_and_empty_paths_dropped() {
         assert!(parse_uri_list("file:///\nfile://localhost\n").is_empty());
+    }
+}
+
+/// The sequencing rules a compositor may exercise, exercised without one.
+///
+/// A protocol test would need a compositor, and the only way to get one
+/// offline is a new dependency, which the repository rules rule out. These
+/// tests therefore pin the decision table the dispatcher delegates to: the
+/// two `leave`/`drop` orderings both end with the offer destroyed and the
+/// application told to stop hovering, and a `leave` never throws away an
+/// offer its `drop` still needs.
+#[cfg(test)]
+mod sequence_tests {
+    use super::{DragState, URI_LIST_MIME};
+
+    /// An offer that advertises files, entered on our surface.
+    fn hovering(mut drag: DragState) -> DragState {
+        drag.offer_arrived();
+        drag.mime(URI_LIST_MIME);
+        assert!(drag.enter());
+        drag
+    }
+
+    #[test]
+    fn leave_before_drop_keeps_the_accepted_offer_for_the_drop() {
+        let mut drag = hovering(DragState::default());
+        let left = drag.leave(true);
+        assert!(
+            !left.destroy,
+            "destroying an accepted offer on `leave` is what swallowed the drop"
+        );
+        assert!(left.end_hover);
+
+        let dropped = drag.drop(true);
+        assert!(dropped.receive, "the surviving offer must answer the drop");
+        assert!(dropped.destroy, "and be destroyed once answered");
+        assert!(
+            !dropped.end_hover,
+            "the hover already ended, so no duplicate event"
+        );
+        assert_eq!(drag, DragState::default());
+    }
+
+    #[test]
+    fn drop_before_leave_ends_everything_and_the_leave_is_a_no_op() {
+        let mut drag = hovering(DragState::default());
+        let dropped = drag.drop(true);
+        assert!(dropped.receive && dropped.destroy && dropped.end_hover);
+
+        // Our `destroy` is the client-side half of the compositor's own
+        // cleanup; the `leave` that follows it has nothing left to do.
+        let left = drag.leave(false);
+        assert!(!left.destroy && !left.end_hover);
+        assert_eq!(drag, DragState::default());
+    }
+
+    #[test]
+    fn an_unaccepted_offer_is_destroyed_by_leave_without_touching_the_hover() {
+        let mut drag = DragState::default();
+        drag.offer_arrived();
+        drag.mime("text/plain");
+        assert!(!drag.enter(), "a non-file drag is never accepted");
+        let left = drag.leave(true);
+        assert!(left.destroy, "an offer we will not use must free its id");
+        assert!(!left.end_hover, "we never told the app it was hovering");
+    }
+
+    #[test]
+    fn a_drop_needs_both_an_offer_and_an_accept() {
+        // Offer present, never accepted (foreign surface, or no `enter`).
+        let mut drag = DragState::default();
+        drag.offer_arrived();
+        drag.mime(URI_LIST_MIME);
+        let dropped = drag.drop(true);
+        assert!(!dropped.receive);
+        assert!(dropped.destroy);
+
+        // Accepted earlier, but the offer itself is gone.
+        let mut drag = hovering(DragState::default());
+        let dropped = drag.drop(false);
+        assert!(!dropped.receive, "nothing to receive from");
+        assert!(dropped.end_hover, "the app still gets its hover back");
+    }
+
+    #[test]
+    fn a_new_offer_restarts_the_drag_from_scratch() {
+        // A compositor may drop the `leave` of a drag that ended on our
+        // surface; the next offer must not inherit its knowledge.
+        let mut drag = hovering(DragState::default());
+        assert!(drag.offer_arrived(), "the abandoned hover must end");
+        assert!(!drag.enter(), "the new offer has advertised nothing yet");
+        drag.mime("text/plain");
+        assert!(!drag.enter(), "and nothing we would accept");
+    }
+
+    #[test]
+    fn a_repeated_enter_re_asserts_the_hover() {
+        // Some compositors re-enter on the same offer (pointer crossing a
+        // sub-surface, for instance), and others never sent the previous
+        // `leave`. Either way the application must be told again, since a
+        // swallowed start leaves it with no target region for the drag.
+        let mut drag = hovering(DragState::default());
+        assert!(drag.enter());
+        assert!(drag.enter());
+    }
+
+    #[test]
+    fn motion_follows_the_hover() {
+        let mut drag = hovering(DragState::default());
+        assert!(drag.motion());
+        drag.leave(true);
+        assert!(!drag.motion(), "motion after leave is the app's cursor");
+        drag.drop(true);
+        assert!(!drag.motion());
     }
 }

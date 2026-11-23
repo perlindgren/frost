@@ -269,6 +269,11 @@ impl Canvas {
             cable.to.meter.or(cable.from.meter)
         }
     }
+    /// Every straight cable between two metered jacks is one insertion gap,
+    /// the rack's own `IN` and `OUT` cards included: the wire a chain ends
+    /// on is a gap like any other, so it gets the same bar and the same
+    /// shoulder. Only the empty rack's lone `IN`-to-`OUT` cable is skipped,
+    /// because a placement hangs off a card and that stretch has none.
     pub fn run_targets(&self, moving: Option<NodeId>) -> Vec<WireRun> {
         self.cables
             .iter()
@@ -277,7 +282,8 @@ impl Canvas {
                 else {
                     return None;
                 };
-                if to.0 == MASTER_WIRE_KEY || moving == Some(from) || moving == Some(to) {
+                let rack_only = from == INPUT_JACK && to.0 == MASTER_WIRE_KEY;
+                if rack_only || moving == Some(from) || moving == Some(to) {
                     return None;
                 }
                 Some(WireRun {
@@ -788,6 +794,66 @@ mod tests {
             )
             .is_none()
         );
+    }
+    #[test]
+    fn the_cable_into_the_out_card_is_a_gap_like_the_rest() {
+        // The chain ends on the rack's own `OUT` card. Nothing places or
+        // drags that card, but the wire reaching it is a stretch of open
+        // canvas between two cards like any other, so it offers its own
+        // gap: the bar stands at the cable's midpoint, and a card dropped
+        // there lands to the right of the last card of the chain.
+        let root = s(vec![n(1), n(2)]);
+        let canvas = view(&root);
+        let runs = canvas.run_targets(None);
+        let tail = runs
+            .iter()
+            .find(|run| run.to.0 == MASTER_WIRE_KEY)
+            .expect("the last card reaches `OUT` across a gap");
+        let centre = [(tail.x0 + tail.x1) / 2.0, tail.y];
+        let hit = target_at(
+            Some(centre),
+            &canvas.frame.slots,
+            None,
+            &DropZones {
+                joins: &[],
+                runs: &runs,
+            },
+            canvas.frame.top,
+            canvas.frame.bottom,
+            1800.0,
+        );
+        assert_eq!(
+            hit,
+            Some(Target {
+                scope: None,
+                card: NodeId(2),
+                side: Side::Right
+            })
+        );
+        // The same holds at the head: `IN` feeds the first card across a
+        // gap, and both ends are measured from card edges, so the bar
+        // never stands on top of a card.
+        let head = runs
+            .iter()
+            .find(|run| run.card == INPUT_JACK)
+            .expect("`IN` reaches the head card across a gap");
+        assert!(head.x0 < head.x1 && tail.x0 < tail.x1);
+        for run in [head, tail] {
+            let point = [(run.x0 + run.x1) / 2.0, run.y];
+            let jacks = [canvas.frame.input, canvas.frame.output];
+            for slot in canvas.frame.slots.iter().chain(jacks.iter()) {
+                assert!((point[0] - slot.x).abs() > CARD_WIDTH / 2.0);
+            }
+        }
+    }
+    #[test]
+    fn an_empty_rack_offers_no_gap_because_it_has_no_cards() {
+        // With nothing between them, `IN` and `OUT` face each other across
+        // one bare cable. A placement hangs off a card, and this stretch
+        // names no card to hang one on, so it stays silent.
+        let root = Flow::Empty;
+        let canvas = view(&root);
+        assert!(canvas.run_targets(None).is_empty());
     }
 }
 
