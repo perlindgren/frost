@@ -31,9 +31,9 @@ struct Choosing {
     descriptors: Vec<Descriptor>,
     placement: Option<Target>,
     /// What the aimed-at wire would hand the card, once the card is known.
-    /// Nothing else in the rack offers a choice of wire to land on, so this
-    /// is only `Some` beside the conversion standing on an empty rack's
-    /// single wire.
+    /// Only a wire with a conversion circle on it offers a choice of side to
+    /// land on, so this is `Some` only beside such a circle — on an empty
+    /// rack's wire or on any wire of a populated chain, by [`chain_split`].
     want: Option<Channels>,
 }
 struct Dropped {
@@ -1773,16 +1773,20 @@ fn serial_drop_point(target: &Target, slot: &Slot, runs: &[WireRun]) -> [f32; 2]
         ]
     }
 }
-/// An empty rack's wire is two landings, not one.
+/// A wire carrying a conversion is two landings, not one — whichever wire
+/// it is.
 ///
-/// A rack built to feed a stereo `OUT` jack carries a width conversion on its
-/// one wire before a single plugin stands in it, and the circle drawn for that
-/// conversion cuts the wire in two: left of it the wire is what the rack's `IN`
-/// jack carries, right of it what its `OUT` jack asks for. A card landing on
-/// one side or the other is handed that side of the wire, which is why the
-/// circle has to be aimed at rather than flown over — a card that takes the
-/// wider side pushes the conversion after it, a card that takes the narrower
-/// side pulls it before.
+/// Wherever the graph needs a width change it draws a circle, and the circle
+/// cuts its wire in two: left of it the wire carries what the conversion
+/// takes in, right of it what it hands out. A card landing on one side or
+/// the other is handed that side of the wire, which is why the circle has to
+/// be aimed at rather than flown over — a card that takes the wider side
+/// pushes the conversion after it, a card that takes the narrower side pulls
+/// it before. This holds for every wire the rack draws: the one from the
+/// `IN` jack to the head card, the ones between neighbours, the one from
+/// the tail card to the `OUT` jack, and the single wire of an empty rack.
+/// None of them carries a rule of its own; a head wire is split exactly as
+/// a tail wire is, by the one circle standing on it.
 ///
 /// So the pointer's side of the circle decides which of the two the pick was
 /// aimed at, and the width that side hands over comes back with it, to be held
@@ -1791,12 +1795,18 @@ fn serial_drop_point(target: &Target, slot: &Slot, runs: &[WireRun]) -> [f32; 2]
 /// rack all the rack is offered is a file path, so the aim cannot be coloured
 /// ahead of the drop the way a card's face can be; it is honoured by answering
 /// it instead, and an aim the plugin cannot fill is refused in the rack's own
-/// line of words, which is [`WidthConflict`]'s.
+/// line of words, which is [`WidthConflict`]'s. The graph decides where a
+/// conversion may be born, so one half of a populated chain's circle is often
+/// an aim the engine can never satisfy — mid-chain the wire before a card is
+/// what the card ahead of it settled on, and no landing beside that circle
+/// moves it. That half keeps its bar and its label all the same, and answers
+/// with the refusal, because the wire really does carry that width and the
+/// operator really did aim at it.
 ///
-/// Only a rack with nothing in it has its wire cut this way. Once a card
-/// stands on the wire, the conversion at the rack's end belongs to the graph
-/// that card is wired into, and no landing beside it can ask the rack to move
-/// it — so the halves, and the question, do not arise.
+/// A run with no circle on it — or with more than one, which the serial
+/// layout never draws but no rule forbids — keeps the single landing it
+/// always had; a vertical circle is a mixer's riser and belongs to no wire
+/// this function may cut.
 fn chain_split(
     target: &Target,
     mouse: Option<[f32; 2]>,
@@ -1805,20 +1815,30 @@ fn chain_split(
     offsets: &std::collections::BTreeMap<NodeId, f32>,
 ) -> Option<(Channels, [f32; 2])> {
     let [x, _] = mouse?;
-    // The rack's own wire, and nothing else: it is the only run that begins at
-    // the `IN` jack and ends at the master wire without a card between.
-    let run = runs
-        .iter()
-        .find(|run| run.card == INPUT_JACK && run.to.0 == MASTER_WIRE_KEY)?;
-    if target.card != run.to {
+    // The wire the target lands beside, found exactly the way
+    // [`serial_drop_point`] finds its wire: a card landing on a serial slot
+    // runs along the wire that ends at it (`Before`) or starts at it
+    // (`After`). The empty rack's wire answers to the same lookup, since its
+    // run ends at the master wire the target names.
+    let run = runs.iter().find(|run| match target.side {
+        Side::Right => run.card == target.card,
+        Side::Left => run.to == target.card,
+        _ => false,
+    })?;
+    // The one conversion standing on that wire, where the operator parked
+    // it: seated at the wire's height, its centre between the run's ends. A
+    // wire with no circle on it, or more than one, is the single landing it
+    // always was.
+    let mut straddling = marks.iter().filter(|mark| {
+        !mark.vertical
+            && (mark.cross - run.y).abs() < 1.0
+            && run.x0 < mark.centre(offsets)[0]
+            && mark.centre(offsets)[0] < run.x1
+    });
+    let mark = straddling.next()?;
+    if straddling.next().is_some() {
         return None;
     }
-    // The conversion standing on that wire, where the operator parked it. A
-    // rack whose route needs no conversion has no mark, and its wire is the
-    // single landing it always was.
-    let mark = marks
-        .iter()
-        .find(|mark| !mark.vertical && (mark.cross - run.y).abs() < 1.0)?;
     let (before, after) = (
         Channels::new(mark.inputs as u8)?,
         Channels::new(mark.outputs as u8)?,
@@ -3484,13 +3504,14 @@ impl Process for RackUi {
                 w,
             );
             let placement = self.canonical_drop(placement, None);
-            // An empty rack's wire is a landing on each side of the conversion
-            // standing on it, and its two sides carry different widths, so the
-            // aim carries a promise about width that has to be kept. It is
-            // read here, off the aim and the circle's seat, because a plugin's
-            // own widths are not readable until its file has been loaded —
-            // which is the next line of this block, and the first moment the
-            // promise can be checked against anything.
+            // A wire with a conversion standing on it is a landing on each
+            // side of that circle, and its two sides carry different widths,
+            // so the aim carries a promise about width that has to be kept —
+            // on an empty rack's wire or on any wire of a populated chain.
+            // It is read here, off the aim and the circle's seat, because a
+            // plugin's own widths are not readable until its file has been
+            // loaded — which is the next line of this block, and the first
+            // moment the promise can be checked against anything.
             let marks = match self.runtime.junctions() {
                 Some(found) => canvas
                     .as_ref()
@@ -4745,12 +4766,13 @@ impl Process for RackUi {
                         &layout.output
                     });
                 let parallel = matches!(target.side, Side::Above | Side::Below);
-                // A serial landing on an empty rack's wire belongs to one
-                // *side* of the conversion standing on it, and the two sides
-                // hand over wires of different widths: the bar stands in the
-                // half that was aimed at, and the width it promises is said
-                // out loud, since it is the one thing the pick will be held
-                // to. Every other serial landing is the middle of its run.
+                // A serial landing beside a conversion circle belongs to one
+                // *side* of it, and the two sides hand over wires of
+                // different widths — on an empty rack's wire or on any wire
+                // of a populated chain: the bar stands in the half that was
+                // aimed at, and the width it promises is said out loud, since
+                // it is the one thing the pick will be held to. Every other
+                // serial landing is the middle of its run.
                 let aimed = match target.side {
                     Side::Left | Side::Right => {
                         chain_split(&target, preview_mouse, &runs, &marks, &self.mark_offsets)
@@ -7274,13 +7296,24 @@ mod tests {
         );
         (frame, runs, marks)
     }
-    /// What an aim level with the empty rack's wire answers as: the rack's own
-    /// wire, which is the one aim [`chain_split`] answers to at all.
+    /// What an aim level with the empty rack's wire answers as: the rack's
+    /// own wire, read as `target_at` reads it — landing before the master
+    /// wire it ends at.
     fn the_racks_wire() -> Target {
         Target {
             scope: None,
             card: NodeId(MASTER_WIRE_KEY),
             side: Side::Left,
+        }
+    }
+    /// An aim level with a wire, landing on the serial slot beside a card —
+    /// exactly what hovering the wire, or that card's face on that side,
+    /// answers as.
+    fn beside(card: u64, side: Side) -> Target {
+        Target {
+            scope: None,
+            card: NodeId(card),
+            side,
         }
     }
     #[test]
@@ -7438,6 +7471,170 @@ mod tests {
         assert_eq!(
             refused.message(None).replace("This card", "Reverb"),
             refused.message(Some("Reverb"))
+        );
+    }
+
+    /// One card on a rack whose route asks for more than `IN` carries: the
+    /// graph gives birth to its conversion where the card's output meets the
+    /// stereo `OUT`, so the circle stands on the tail wire — the same split,
+    /// on the same rule, as any other wire's.
+    fn one_card_with_a_widening_tail() -> (Geometry, Vec<WireRun>, Vec<WidthMark>) {
+        let (frame, stages) = placed(&[spanning(&[&[1]])]);
+        let runs = wire_runs(&stages, &frame, None);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Mono,
+                Channels::Stereo,
+                Some(1),
+                None,
+            )],
+            &stages,
+            &frame,
+        );
+        (frame, runs, marks)
+    }
+    #[test]
+    fn the_tail_wire_of_a_populated_chain_splits_like_any_other_wire() {
+        let (frame, runs, marks) = one_card_with_a_widening_tail();
+        let offsets = BTreeMap::new();
+        let run = *runs
+            .iter()
+            .find(|run| run.card == NodeId(1))
+            .expect("the wire from the card out to the master");
+        let at = marks[0].centre(&offsets)[0];
+        assert!(
+            run.x0 < at && at < run.x1,
+            "the circle stands on that wire, between its ends"
+        );
+        // The head wire and the tail wire are both in play now; the aim names
+        // the tail one by its side of the card, and only the circle standing
+        // on that wire cuts it.
+        let left = chain_split(
+            &beside(1, Side::Right),
+            Some([run.x0 + 2.0, frame.flow]),
+            &runs,
+            &marks,
+            &offsets,
+        )
+        .expect("between the card and its conversion is a landing");
+        let right = chain_split(
+            &beside(1, Side::Right),
+            Some([run.x1 - 2.0, frame.flow]),
+            &runs,
+            &marks,
+            &offsets,
+        )
+        .expect("between the conversion and the `OUT` is a landing");
+        assert_eq!((left.0, right.0), (Channels::Mono, Channels::Stereo));
+        assert!(left.1[0] < at && right.1[0] > at, "each bar in its half");
+    }
+    #[test]
+    fn the_head_wire_of_a_populated_chain_splits_like_any_other_wire() {
+        // The mirror image, with the circle born at the head instead of the
+        // tail: the head wire splits on the same rule, answering to an aim
+        // that lands before the card.
+        let (frame, stages) = placed(&[spanning(&[&[1]])]);
+        let runs = wire_runs(&stages, &frame, None);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Mono,
+                Channels::Stereo,
+                None,
+                Some(1),
+            )],
+            &stages,
+            &frame,
+        );
+        let offsets = BTreeMap::new();
+        let run = *runs
+            .iter()
+            .find(|run| run.card == INPUT_JACK)
+            .expect("the wire from the `IN` jack to the card");
+        let at = marks[0].centre(&offsets)[0];
+        assert!(run.x0 < at && at < run.x1);
+        let left = chain_split(
+            &beside(1, Side::Left),
+            Some([run.x0 + 2.0, frame.flow]),
+            &runs,
+            &marks,
+            &offsets,
+        )
+        .expect("the half the `IN` jack feeds");
+        let right = chain_split(
+            &beside(1, Side::Left),
+            Some([run.x1 - 2.0, frame.flow]),
+            &runs,
+            &marks,
+            &offsets,
+        )
+        .expect("the half the conversion hands to the card");
+        assert_eq!((left.0, right.0), (Channels::Mono, Channels::Stereo));
+        assert!(left.1[0] < at && right.1[0] > at);
+    }
+    #[test]
+    fn a_wire_between_two_cards_splits_and_its_neighbours_do_not() {
+        // The circle stands on the wire between card 1 and card 3. The aim
+        // may name that wire from either end — after card 1 or before card
+        // 3 — and finds the same two halves; the head and tail wires, which
+        // carry no circle, keep the single landing they always had.
+        let (frame, stages) = placed(&[spanning(&[&[1, 3]])]);
+        let runs = wire_runs(&stages, &frame, None);
+        let marks = width_marks(
+            &[conversion(
+                9,
+                Channels::Mono,
+                Channels::Stereo,
+                Some(1),
+                Some(3),
+            )],
+            &stages,
+            &frame,
+        );
+        let offsets = BTreeMap::new();
+        let run = *runs
+            .iter()
+            .find(|run| run.card == NodeId(1) && run.to == NodeId(3))
+            .expect("the wire between the two cards");
+        let at = marks[0].centre(&offsets)[0];
+        assert!(run.x0 < at && at < run.x1, "seated between the cards");
+        for target in [beside(1, Side::Right), beside(3, Side::Left)] {
+            let aimed = chain_split(
+                &target,
+                Some([run.x0 + 2.0, frame.flow]),
+                &runs,
+                &marks,
+                &offsets,
+            );
+            assert_eq!(
+                aimed.map(|(want, _)| want),
+                Some(Channels::Mono),
+                "the wire before the circle, aimed from {:?}",
+                target.side
+            );
+        }
+        assert_eq!(
+            chain_split(
+                &beside(1, Side::Left),
+                Some([frame.input.x + CARD_WIDTH / 2.0 + 2.0, frame.flow]),
+                &runs,
+                &marks,
+                &offsets
+            ),
+            None,
+            "the head wire carries no circle"
+        );
+        assert_eq!(
+            chain_split(
+                &beside(3, Side::Right),
+                Some([run.x1 + 20.0, frame.flow]),
+                &runs,
+                &marks,
+                &offsets
+            ),
+            None,
+            "and neither does the tail"
         );
     }
 }
