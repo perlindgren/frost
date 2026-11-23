@@ -491,6 +491,27 @@ const PINS: &[Pins] = &[
             0x0781_7531_400c_416f,
         ],
     },
+    Pins {
+        // Walked on the same box's software rasteriser on 2026-11-23, the day the
+        // driver moved from 23.1.4 to 23.1.5 and this file refused, correctly, to
+        // judge a chip it had no row for. That refusal is the one the row above
+        // booked in advance — the chip is named by the exact driver string "so the
+        // next LLVM bump refuses rather than judges" — and the answer is the one
+        // the module docs prescribe: printer run, geometry tests read (fifteen
+        // pass, this guard was the only failure), numbers written down. They came
+        // out byte-identical to the 23.1.4 row's and to §32's M4 Max row's, stable
+        // across four walks and across single- and multi-threaded suites, and the
+        // profiles say the same picture: the hexagon's umbra at 3.13 and 2.68, its
+        // darkness at 16.23 and 24.67, the disc's far probe at 26.22. A patch-level
+        // LLVM update moved no byte of either scene, so this row is a chip name
+        // catching up with the picture rather than a picture that moved.
+        chip: "llvmpipe (LLVM 23.1.5, 256 bits)",
+        fingerprints: [
+            0x3cd0_d60c_58d7_9dce,
+            0x33a2_a3a4_bbf0_90c5,
+            0x0781_7531_400c_416f,
+        ],
+    },
 ];
 
 /// The chip these numbers are being judged on, said the way its driver says it.
