@@ -3,9 +3,9 @@ mod timing;
 use crate::{
     Settings,
     layout::{Side, Target},
-    routing::NodeId,
     routing::audio::{MASTER_WIRE_KEY, card_wire_key},
-    runtime::{Card, Junction, Runtime},
+    routing::{Channels, NodeId},
+    runtime::{Card, Junction, Runtime, WidthConflict},
 };
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
 use nice_clap_host::{Descriptor, Entry};
@@ -21,11 +21,20 @@ use std::{
 use timing::TimingMeter;
 
 type Loader = Box<dyn FnMut(&Path) -> Result<Entry, String>>;
+/// A CLAP that has been picked up and is waiting to be placed: the entry it
+/// came from, the descriptors it holds, where the operator aimed, and — when
+/// the aim was one half of the empty rack's wire — the width that half's end
+/// of the wire actually carries.
 struct Choosing {
     entry: Entry,
     path: PathBuf,
     descriptors: Vec<Descriptor>,
     placement: Option<Target>,
+    /// What the aimed-at wire would hand the card, once the card is known.
+    /// Nothing else in the rack offers a choice of wire to land on, so this
+    /// is only `Some` beside the conversion standing on an empty rack's
+    /// single wire.
+    want: Option<Channels>,
 }
 struct Dropped {
     path: PathBuf,
@@ -1764,6 +1773,67 @@ fn serial_drop_point(target: &Target, slot: &Slot, runs: &[WireRun]) -> [f32; 2]
         ]
     }
 }
+/// An empty rack's wire is two landings, not one.
+///
+/// A rack built to feed a stereo `OUT` jack carries a width conversion on its
+/// one wire before a single plugin stands in it, and the circle drawn for that
+/// conversion cuts the wire in two: left of it the wire is what the rack's `IN`
+/// jack carries, right of it what its `OUT` jack asks for. A card landing on
+/// one side or the other is handed that side of the wire, which is why the
+/// circle has to be aimed at rather than flown over — a card that takes the
+/// wider side pushes the conversion after it, a card that takes the narrower
+/// side pulls it before.
+///
+/// So the pointer's side of the circle decides which of the two the pick was
+/// aimed at, and the width that side hands over comes back with it, to be held
+/// against the plugin once the plugin is known. A plugin's own widths are only
+/// readable off a live instance, and while the pointer is still flying over the
+/// rack all the rack is offered is a file path, so the aim cannot be coloured
+/// ahead of the drop the way a card's face can be; it is honoured by answering
+/// it instead, and an aim the plugin cannot fill is refused in the rack's own
+/// line of words, which is [`WidthConflict`]'s.
+///
+/// Only a rack with nothing in it has its wire cut this way. Once a card
+/// stands on the wire, the conversion at the rack's end belongs to the graph
+/// that card is wired into, and no landing beside it can ask the rack to move
+/// it — so the halves, and the question, do not arise.
+fn chain_split(
+    target: &Target,
+    mouse: Option<[f32; 2]>,
+    runs: &[WireRun],
+    marks: &[WidthMark],
+    offsets: &std::collections::BTreeMap<NodeId, f32>,
+) -> Option<(Channels, [f32; 2])> {
+    let [x, _] = mouse?;
+    // The rack's own wire, and nothing else: it is the only run that begins at
+    // the `IN` jack and ends at the master wire without a card between.
+    let run = runs
+        .iter()
+        .find(|run| run.card == INPUT_JACK && run.to.0 == MASTER_WIRE_KEY)?;
+    if target.card != run.to {
+        return None;
+    }
+    // The conversion standing on that wire, where the operator parked it. A
+    // rack whose route needs no conversion has no mark, and its wire is the
+    // single landing it always was.
+    let mark = marks
+        .iter()
+        .find(|mark| !mark.vertical && (mark.cross - run.y).abs() < 1.0)?;
+    let (before, after) = (
+        Channels::new(mark.inputs as u8)?,
+        Channels::new(mark.outputs as u8)?,
+    );
+    // A circle is only ever seated clear of both ends of the wire it rides —
+    // its seat stops at the stub boxes, and its click area stops short of
+    // that — so each half has wire of its own left to aim at and to stand a
+    // bar in, however far its circle has been dragged.
+    let at = mark.centre(offsets)[0];
+    Some(if x < at {
+        (before, [(run.x0 + at) / 2.0, run.y])
+    } else {
+        (after, [(at + run.x1) / 2.0, run.y])
+    })
+}
 fn parallel_drop_point(
     target: &Target,
     slot: &Slot,
@@ -2211,6 +2281,24 @@ impl RackUi {
             descriptor.name.clone(),
         ) {
             Ok(card) => {
+                // An aim at one side of the rack's conversion is an aim at the
+                // wire that side carries, and the drop promised it in words on
+                // the canvas. A card taking another width than that wire does
+                // is answered with the refusal the engine already has for a
+                // wire of the wrong width, rather than being put in the rack
+                // and left unhooked: the rack is still empty, and the operator
+                // is told what the rack cannot hand them.
+                if let Some(want) = choosing.want
+                    && want != card.inputs
+                {
+                    self.runtime.message = WidthConflict {
+                        card: card.id,
+                        wire: want,
+                        wants: card.inputs,
+                    }
+                    .message(Some(card.name.as_str()));
+                    return;
+                }
                 self.next_id += 2;
                 let mut cards = self.runtime.cards.clone();
                 let id = card.id;
@@ -3396,6 +3484,30 @@ impl Process for RackUi {
                 w,
             );
             let placement = self.canonical_drop(placement, None);
+            // An empty rack's wire is a landing on each side of the conversion
+            // standing on it, and its two sides carry different widths, so the
+            // aim carries a promise about width that has to be kept. It is
+            // read here, off the aim and the circle's seat, because a plugin's
+            // own widths are not readable until its file has been loaded —
+            // which is the next line of this block, and the first moment the
+            // promise can be checked against anything.
+            let marks = match self.runtime.junctions() {
+                Some(found) => canvas
+                    .as_ref()
+                    .map(|c| c.marks(&found))
+                    .unwrap_or_else(|| width_marks(&found, &groups, &geometry)),
+                None => Vec::new(),
+            };
+            let want = placement.and_then(|target| {
+                chain_split(
+                    &target,
+                    point.or(mouse),
+                    &drop_runs,
+                    &marks,
+                    &self.mark_offsets,
+                )
+                .map(|(want, _)| want)
+            });
             if !path
                 .extension()
                 .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("clap"))
@@ -3410,6 +3522,7 @@ impl Process for RackUi {
                                 path,
                                 descriptors,
                                 placement,
+                                want,
                             },
                             0,
                         ),
@@ -3422,6 +3535,7 @@ impl Process for RackUi {
                                 path,
                                 descriptors,
                                 placement,
+                                want,
                             })
                         }
                         Err(error) => self.runtime.message = error,
@@ -4631,6 +4745,19 @@ impl Process for RackUi {
                         &layout.output
                     });
                 let parallel = matches!(target.side, Side::Above | Side::Below);
+                // A serial landing on an empty rack's wire belongs to one
+                // *side* of the conversion standing on it, and the two sides
+                // hand over wires of different widths: the bar stands in the
+                // half that was aimed at, and the width it promises is said
+                // out loud, since it is the one thing the pick will be held
+                // to. Every other serial landing is the middle of its run.
+                let aimed = match target.side {
+                    Side::Left | Side::Right => {
+                        chain_split(&target, preview_mouse, &runs, &marks, &self.mark_offsets)
+                    }
+                    _ => None,
+                };
+                let want = aimed.map(|(want, _)| format!("Chain, {want} in"));
                 // Mirrors `place`: a ring drop belongs to the whole fork,
                 // so its tick spans every lane; any other drop belongs to
                 // the hovered lane, at the position it was aimed at.
@@ -4646,7 +4773,9 @@ impl Process for RackUi {
                         }
                     }
                     Side::Left | Side::Right => {
-                        let [x, y] = serial_drop_point(&target, slot, &runs);
+                        let [x, y] = aimed
+                            .map(|(_, at)| at)
+                            .unwrap_or_else(|| serial_drop_point(&target, slot, &runs));
                         ctx.rectangle(x, y, 2.0, 70.0, rgb(103, 237, 175), 0.5);
                     }
                     Side::Above | Side::Below => {
@@ -4669,7 +4798,7 @@ impl Process for RackUi {
                             Side::Join => "After the merge",
                             Side::Above | Side::Below => "Split around the card",
                             _ if parallel => "Parallel branch",
-                            _ => "Chain",
+                            _ => want.as_deref().unwrap_or("Chain"),
                         },
                         15.0,
                         550.0,
@@ -7128,6 +7257,187 @@ mod tests {
             width_runs(0.0, 400.0, 1, 30.0, &[narrow, wide], &BTreeMap::new()),
             vec![(0.0, 150.0, 1), (150.0, 260.0, 2), (260.0, 400.0, 1)],
             "the cuts follow the circles left to right, whatever order the marks came in"
+        );
+    }
+
+    /// An empty rack: its one wire, and the one conversion the default route
+    /// hands it. Every test here is about where on that wire a card may land,
+    /// so the numbers are read off the layout rather than repeated by hand.
+    fn empty_rack() -> (Geometry, Vec<WireRun>, Vec<WidthMark>) {
+        let groups: Vec<Vec<GuiLane>> = Vec::new();
+        let frame = geometry(&groups, 1040.0, 580.0, 0.0, 0.0);
+        let runs = wire_runs(&groups, &frame, None);
+        let marks = width_marks(
+            &[conversion(9, Channels::Mono, Channels::Stereo, None, None)],
+            &groups,
+            &frame,
+        );
+        (frame, runs, marks)
+    }
+    /// What an aim level with the empty rack's wire answers as: the rack's own
+    /// wire, which is the one aim [`chain_split`] answers to at all.
+    fn the_racks_wire() -> Target {
+        Target {
+            scope: None,
+            card: NodeId(MASTER_WIRE_KEY),
+            side: Side::Left,
+        }
+    }
+    #[test]
+    fn the_left_half_of_an_empty_wire_wants_what_the_wire_carries() {
+        let (frame, runs, marks) = empty_rack();
+        let run = runs[0];
+        let offsets = BTreeMap::new();
+        let at = marks[0].centre(&offsets)[0];
+        let aimed = chain_split(
+            &the_racks_wire(),
+            Some([run.x0 + 20.0, frame.flow]),
+            &runs,
+            &marks,
+            &offsets,
+        )
+        .expect("the half before the circle is a landing of its own");
+        // Left of the circle is upstream of the conversion: the card seated
+        // there has to take what `IN` hands out, which is what the wire itself
+        // carries into the circle.
+        assert_eq!(aimed.0, Channels::Mono);
+        assert!(
+            aimed.1[0] > run.x0 && aimed.1[0] < at,
+            "inside its own half"
+        );
+        assert_eq!(aimed.1[1], frame.flow, "level with the wire, as ever");
+    }
+    #[test]
+    fn the_two_halves_of_an_empty_wire_are_two_landings_apart() {
+        let (frame, runs, marks) = empty_rack();
+        let run = runs[0];
+        let offsets = BTreeMap::new();
+        let at = marks[0].centre(&offsets)[0];
+        let left = chain_split(
+            &the_racks_wire(),
+            Some([run.x0 + 20.0, frame.flow]),
+            &runs,
+            &marks,
+            &offsets,
+        )
+        .expect("the half before the circle");
+        let right = chain_split(
+            &the_racks_wire(),
+            Some([run.x1 - 20.0, frame.flow]),
+            &runs,
+            &marks,
+            &offsets,
+        )
+        .expect("the half beyond it");
+        // Right of the circle is downstream, where the wire carries what the
+        // conversion made: an aim either side asks for a different card, and
+        // says so by standing its bar on that side.
+        assert_eq!((left.0, right.0), (Channels::Mono, Channels::Stereo));
+        assert_ne!(left.1, right.1, "two aims, two bars");
+        assert!(left.1[0] < at && right.1[0] > at);
+        assert_eq!((left.1[1], right.1[1]), (frame.flow, frame.flow));
+    }
+    #[test]
+    fn a_wire_carrying_no_circle_keeps_the_single_landing_it_always_had() {
+        let (frame, runs, marks) = empty_rack();
+        let run = runs[0];
+        let offsets = BTreeMap::new();
+        // A route whose widths already match hands the rack nothing to draw,
+        // so its wire has no circle and no halves to tell apart: an aim on it
+        // is answered as it was before there were two, and the bar falls back
+        // on the midpoint rule.
+        let plain = chain_split(
+            &the_racks_wire(),
+            Some([run.x0 + 20.0, frame.flow]),
+            &runs,
+            &[],
+            &offsets,
+        );
+        assert_eq!(
+            plain.map(|(want, _)| want),
+            None,
+            "no circle, no width to aim for"
+        );
+        // A pointer that never settled over the rack is no aim, and neither is
+        // one aimed at anybody else's wire.
+        assert_eq!(
+            chain_split(&the_racks_wire(), None, &runs, &marks, &offsets),
+            None
+        );
+        let elsewhere = Target {
+            scope: None,
+            card: NodeId(1),
+            side: Side::Left,
+        };
+        assert_eq!(
+            chain_split(
+                &elsewhere,
+                Some([run.x0 + 20.0, frame.flow]),
+                &runs,
+                &marks,
+                &offsets
+            ),
+            None
+        );
+    }
+    #[test]
+    fn a_circle_dragged_along_its_wire_takes_its_two_halves_with_it() {
+        let (frame, runs, marks) = empty_rack();
+        let run = runs[0];
+        let mut offsets = BTreeMap::new();
+        offsets.insert(marks[0].id, 60.0);
+        let at = marks[0].centre(&offsets)[0];
+        assert!(
+            at > marks[0].centre(&BTreeMap::new())[0],
+            "the nudge slid the circle along its wire"
+        );
+        for (from, want) in [
+            (run.x0 + 4.0, Channels::Mono),
+            (run.x1 - 4.0, Channels::Stereo),
+        ] {
+            let aimed = chain_split(
+                &the_racks_wire(),
+                Some([from, frame.flow]),
+                &runs,
+                &marks,
+                &offsets,
+            )
+            .expect("a slid circle leaves both halves of the wire room to aim at");
+            assert_eq!(aimed.0, want);
+            assert!(
+                aimed.1[0] > run.x0 && aimed.1[0] < run.x1,
+                "still on the wire"
+            );
+            let its_own_half = if want == Channels::Mono {
+                aimed.1[0] < at
+            } else {
+                aimed.1[0] > at
+            };
+            assert!(its_own_half, "and on its own side of the slid circle");
+        }
+    }
+    #[test]
+    fn a_refused_landing_is_said_in_the_engines_own_words_about_the_aimed_wire() {
+        // The rack refuses an aim the plugin cannot fill rather than seating it
+        // and letting the engine refuse the graph, and it borrows the engine's
+        // own sentence to do it. The call site fills `wire` with the half of
+        // the wire the operator aimed at and `wants` with the card's input, so
+        // the line reads true of the wire under the pointer: swap the two and
+        // this says so.
+        let refused = WidthConflict {
+            card: NodeId(9),
+            wire: Channels::Stereo,
+            wants: Channels::Mono,
+        };
+        assert_eq!(
+            refused.message(Some("Reverb")),
+            "Reverb needs a mono input — the wire feeding it is stereo"
+        );
+        // A card whose name never arrived still gets a line nobody has to guess
+        // the subject of.
+        assert_eq!(
+            refused.message(None).replace("This card", "Reverb"),
+            refused.message(Some("Reverb"))
         );
     }
 }
