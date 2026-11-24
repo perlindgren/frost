@@ -69,6 +69,11 @@ pub struct NamSharedState {
     pub buffer_frames: AtomicU32,
     engine: Arc<engine::EngineState>,
     asset_sequence: AtomicU32,
+    /// Files released on the editor window, waiting for the UI to route them
+    /// on its next frame. The event thread must not touch the asset paths
+    /// itself: `edit_assets` reports to the host through parameter setters,
+    /// and that conversation belongs on the UI thread.
+    dropped: Mutex<Vec<std::path::PathBuf>>,
 }
 impl NamSharedState {
     fn logical_size(&self) -> LogicalSize<f32> {
@@ -140,6 +145,7 @@ impl Default for NamPlugin {
             buffer_frames: AtomicU32::new(0),
             engine,
             asset_sequence: AtomicU32::new(0),
+            dropped: Mutex::new(Vec::new()),
         });
         Self {
             params,

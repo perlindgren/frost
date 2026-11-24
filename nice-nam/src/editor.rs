@@ -38,6 +38,12 @@ impl nice_plugin::WindowState for NamSharedState {
     fn set_open(&self, value: bool) {
         self.open.store(value, Ordering::Release);
     }
+    fn accepts_files(&self) -> bool {
+        true
+    }
+    fn files_dropped(&self, paths: Vec<std::path::PathBuf>) {
+        self.dropped.lock().unwrap().extend(paths);
+    }
     fn standalone(&self) -> bool {
         cfg!(feature = "standalone") && crate::STANDALONE_MODE.load(Ordering::Relaxed)
     }

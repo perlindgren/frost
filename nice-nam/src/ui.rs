@@ -185,6 +185,12 @@ pub struct NamUi {
     armed: Option<usize>,
     settings_page: bool,
     message: String,
+    /// The channel count of the loaded impulse, sniffed from its header once
+    /// per path (`wav_channels`). The cabinet line gains a mono/stereo tag the
+    /// engine cannot give, and the line is redrawn every frame, so the answer
+    /// is kept beside the path it describes: a file replaced under the same
+    /// name keeps its old tag until the path moves.
+    cab_channels: Option<(Option<PathBuf>, Option<u16>)>,
     /// A file dialog open on its own thread, waiting to be asked what it
     /// decided, along with the button that opened it (`pick_file`).
     #[cfg(windows)]
@@ -236,6 +242,7 @@ impl NamUi {
             armed: None,
             settings_page: false,
             message: String::new(),
+            cab_channels: None,
             #[cfg(windows)]
             pending: None,
             #[cfg(feature = "standalone")]
@@ -270,6 +277,25 @@ impl NamUi {
             },
         );
     }
+    /// Where to start a model/cabinet dialog: the folder of the asset the
+    /// engine last confirmed loaded, or — before any load has confirmed,
+    /// which is every restored session until its first frame agrees — the
+    /// folder the requested paths still point at. Either way the dialog
+    /// opens where the current asset lives, so swapping one model or impulse
+    /// for its neighbour costs one click, not a walk back.
+    fn seed_directory(
+        &self,
+        asset: impl Fn(&crate::settings::NamPreferences) -> Option<&PathBuf>,
+    ) -> Option<PathBuf> {
+        {
+            let accepted = self.shared.engine.accepted.lock().unwrap();
+            if let Some(file) = accepted.as_ref().and_then(&asset) {
+                return file.parent().map(|dir| dir.to_path_buf());
+            }
+        }
+        let paths = self.shared.engine.paths.lock().unwrap();
+        asset(&paths)?.parent().map(|dir| dir.to_path_buf())
+    }
     /// Pick a model. Every platform offers this: the engine refuses the files it
     /// cannot run, and a dialog is the only way to reach those refusals.
     ///
@@ -279,14 +305,18 @@ impl NamUi {
     /// Cancel — and on Windows there is no longer an apartment for it to be
     /// handed (`pick_file`).
     fn choose_model(&mut self) {
+        let seed = self.seed_directory(|assets| assets.model_path.as_ref());
         #[cfg(windows)]
-        self.pick_file(Pick::Model, "NAM model", MODEL_FILTERS);
+        self.pick_file(Pick::Model, "NAM model", MODEL_FILTERS, seed);
         #[cfg(not(windows))]
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("NAM model", MODEL_FILTERS)
-            .pick_file()
         {
-            self.accept_model(path);
+            let mut dialog = rfd::FileDialog::new();
+            if let Some(directory) = seed {
+                dialog = dialog.set_directory(directory);
+            }
+            if let Some(path) = dialog.add_filter("NAM model", MODEL_FILTERS).pick_file() {
+                self.accept_model(path);
+            }
         }
     }
     /// Ask for the dialog on a thread of its own, which is what Windows needs
@@ -334,19 +364,22 @@ impl NamUi {
     /// waiting for it here — the only thread a Cocoa editor gets — would wait on
     /// itself.
     #[cfg(windows)]
-    fn pick_file(&mut self, pick: Pick, name: &'static str, filters: &'static [&'static str]) {
+    fn pick_file(
+        &mut self,
+        pick: Pick,
+        name: &'static str,
+        filters: &'static [&'static str],
+        directory: Option<PathBuf>,
+    ) {
         if self.pending.is_some() {
             // One dialog at a time; the open one owns the answer.
             return;
         }
-        self.pending = Some((
-            pick,
-            Box::pin(
-                rfd::AsyncFileDialog::new()
-                    .add_filter(name, filters)
-                    .pick_file(),
-            ),
-        ));
+        let mut dialog = rfd::AsyncFileDialog::new();
+        if let Some(directory) = directory {
+            dialog = dialog.set_directory(directory);
+        }
+        self.pending = Some((pick, Box::pin(dialog.add_filter(name, filters).pick_file())));
     }
     /// Ask an open dialog whether it has answered, from every frame. Asking from
     /// the frame clock is also what makes a waker that does nothing enough: the
@@ -386,14 +419,26 @@ impl NamUi {
     /// thread rules that move a model dialog off the painting thread do not care
     /// which file the dialog is being asked for.
     fn choose_cab(&mut self) {
+        let seed = self.seed_directory(|assets| assets.cabinet_path.as_ref());
         #[cfg(windows)]
-        self.pick_file(Pick::Cabinet, "Cabinet impulse response", CABINET_FILTERS);
+        self.pick_file(
+            Pick::Cabinet,
+            "Cabinet impulse response",
+            CABINET_FILTERS,
+            seed,
+        );
         #[cfg(not(windows))]
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Cabinet impulse response", CABINET_FILTERS)
-            .pick_file()
         {
-            self.accept_cab(path);
+            let mut dialog = rfd::FileDialog::new();
+            if let Some(directory) = seed {
+                dialog = dialog.set_directory(directory);
+            }
+            if let Some(path) = dialog
+                .add_filter("Cabinet impulse response", CABINET_FILTERS)
+                .pick_file()
+            {
+                self.accept_cab(path);
+            }
         }
     }
     /// The chosen impulse, handed to the loader the same way from either road.
@@ -403,6 +448,22 @@ impl NamUi {
         self.edit_assets(|paths| paths.cabinet_path = Some(path));
         self.shared.engine.revision.fetch_add(1, Ordering::Release);
     }
+    /// A file released on the window, routed by extension the same way the
+    /// two dialogs filter. The engine's loader still decides whether the file
+    /// runs; a refusal comes back as its message, exactly as from a dialog.
+    fn accept_dropped(&mut self, path: PathBuf) {
+        match dropped_asset(&path) {
+            Some(DroppedAsset::Model) => self.accept_model(path),
+            Some(DroppedAsset::Cabinet) => self.accept_cab(path),
+            None => {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                self.message = format!("Not a NAM model or impulse: {name}");
+            }
+        }
+    }
 }
 impl Process for NamUi {
     fn process(&mut self, ctx: &mut Context, _dt: f32) {
@@ -410,6 +471,15 @@ impl Process for NamUi {
         // would have drawn the line naming it.
         #[cfg(windows)]
         self.collect_pick();
+        // Then the files released on the window, in the order the platform
+        // reported them: a multi-file drop loads oldest first, so the last
+        // model and the last impulse of the batch are the ones left in place.
+        // Behind the dialog on purpose — a pick the user finished this frame
+        // outranks a drop that landed while the dialog was open.
+        let dropped: Vec<_> = std::mem::take(&mut *self.shared.dropped.lock().unwrap());
+        for path in dropped {
+            self.accept_dropped(path);
+        }
         self.shared.gate_db.store(
             self.shared
                 .engine
@@ -511,7 +581,28 @@ impl Process for NamUi {
                 .and_then(|p| p.file_name())
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or("None".into());
-            let cabinet_line = format!("Cabinet: {cab}");
+            // The engine keeps the samples and drops the channel count, so
+            // the header answers — once per path, never per frame. The tag
+            // rides at the end of the line so a long name loses its middle
+            // to the elide and keeps its verdict.
+            let cached = self
+                .cab_channels
+                .as_ref()
+                .filter(|(seen, _)| *seen == paths.cabinet_path);
+            let channels = match cached {
+                Some((_, channels)) => *channels,
+                None => {
+                    let channels = paths.cabinet_path.as_deref().and_then(wav_channels);
+                    self.cab_channels = Some((paths.cabinet_path.clone(), channels));
+                    channels
+                }
+            };
+            let cabinet_line = match channels {
+                Some(1) => format!("Cabinet: {cab} (mono)"),
+                Some(2) => format!("Cabinet: {cab} (stereo)"),
+                Some(count) => format!("Cabinet: {cab} ({count} channels)"),
+                None => format!("Cabinet: {cab}"),
+            };
             let status = self.shared.engine.status.lock().unwrap().clone();
             // Measured before any of it is drawn. The window can be dragged to its
             // minimum, and a line wider than it is not clipped — it runs past the
@@ -751,9 +842,69 @@ impl Process for NamUi {
     }
 }
 
+/// What a file dropped on the editor window is good for, decided by its
+/// extension exactly as the two dialogs filter: `.wav` is an impulse,
+/// `.nam`/`.namb` a model. Everything else is refused with its name rather
+/// than guessed at — a stray `.aiff` must not quietly replace a working
+/// cabinet, and the engine will not see it to refuse it itself.
+#[derive(Debug, PartialEq, Eq)]
+enum DroppedAsset {
+    Model,
+    Cabinet,
+}
+fn dropped_asset(path: &std::path::Path) -> Option<DroppedAsset> {
+    // A leading dot names a hidden file, not an extension: `Path::extension`
+    // already answers `None` for `.wav` pretending to be an impulse.
+    let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    match extension.as_str() {
+        "wav" => Some(DroppedAsset::Cabinet),
+        "nam" | "namb" => Some(DroppedAsset::Model),
+        _ => None,
+    }
+}
+
+/// The channel count declared by a WAV file's `fmt ` chunk, read from the
+/// header without decoding anything. The engine's `CabSimIr` keeps samples
+/// and sample rate but no channel count — it refuses everything that is not
+/// mono — so the header is the only place a stereo impulse can be called
+/// stereo before the loader's error message, and the only place a working
+/// mono one can say so. `None` means the sniff found no `fmt ` chunk in the
+/// first bytes: not a verdict on the file, just no tag. The loader's verdict
+/// in the status lines stays the authority on whether the impulse runs.
+/// Handles odd-sized padded chunks and `WAVE_FORMAT_EXTENSIBLE` (channels
+/// sits at the same offset there); a `fmt ` pushed past the sniffed window
+/// by something huge in front of it simply finds nothing.
+fn wav_channels(path: &std::path::Path) -> Option<u16> {
+    use std::io::Read;
+    const SNIFF_BYTES: u64 = 64 * 1024;
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(SNIFF_BYTES)
+        .read_to_end(&mut head)
+        .ok()?;
+    if head.len() < 12 || head[0..4] != *b"RIFF" || head[8..12] != *b"WAVE" {
+        return None;
+    }
+    let mut chunks = &head[12..];
+    while chunks.len() >= 8 {
+        let size = u32::from_le_bytes(chunks[4..8].try_into().ok()?) as usize;
+        if chunks[0..4] == *b"fmt " {
+            let body = chunks.get(8..)?;
+            return Some(u16::from_le_bytes(body.get(2..4)?.try_into().ok()?));
+        }
+        // RIFF pads odd-sized chunks with one filler byte. A body that runs
+        // past the sniffed window ends the walk: `get` finds nothing, and a
+        // truncated final chunk cannot be skipped, only stopped at.
+        let next = 8usize.checked_add(size)?.checked_add(size % 2)?;
+        chunks = chunks.get(next..)?;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ELLIPSIS, elide_middle, wrap};
+    use super::{DroppedAsset, ELLIPSIS, dropped_asset, elide_middle, wav_channels, wrap};
 
     /// A ruler on which every character is ten units wide, so that fitting is
     /// arithmetic. These hold the algorithm to its contract; what a string of this
@@ -827,5 +978,117 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(lines.concat(), long, "cutting lost characters");
+    }
+
+    /// A temporary file that removes itself when the test ends.
+    struct TempFile(std::path::PathBuf);
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// Write `bytes` to a uniquely named file in the system temporary
+    /// directory, so the header sniff reads a real file like the UI does.
+    fn write_temp(name: &str, bytes: &[u8]) -> TempFile {
+        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("frost-nam-{name}-{}-{unique}", std::process::id()));
+        std::fs::write(&path, bytes).expect("write temp file");
+        TempFile(path)
+    }
+
+    /// Assemble a RIFF WAVE from ID/body chunk pairs, padding odd bodies the
+    /// way a real writer does.
+    fn riff_wav(chunks: &[(&[u8], &[u8])]) -> Vec<u8> {
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(b"WAVE");
+        for (id, body) in chunks {
+            out.extend_from_slice(id);
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            out.extend_from_slice(body);
+            if body.len() % 2 == 1 {
+                out.push(0);
+            }
+        }
+        out
+    }
+
+    /// A standard sixteen-byte `fmt ` body carrying `channels`.
+    fn fmt_body(channels: u16) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&channels.to_le_bytes());
+        body.extend_from_slice(&44100u32.to_le_bytes());
+        body
+    }
+
+    fn sniff(chunks: &[(&[u8], &[u8])]) -> Option<u16> {
+        let file = write_temp("wav", &riff_wav(chunks));
+        wav_channels(&file.0)
+    }
+
+    #[test]
+    fn sniffs_channel_count() {
+        assert_eq!(sniff(&[(&b"fmt "[..], &fmt_body(1))]), Some(1));
+        assert_eq!(sniff(&[(&b"fmt "[..], &fmt_body(2))]), Some(2));
+        assert_eq!(sniff(&[(&b"fmt "[..], &fmt_body(5))]), Some(5));
+    }
+
+    #[test]
+    fn sniffs_past_a_list_chunk() {
+        // An odd-length LIST before fmt must be skipped including its pad byte.
+        let list = *b"mid";
+        assert_eq!(
+            sniff(&[(&b"LIST"[..], &list), (&b"fmt "[..], &fmt_body(2))]),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn sniff_gives_up_on_unreadable_layouts() {
+        assert_eq!(sniff(&[]), None, "no fmt chunk at all");
+        assert_eq!(sniff(&[(&b"LIST"[..], &[0; 2])]), None, "fmt past end");
+        // fmt declared shorter than the channel field.
+        assert_eq!(
+            sniff(&[(&b"fmt "[..], &[1, 0])]),
+            None,
+            "fmt body too short"
+        );
+        // fmt pushed beyond the sniff window.
+        assert_eq!(
+            sniff(&[(&b"LIST"[..], &[0; 65_536]), (&b"fmt "[..], &fmt_body(2))]),
+            None
+        );
+        let junk = write_temp("junk", b"not a wave file at all");
+        assert_eq!(wav_channels(&junk.0), None, "not a RIFF WAVE");
+        let short = write_temp("short", b"RIFF");
+        assert_eq!(wav_channels(&short.0), None, "truncated header");
+    }
+
+    #[test]
+    fn routes_dropped_files_by_extension() {
+        let model = std::path::Path::new("/kit/amp.nam");
+        assert_eq!(dropped_asset(model), Some(DroppedAsset::Model));
+        assert_eq!(
+            dropped_asset(std::path::Path::new("/kit/amp.NAMB")),
+            Some(DroppedAsset::Model),
+            "extension match is case insensitive"
+        );
+        assert_eq!(
+            dropped_asset(std::path::Path::new("/ir/room.wav")),
+            Some(DroppedAsset::Cabinet)
+        );
+        assert_eq!(dropped_asset(std::path::Path::new("/ir/room.aiff")), None);
+        assert_eq!(dropped_asset(std::path::Path::new("/ir/room")), None);
+        assert_eq!(
+            dropped_asset(std::path::Path::new("/hidden/.wav")),
+            None,
+            "a dotfile has no extension"
+        );
     }
 }
