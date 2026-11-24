@@ -126,6 +126,35 @@ impl<U: frost::Process + 'static> WindowHandler for PluginWindow<U> {
     }
 
     fn on_event(&self, event: baseview::Event) -> EventStatus {
+        // A file drop is not a pointer event the frost input machine can
+        // route: it carries paths, not coordinates with meaning. Plugins
+        // that opt in (`WindowState::accepts_files`) get them handed to the
+        // shared state to drain on the UI thread; every other plugin falls
+        // through to the old catch-all, which Windows and macOS read as a
+        // refused drop. X11 ignores this return value entirely — baseview
+        // answers the source's XdndPosition with the source's own action —
+        // so on Linux a drop lands here whether or not the plugin wants it,
+        // and one that does not simply drops it on the floor.
+        if let baseview::Event::Mouse(drag) = &event {
+            let accepted = match drag {
+                baseview::MouseEvent::DragEntered { .. }
+                | baseview::MouseEvent::DragMoved { .. }
+                | baseview::MouseEvent::DragDropped { .. }
+                | baseview::MouseEvent::DragLeft => self.state.accepts_files(),
+                _ => false,
+            };
+            if accepted {
+                if let baseview::MouseEvent::DragDropped {
+                    data: baseview::DropData::Files(paths),
+                    ..
+                } = drag
+                {
+                    self.state.files_dropped(paths.clone());
+                    self.window.request_redraw();
+                }
+                return EventStatus::AcceptDrop(baseview::DropEffect::Copy);
+            }
+        }
         if let Ok(mut guard) = self.frame.engine.try_borrow_mut()
             && let Some(engine) = guard.as_mut()
         {

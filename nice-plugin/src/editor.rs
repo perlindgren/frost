@@ -31,6 +31,16 @@ pub trait WindowState: Send + Sync + 'static {
     fn save_geometry(&self, _geometry: WindowGeom) -> Result<(), String> {
         Ok(())
     }
+    /// Whether this editor takes files dropped on its window. Off by default:
+    /// a plugin that has no answer for a path should watch the drop cursor
+    /// refuse (Windows and macOS gate it on this), not swallow the file.
+    fn accepts_files(&self) -> bool {
+        false
+    }
+    /// Files released on the window, delivered by the event thread. Queue and
+    /// route on the UI thread: this runs wherever the platform delivers the
+    /// drop, not under the editor's `Process`.
+    fn files_dropped(&self, _paths: Vec<std::path::PathBuf>) {}
 }
 #[derive(Clone, Copy)]
 pub struct WindowConfig {
