@@ -33,12 +33,13 @@ The main layers are:
 | layer | crate | role |
 |---|---|---|
 | host protocol + audio | [nice-plug 0.4.2](https://codeberg.org/RustAudio/nice-plug) | CLAP/VST3, params, DSP↔UI plumbing |
-| window embedding | [baseview `=0.3.3`](https://github.com/RustAudio/baseview) | child view inside the DAW window, host-driven events & frame timer |
+| window embedding | [baseview `=0.4.2`](https://github.com/RustAudio/baseview) | child view inside the DAW window, native input, coalesced redraws and frame scheduling |
 | rendering | `frost` (the workspace root package) | scene graph + wgpu 30 2D renderer, driven as a guest through `frost::embedded::Embedded` |
 | DSP | `crates/pitch` | allocation-free YIN pitch detection + note mapping |
 
 See [docs/VIABILITY.md](docs/VIABILITY.md) for why the GUI stack looks like this
-(winit cannot embed into a host; baseview is nice-plug's sanctioned BYO-GUI path),
+(Baseview is the plugin-window adapter used here; Winit integration would need
+its own host-compatible event-loop arrangement),
 and [docs/SCENE.md](docs/SCENE.md) for the UI design. VIABILITY.md was written
 when the answer was "fork the engine"; the engine grew the embedded path
 instead, so read that document as the reasoning that got here, not the plan.
@@ -54,7 +55,7 @@ exposes only the safe operations this example needs:
 | [`core-audio-device`](crates/core-audio-device/src/lib.rs) | Read-only device names, preferred channel pairs and buffer frame counts | Native CoreAudio calls, output sizes and CFString ownership |
 | [`window-position`](crates/window-position/src/lib.rs) | Restore, center and read a borrowed Windows window's position | Win32 placement calls; enabled by its `unsafe` feature |
 | [`plugin-buffer`](crates/plugin-buffer/src/lib.rs) | Scoped access to preallocated planar audio buffers | nice-plug's unsafe buffer-slice setup, storage lifetimes and disjoint channels |
-| [`macos-frame-sync`](crates/macos-frame-sync/src/lib.rs) | Main-thread display-synchronized editor callbacks | AppKit callback registration, ownership, cancellation and panic containment |
+| [`macos-frame-sync`](crates/macos-frame-sync/src/lib.rs) | Historical display-link helper, retained for examples/tests; no longer used by these editors | AppKit callback registration, ownership, cancellation and panic containment |
 
 The buffer wrapper uses fixed-capacity `heapless` sample storage, boxed once
 during setup to keep its address stable. The call to the plugin's `process`
@@ -128,22 +129,18 @@ part of nice-tuner.
 
 ### Editor frame scheduling
 
-On macOS 14 and newer, standalone and DAW-hosted editors submit frames from
-AppKit's view-bound display callbacks through our `macos-frame-sync` wrapper.
-The cadence follows the display containing the editor. A fixed 60 Hz display
-provides a 60 Hz scheduling source; missed deadlines and OS scheduling can still
-reduce the observed FPS. No precise FPS guarantee is implied.
+Standalone and DAW-hosted editors use Baseview 0.4.2's redraw scheduling.
+A successful `draw()` requests the next animation frame for meters and the
+waveform; input and parameter/state notifications request redraws through the
+public window waker. Baseview coalesces requests. Nice Rack no longer posts
+Baseview's old private timer ID from a helper thread on Windows.
 
-The display callback runs on the main UI thread and pauses when the view is
-hidden or off-screen. Baseview continues to own the window and input events;
-its internal 15 ms timer remains installed but performs no rendering in this
-mode. The renderer keeps non-VSync presentation to avoid deliberately waiting
-for a refresh in a DAW's UI callback.
-
-On older macOS versions, or if display callback setup fails, the editor falls
-back to baseview's existing frame timer. Other platforms retain their original
-scheduling. Startup logs state which scheduler was selected. The `diag` feature
-measures actual editor frame intervals with either scheduler.
+On macOS, Baseview owns the display link; our former `macos-frame-sync` callback
+is no longer installed. This path requires macOS 14 or newer. Availability is
+checked before creating an editor, and release downloads declare that minimum.
+The renderer still requests non-VSync presentation, which does not guarantee
+that GPU acquisition or submission cannot wait. Rendering stays on the thread
+required by the window backend; this is not a renderer-thread migration.
 
 The optional `unsafe` feature is forwarded to our `window-position` wrapper; combining
 `--features standalone,unsafe` enables native Windows centering and saved-position
@@ -501,7 +498,7 @@ The audio panel’s `APPLY` tracks only audio changes.
 | DSP, editor, GUI, RT path | identical code | identical code |
 | Device / backend / sample rate | own process, cpal | host's device & rate |
 | Param controls | settings panel, saved to RON | settings panel & host automation, saved by DAW |
-| UI pump | display callbacks on macOS 14+, otherwise baseview timer | same scheduler on the host UI thread |
+| UI pump | Baseview 0.4 coalesced redraws; macOS 14+ display link | same adapter, host-compatible window thread |
 | Editor lifecycle | closing the window ends the app | close/reopen freely, audio unaffected |
 
 The last two rows are environment properties only a real host can prove.

@@ -198,7 +198,7 @@ The feature/platform distinctions are:
 | --- | --- | --- |
 | Optional standalone window-position wrapper | Windows | Yes |
 | CLAP editor parenting in nice-clap-host | macOS, Windows, Linux supported embedding paths | No |
-| Showing native child windows and posting frame-timer messages | Windows | No; platform-gated only |
+| Showing native child windows (private frame-timer posting removed in the Baseview 0.4 migration) | Windows | No; platform-gated only |
 
 The public editor-parenting wrapper is safe for its callers. Its internal
 `set_parent()` call is unsafe because the dependency cannot enforce that the

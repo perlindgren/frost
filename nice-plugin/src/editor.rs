@@ -5,13 +5,7 @@ use nice_common::WindowGeom;
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::{LogicalSize, NativeSize};
 use nice_plug::editor::{HostMethods, ParentWindowHandle, ResizeHint, SpawnedEditor};
-use std::{
-    error::Error,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{error::Error, sync::Arc};
 
 /// Plugin-owned window preferences, kept separate from DSP/parameter state.
 /// Standalone persistence hooks default to no-ops for hosted instances.
@@ -71,8 +65,9 @@ impl<U: Process + 'static> Editor<U> {
         host: Option<HostMethods>,
         gui_context: Option<GuiContext>,
     ) -> Result<SpawnedEditor<EditorHandle>, Box<dyn Error>> {
+        #[cfg(target_os = "macos")]
+        macos_metal_view::require_editor_support()?;
         self.state.prepare(parent.is_some());
-        let redraw_requested = Arc::new(AtomicBool::new(true));
         // The host is a re-implementation of baseview's `HostCallbacks` /
         // `HostMainThreadCaller` to keep `baseview` out of nice-plug-core.
         // Adapt it to baseview's traits (same adapter as nice-nam).
@@ -138,11 +133,12 @@ impl<U: Process + 'static> Editor<U> {
             },
             host,
         )?;
+        let waker = window.waker();
         self.state.set_open(true);
         Ok(SpawnedEditor {
             handle: EditorHandle {
                 state: self.state.clone(),
-                redraw_requested,
+                waker,
                 hint: config.resize_hint,
             },
             window,
@@ -176,7 +172,7 @@ impl<U: Process + 'static> nice_plug::editor::Editor for Editor<U> {
 }
 pub struct EditorHandle {
     state: Arc<dyn WindowState>,
-    redraw_requested: Arc<AtomicBool>,
+    waker: baseview::WindowWaker,
     hint: ResizeHint,
 }
 impl nice_plug::editor::EditorHandle for EditorHandle {
@@ -198,9 +194,8 @@ impl nice_plug::editor::EditorHandle for EditorHandle {
     fn show(&self, window: &Self::Window) -> Result<(), Self::Error> {
         let res = window.show();
 
-        // baseview quirk: `WindowEvent::Focused` does not always fire after
-        // `show()` (see byo_gui_wgpu v0.4.2) — force a redraw manually.
-        self.redraw_requested.store(true, Ordering::Relaxed);
+        // A host can show an editor without changing any parameters.
+        self.waker.request_redraw();
 
         res
     }
@@ -244,15 +239,15 @@ impl nice_plug::editor::EditorHandle for EditorHandle {
     }
 
     fn state_changed(&self) {
-        self.redraw_requested.store(true, Ordering::Relaxed);
+        self.waker.request_redraw();
     }
 
     fn param_value_changed(&self, _id: &str, _normalized_value: f32) {
-        self.redraw_requested.store(true, Ordering::Relaxed);
+        self.waker.request_redraw();
     }
 
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
-        self.redraw_requested.store(true, Ordering::Relaxed);
+        self.waker.request_redraw();
     }
 }
 

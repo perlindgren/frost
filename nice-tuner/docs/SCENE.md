@@ -2,7 +2,7 @@
 
 Target API: `frost::embedded::Embedded<TunerUi>` (the `frost` package at the
 workspace root) driving frost's scene graph + immediate `Canvas` from inside
-`baseview::WindowHandler::on_frame`.
+`baseview::WindowHandler::draw`.
 
 frost coordinate space: origin at window **center**, **y up**, units = logical px;
 `Context` derefs to `Canvas` (immediate `line/circle/rectangle/text(..., z)`);

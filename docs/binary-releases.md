@@ -8,7 +8,7 @@ not part of these downloads. No Rust installation is needed to use the binaries.
 ## Choose a download
 
 - `frost-nice-aarch64-apple-darwin.tar.gz`: Apple Silicon Macs (M1 or later).
-  Built for the M1 CPU and a macOS 11 deployment target. The deployment target
+  Requires macOS 14 or newer; built for the M1 CPU and a macOS 14 deployment target. The deployment target
   is not a substitute for testing on older macOS versions. Intel Macs are not
   supported by this download.
 - `frost-nice-x86_64-pc-windows-msvc.tar.gz`: 64-bit Windows, x86-64-v3 CPU

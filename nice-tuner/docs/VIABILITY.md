@@ -1,5 +1,10 @@
 # Viability: frost + winit inside a nice-plug (CLAP/VST3) plugin
 
+Historical investigation: the fork-based design and Baseview 0.3 references below
+record earlier decisions. Current editors use Frost's embedded API through
+[`nice-plugin`](../../nice-plugin/README.md), now adapted to Baseview 0.4.2.
+That adapter's documentation describes current scheduling and OS requirements.
+
 **Date checked:** against `nice-plug 0.4.2` (crates.io / tag `v0.4.2`), `frost@main`
 (commit from 2026-10), `baseview 0.3.x`, `wgpu 30.0.1`, `winit 0.30.13`, macOS host,
 rustc 1.99.

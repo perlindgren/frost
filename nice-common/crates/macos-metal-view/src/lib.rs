@@ -1,6 +1,18 @@
 //! Prepare a plugin-owned macOS view for Metal without runtime-defined classes.
 #![deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
 
+/// Check the OS requirement before Baseview 0.4 constructs its AppKit view.
+/// Its view-bound display link requires macOS 14; fail before sending a selector
+/// unavailable on older systems, including when loaded by an older DAW process.
+#[cfg(target_os = "macos")]
+pub fn require_editor_support() -> Result<(), String> {
+    if objc2::available!(macos = 14.0) {
+        Ok(())
+    } else {
+        Err("Nice plugin editors require macOS 14 or newer (Baseview 0.4)".into())
+    }
+}
+
 /// Install a system CAMetalLayer as the root layer of a plugin-owned view.
 ///
 /// Call on the main thread before creating a wgpu surface and when resizing or
