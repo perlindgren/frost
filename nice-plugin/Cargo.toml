@@ -22,6 +22,14 @@ wgpu = "30"
 pollster = "0.4"
 keyboard-types = "0.8.3"
 
+# The XDND shadow receiver (`src/xdnd.rs`) speaks Xlib directly and reads
+# the baseview child's window id through the handle baseview itself
+# publishes; both crates are versions already in the lockfile, the same
+# x11-dl nice-rack links for its own editor windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = "0.6.2"
+x11-dl = "2.21.0"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
 

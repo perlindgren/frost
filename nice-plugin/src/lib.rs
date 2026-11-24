@@ -6,6 +6,8 @@ pub mod lifecycle;
 #[cfg(feature = "standalone")]
 pub mod standalone;
 mod window;
+#[cfg(target_os = "linux")]
+mod xdnd;
 pub use baseview::WindowSize;
 pub use editor::{Editor, EditorHandle, WindowConfig, WindowState};
 use std::sync::{Arc, OnceLock};

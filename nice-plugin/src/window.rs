@@ -6,8 +6,17 @@ use nice_common::WindowGeom;
 use nice_plug::context::gui::GuiContext;
 use std::{
     cell::{Cell, RefCell},
+    path::PathBuf,
     sync::Arc,
+    time::Instant,
 };
+
+/// The Linux shadow XDND receiver's live session; a no-op type elsewhere,
+/// where no such receiver exists to arm.
+#[cfg(target_os = "linux")]
+type Xdnd = crate::xdnd::Session;
+#[cfg(not(target_os = "linux"))]
+type Xdnd = ();
 
 pub(crate) struct PluginWindow<U: frost::Process + 'static> {
     window: WindowContext,
@@ -18,6 +27,15 @@ pub(crate) struct PluginWindow<U: frost::Process + 'static> {
 
     /// Last geometry successfully written; size changes persist on every OS.
     geom_saved: Cell<Option<WindowGeom>>,
+
+    /// Shadow XDND target on a private Xlib connection (Linux only; see
+    /// [`crate::xdnd`]). Its thread drops the paths into a channel, and
+    /// [`Self::drain_xdnd`] collects them on the window thread.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    xdnd: RefCell<Option<Xdnd>>,
+    /// Last delivered drop, for collapsing the duplicate that arrives when
+    /// baseview and the shadow receiver both answer one drag.
+    last_drop: RefCell<Option<(Instant, Vec<PathBuf>)>>,
 }
 
 struct Engine<U: frost::Process + 'static> {
@@ -55,8 +73,12 @@ impl<U: frost::Process + 'static> PluginWindow<U> {
             state,
             standalone,
             geom_saved: Cell::new(None),
+            xdnd: RefCell::new(None),
+            last_drop: RefCell::new(None),
         };
         this.frame.spawn_engine()?;
+        #[cfg(target_os = "linux")]
+        this.arm_xdnd();
         #[cfg(all(windows, feature = "unsafe"))]
         if this.standalone && this.state.allow_placement() {
             let _ = window_position::restore(
@@ -111,12 +133,86 @@ impl<U: frost::Process + 'static> PluginWindow<U> {
             ),
         }
     }
+
+    /// Hand one dropped batch to the plugin, exactly once per drag. Both
+    /// delivery paths — baseview's own XDND handling, and the Linux shadow
+    /// receiver — funnel here, and on KDE one drag answers both: the shadow
+    /// completes the conversion first (baseview may still be waiting on its
+    /// never-answered request, or a stricter sender may answer both). The
+    /// short identical-batch guard turns that into one load, not two.
+    fn deliver_files(&self, paths: Vec<PathBuf>) {
+        let now = Instant::now();
+        let duplicate = self
+            .last_drop
+            .borrow()
+            .as_ref()
+            .is_some_and(|(then, last)| {
+                *last == paths && now.duration_since(*then) < std::time::Duration::from_millis(500)
+            });
+        if duplicate {
+            return;
+        }
+        *self.last_drop.borrow_mut() = Some((now, paths.clone()));
+        self.state.files_dropped(paths);
+        self.window.request_redraw();
+    }
+
+    /// Move shadow-receiver drops onto the window thread. No-op off Linux,
+    /// where there is nothing to receive.
+    fn drain_xdnd(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(session) = self.xdnd.borrow_mut().as_mut() {
+            while let Ok(paths) = session.paths.try_recv() {
+                self.deliver_files(paths);
+            }
+        }
+    }
+
+    /// Shadow this window as an XDND target on a private connection.
+    /// Baseview stays installed as a second target; see [`crate::xdnd`]
+    /// for why it needs the partner, and [`Self::deliver_files`] for how a
+    /// drop both of them answer lands once. Failure simply means baseview's
+    /// answer is the only one — the pre-existing behavior.
+    #[cfg(target_os = "linux")]
+    fn arm_xdnd(&self) {
+        if !self.state.accepts_files() {
+            return;
+        }
+        use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+        let handle = self.window.platform_handle();
+        let Ok(window) = handle.window_handle() else {
+            return;
+        };
+        // Baseview publishes an XCB window id when it owns the window and
+        // an Xlib one when the plugin runs inside a host; both name the
+        // same X11 window, and the display pointer is irrelevant here
+        // because the receiver opens its own connection.
+        let window = match window.as_raw() {
+            RawWindowHandle::Xcb(handle) => u64::from(handle.window.get()),
+            RawWindowHandle::Xlib(handle) => handle.window,
+            _ => return,
+        };
+        if let Ok(session) = crate::xdnd::spawn(window) {
+            *self.xdnd.borrow_mut() = Some(session);
+        }
+    }
+}
+
+/// Stop the shadow receiver thread together with the window it shadows:
+/// dropping the session flips its stop flag and joins (see
+/// [`crate::xdnd::Receiver`]).
+#[cfg(target_os = "linux")]
+impl<U: frost::Process + 'static> Drop for PluginWindow<U> {
+    fn drop(&mut self) {
+        let _ = self.xdnd.borrow_mut().take();
+    }
 }
 
 impl<U: frost::Process + 'static> WindowHandler for PluginWindow<U> {
     fn draw(&self) -> Result<(), HandlerError> {
         #[cfg(all(windows, feature = "unsafe"))]
         self.track_geometry();
+        self.drain_xdnd();
         self.frame.tick()?;
         // Meters and waveforms can change without parameter notifications.
         // Request the next animation frame through Baseview's coalesced redraw
@@ -132,9 +228,10 @@ impl<U: frost::Process + 'static> WindowHandler for PluginWindow<U> {
         // shared state to drain on the UI thread; every other plugin falls
         // through to the old catch-all, which Windows and macOS read as a
         // refused drop. X11 ignores this return value entirely — baseview
-        // answers the source's XdndPosition with the source's own action —
-        // so on Linux a drop lands here whether or not the plugin wants it,
-        // and one that does not simply drops it on the floor.
+        // and, on X11, our shadow receiver ([`crate::xdnd`]) answer the
+        // source themselves — so on Linux a drop lands here whether or not
+        // the plugin wants it, and one that does not simply drops it on
+        // the floor.
         if let baseview::Event::Mouse(drag) = &event {
             let accepted = match drag {
                 baseview::MouseEvent::DragEntered { .. }
@@ -149,8 +246,7 @@ impl<U: frost::Process + 'static> WindowHandler for PluginWindow<U> {
                     ..
                 } = drag
                 {
-                    self.state.files_dropped(paths.clone());
-                    self.window.request_redraw();
+                    self.deliver_files(paths.clone());
                 }
                 return EventStatus::AcceptDrop(baseview::DropEffect::Copy);
             }

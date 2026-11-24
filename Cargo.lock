@@ -2248,8 +2248,10 @@ dependencies = [
  "nice-plug",
  "plugin-buffer",
  "pollster",
+ "raw-window-handle",
  "wgpu",
  "window-position",
+ "x11-dl",
 ]
 
 [[package]]
