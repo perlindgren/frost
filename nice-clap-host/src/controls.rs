@@ -490,11 +490,30 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
 /// in exactly the same way. `PostMessageW` does not wait for the receiver, so a
 /// plugin that stops listening cannot freeze the rack through us.
 ///
+/// One tick is outstanding at a time, because posting is not the same as timing:
+/// a posted message, unlike a timer, never coalesces, so an unconditional 15 ms
+/// post demands 66 frames a second from the UI thread per editor, forever,
+/// whether or not the last one was ever drawn. Measured on this machine with four
+/// editors open and all four drawing: one turn of the host loop that had not
+/// begun for 50 seconds. Every tick waiting in the queue is another message that
+/// must be drained before that loop may wait, and draining is what makes the
+/// next frame late, so the queue feeds itself. The pump therefore posts when the
+/// previous tick has evidently been dispatched — one pass of the host loop since
+/// the post, counted by `editor_passes` — and posts again after 100 ms of no such
+/// pass, which is also how a host gone quiet is woken up.
+///
 /// What is posted to is deliberately narrow: a direct child of *our* editor
 /// window whose class name starts with baseview's prefix, ticked only while it
-/// is visible and our window is not minimized, and only until that window stops
-/// existing. A plugin built on another toolkit is never sent anything, because
-/// its frame clock is its own business.
+/// is visible and our window is not minimized, from the moment it exists until
+/// either it or our window stops existing. A plugin built on another toolkit is
+/// never sent anything, because its frame clock is its own business.
+///
+/// The child is looked for until it appears rather than for a fixed spell, since
+/// baseview creates it on whichever thread answers the CLAP request and a slow
+/// attach is not a missing one: quitting early was a way to lose an editor with
+/// no error anywhere. It was not the cause of the editors that stopped drawing
+/// here — traced, all four children were present within 50 µs of the pump
+/// starting, which is what moved the suspicion back onto the machine.
 ///
 /// The coupling to own: 4242 is baseview's private timer id, not an API. A
 /// baseview that renamed or re-armed it would stop drawing silently again — the
@@ -502,6 +521,16 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
 /// why this comment names the file to look in. Nor does this fix the cause:
 /// frost's UI thread still burns about a third of a core with nothing on
 /// screen, and fixing that is what would make this pump unnecessary.
+/// Whether the editor pumps say what they found. `NICE_EDITOR_TRACE` set to
+/// anything turns it on; a release build is otherwise `release_max_level_off`,
+/// which is why every trace in this area is an `eprintln!` and not `log`.
+#[cfg(target_os = "windows")]
+fn trace_on() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("NICE_EDITOR_TRACE").is_some())
+}
+
 #[allow(unsafe_code)]
 fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
     #[cfg(target_os = "windows")]
@@ -517,6 +546,12 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
         /// baseview's `WIN_FRAME_TIMER`, and the period it arms it with.
         const FRAME_TICK: usize = 4242;
         const TICK_PERIOD: Duration = Duration::from_millis(15);
+        /// How often the pump looks, which is finer than the tick it posts: the
+        /// wait for an answered tick is bounded by this, not by the period.
+        const POLL_PERIOD: Duration = Duration::from_millis(5);
+        /// How often it looks when there is nothing to draw: no editor window
+        /// yet, an editor the operator hid, or a rack sitting minimized.
+        const IDLE_PERIOD: Duration = Duration::from_millis(50);
         /// baseview names each window class `Baseview-` plus a GUID, so the
         /// prefix identifies the toolkit without hard-coding the GUID.
         const BASEVIEW: [u16; 9] = [
@@ -538,39 +573,179 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
             return;
         };
         let top = win32.hwnd.get();
+        // How the pump learns its tick was answered: one turn of the host's UI
+        // loop is one pass, so the number going up since the post is the proof.
+        let served = crate::editor_passes();
+        /// How long a posted tick may sit unanswered before the pump assumes the
+        /// host loop is idle rather than slow, and posts another to wake it. A
+        /// request left in a queue also wakes the wait that queue is parked on,
+        /// which is how an idle host starts drawing again.
+        const RECOVERY: Duration = Duration::from_millis(100);
+        /// How long our baseview child may be missing after having been there.
+        /// baseview destroys it when the editor closes, a moment before our own
+        /// window goes; past that the pump is watching a corpse.
+        const GONE_TOLERANCE: Duration = Duration::from_millis(1000);
 
         let _ = std::thread::Builder::new()
             .name("nice-clap-editor-tick".to_owned())
             .spawn(move || {
                 // The window may still be on its way: baseview creates it on
-                // whichever thread answers the CLAP request first. Give it two
-                // seconds, then decide there is nothing of ours to clock.
-                let deadline = Instant::now() + Duration::from_secs(2);
+                // whichever thread answers the CLAP request first, and a pump
+                // that gave up after a fixed spell could silently lose an editor
+                // whose window arrived late. Measured, that turned out not to be
+                // what was wrong here — every child was there within 50 µs — but
+                // it is a way to lose an editor without a sound, so the pump now
+                // ends only when the window itself does, or when a child it had
+                // is gone. `NICE_EDITOR_TRACE` prints which of those happened,
+                // and whether a child it found ever counted as worth drawing.
+                let started = Instant::now();
+                let complain_at = started + Duration::from_secs(2);
+                let mut announced = false;
+                let mut complained = false;
+                let mut judged = false;
+                let mut was_worth = false;
+                let mut found_once = false;
+                let mut missed = Duration::ZERO;
+                let mut seen = served.load(Ordering::Acquire);
+                let mut outstanding = false;
+                let mut posted = Instant::now();
+                let mut next = Instant::now();
+                /// The class name of a window, for the trace only. Returns an
+                /// empty string for a nameless window rather than failing.
+                fn class_name(hwnd: isize) -> String {
+                    let mut name = [0u16; 64];
+                    let len = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) }
+                        .clamp(0, name.len() as i32) as usize;
+                    String::from_utf16_lossy(&name[..len])
+                }
                 loop {
+                    let now = Instant::now();
+                    let mut nap = POLL_PERIOD;
                     let mut child = unsafe { FindWindowExW(top, 0, null(), null()) };
                     let mut editor = 0;
+                    let mut mine = String::new();
                     while child != 0 {
                         let mut name = [0u16; 64];
                         let len =
-                            unsafe { GetClassNameW(child, name.as_mut_ptr(), name.len() as i32) };
-                        if len as usize >= BASEVIEW.len() && name[..BASEVIEW.len()] == BASEVIEW {
+                            unsafe { GetClassNameW(child, name.as_mut_ptr(), name.len() as i32) }
+                                .clamp(0, name.len() as i32) as usize;
+                        if len >= BASEVIEW.len() && name[..BASEVIEW.len()] == BASEVIEW {
                             editor = child;
+                            if trace_on() {
+                                mine = class_name(child);
+                            }
                             break;
                         }
                         child = unsafe { FindWindowExW(top, child, null(), null()) };
                     }
                     if editor != 0 {
+                        found_once = true;
+                        missed = Duration::ZERO;
+                        if !announced && trace_on() {
+                            announced = true;
+                            eprintln!(
+                                "[pump] 0x{top:x}: found {mine} after {:?}",
+                                started.elapsed()
+                            );
+                        }
                         // Ticking a hidden editor would be the plugin rendering
                         // at sixty frames a second for nobody.
                         let worth_drawing = unsafe { IsWindowVisible(editor) } != 0
                             && unsafe { IsIconic(top) } == 0;
-                        if worth_drawing {
-                            let _ = unsafe { PostMessageW(editor, WM_TIMER, FRAME_TICK, 0) };
+                        if trace_on() && (!judged || worth_drawing != was_worth) {
+                            judged = true;
+                            was_worth = worth_drawing;
+                            eprintln!(
+                                "[pump] 0x{top:x}: {mine} is {} (child visible {}, ours \
+                                 minimized {})",
+                                if worth_drawing {
+                                    "on screen"
+                                } else {
+                                    "off screen"
+                                },
+                                unsafe { IsWindowVisible(editor) } != 0,
+                                unsafe { IsIconic(top) } != 0
+                            );
                         }
-                    } else if Instant::now() >= deadline || unsafe { IsWindow(top) } == 0 {
-                        return;
+                        // The queue this tick went into is the one the host
+                        // drains once per pass, so a pass since the post is the
+                        // proof the tick was dispatched and may be followed.
+                        if served.load(Ordering::Acquire) != seen {
+                            outstanding = false;
+                        }
+                        if !worth_drawing {
+                            // Nothing on screen to fill, so nothing worth
+                            // waiting an hour for: coming back costs one post.
+                            // Looking twenty times a second instead of two
+                            // hundred is what a hidden editor should cost.
+                            outstanding = false;
+                            nap = IDLE_PERIOD;
+                        } else if now >= next && (!outstanding || now - posted >= RECOVERY) {
+                            // Read before the post, so that what is being waited
+                            // for is a pass that can have seen this message.
+                            seen = served.load(Ordering::Acquire);
+                            let _ = unsafe { PostMessageW(editor, WM_TIMER, FRAME_TICK, 0) };
+                            outstanding = true;
+                            posted = now;
+                            next = now + TICK_PERIOD;
+                        }
+                    } else {
+                        // No child of ours to clock right now. Twenty looks a
+                        // second costs nothing, and the window is not going to
+                        // arrive any sooner for being waited on harder.
+                        nap = IDLE_PERIOD;
+                        if unsafe { IsWindow(top) } == 0 {
+                            return;
+                        }
+                        if found_once {
+                            // It was here and now it is not: the editor is being
+                            // closed, and our own window is next. Polling it for
+                            // the rest of the session would be the leak this pump
+                            // is supposed to avoid, so retire and say so.
+                            missed += IDLE_PERIOD;
+                            if missed >= GONE_TOLERANCE {
+                                if trace_on() {
+                                    eprintln!(
+                                        "[pump] 0x{top:x}: our child is gone, retiring after \
+                                         {:?}",
+                                        started.elapsed()
+                                    );
+                                }
+                                return;
+                            }
+                        } else if !complained && now >= complain_at {
+                            complained = true;
+                            if trace_on() {
+                                // One look two levels deep: a toolkit that nests
+                                // its drawing window one row down would otherwise
+                                // look identical to one that is not there.
+                                let mut list = String::new();
+                                let mut kid = unsafe { FindWindowExW(top, 0, null(), null()) };
+                                while kid != 0 {
+                                    list.push_str(&class_name(kid));
+                                    let mut inner =
+                                        unsafe { FindWindowExW(kid, 0, null(), null()) };
+                                    while inner != 0 {
+                                        list.push_str(" > ");
+                                        list.push_str(&class_name(inner));
+                                        inner =
+                                            unsafe { FindWindowExW(kid, inner, null(), null()) };
+                                    }
+                                    list.push_str(", ");
+                                    kid = unsafe { FindWindowExW(top, kid, null(), null()) };
+                                }
+                                if list.is_empty() {
+                                    list.push_str("none");
+                                }
+                                eprintln!(
+                                    "[pump] 0x{top:x}: never had a baseview child, {:?} in; \
+                                     underneath this window: {list}",
+                                    started.elapsed()
+                                );
+                            }
+                        }
                     }
-                    sleep(TICK_PERIOD);
+                    sleep(nap);
                 }
             });
     }

@@ -5,7 +5,6 @@ use super::*;
 use crate::Canvas;
 use crate::objects::*;
 use crate::text;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The font file used by the expand_text tests, loaded from the crate's
@@ -67,8 +66,8 @@ fn expand_text_splices_glyph_sprites_in_place() {
             z: 2.0,
         },
     ];
-    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
-    canvas.expand_text(&mut atlases);
+    let mut caches = text::Caches::default();
+    canvas.expand_text(&mut caches);
 
     // The layout's glyph count is the source of truth for how many
     // sprites the text should produce (every glyph of "hi" has ink).
@@ -121,7 +120,7 @@ fn expand_text_reuses_the_atlas_across_frames() {
     // GPU texture is reused and no bytes are re-uploaded.
     let font = test_font();
     let size: f32 = 48.0;
-    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
+    let mut caches = text::Caches::default();
     let key = (
         Arc::as_ptr(&font) as *const () as u64,
         size.to_bits(),
@@ -151,7 +150,7 @@ fn expand_text_reuses_the_atlas_across_frames() {
 
             lit_layers: LightLayers::default(),
         }];
-        canvas.expand_text(&mut atlases);
+        canvas.expand_text(&mut caches);
         let Draw::Sprite { data, .. } = &canvas.draws[0] else {
             panic!("the first glyph must be a sprite");
         };
@@ -161,7 +160,7 @@ fn expand_text_reuses_the_atlas_across_frames() {
     let second = frame();
     assert_eq!(first, second, "frame two must reuse the atlas buffer");
     // The atlas was actually registered under its font key.
-    assert!(atlases.contains_key(&key));
+    assert!(caches.atlases.contains_key(&key));
 }
 
 #[test]
@@ -173,7 +172,7 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
     // first-frame text.
     let font = test_font();
     let size = 48.0;
-    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
+    let mut caches = text::Caches::default();
 
     let mut frame = |text: &str| -> usize {
         let mut canvas = Canvas::new((800, 600), 1.0);
@@ -198,7 +197,7 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
 
             lit_layers: LightLayers::default(),
         }];
-        canvas.expand_text(&mut atlases);
+        canvas.expand_text(&mut caches);
         canvas.draws.len()
     };
 
@@ -232,7 +231,7 @@ fn expand_text_at_density_2_bakes_at_the_physical_size_and_lays_out_logically() 
         b: 1.0,
         a: 1.0,
     };
-    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
+    let mut caches = text::Caches::default();
     let mut quads = |scale: f32| -> Vec<([f32; 2], [f32; 2], [f32; 2])> {
         let mut canvas = Canvas::new((800, 600), scale);
         canvas.draws = vec![Draw::Text {
@@ -251,7 +250,7 @@ fn expand_text_at_density_2_bakes_at_the_physical_size_and_lays_out_logically() 
 
             lit_layers: LightLayers::default(),
         }];
-        canvas.expand_text(&mut atlases);
+        canvas.expand_text(&mut caches);
         canvas
             .draws
             .iter()
@@ -268,8 +267,16 @@ fn expand_text_at_density_2_bakes_at_the_physical_size_and_lays_out_logically() 
     // The two densities keep two atlases, each keyed by its raster size:
     // neither can stretch the other's glyphs.
     let base = Arc::as_ptr(&font) as *const () as u64;
-    assert!(atlases.contains_key(&(base, 24.0f32.to_bits(), 400.0f32.to_bits())));
-    assert!(atlases.contains_key(&(base, 48.0f32.to_bits(), 400.0f32.to_bits())));
+    assert!(
+        caches
+            .atlases
+            .contains_key(&(base, 24.0f32.to_bits(), 400.0f32.to_bits()))
+    );
+    assert!(
+        caches
+            .atlases
+            .contains_key(&(base, 48.0f32.to_bits(), 400.0f32.to_bits()))
+    );
     for (a, b) in one.iter().zip(&two) {
         // The logical layout matches within a glyph cell's rounding.
         for axis in 0..2 {
@@ -325,8 +332,8 @@ fn expand_text_big_letters_keep_every_glyph() {
 
         lit_layers: LightLayers::default(),
     }];
-    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
-    canvas.expand_text(&mut atlases);
+    let mut caches = text::Caches::default();
+    canvas.expand_text(&mut caches);
     let sprites = canvas
         .draws
         .iter()
@@ -337,7 +344,11 @@ fn expand_text_big_letters_keep_every_glyph() {
         layout.glyphs.len(),
         "every glyph of the word should get an atlas cell"
     );
-    let atlas = atlases.values().next().expect("the word packs one atlas");
+    let atlas = caches
+        .atlases
+        .values()
+        .next()
+        .expect("the word packs one atlas");
     assert!(
         atlas.width > 1024,
         "big text should outgrow the side that dropped letters, got {}",

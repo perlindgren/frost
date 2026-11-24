@@ -11,6 +11,7 @@
 //! (the scene's convention), and glyph offsets relative to the text's pen
 //! origin — the left end of the baseline.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -95,6 +96,130 @@ pub(crate) fn layout(font: &[u8], text: &str, size: f32, weight: f32) -> Option<
     })
 }
 
+/// The key a text rendering is cached under: the font bytes' address, and the
+/// exact bits of the physical size and weight they were rendered at.
+pub(crate) type Triple = (u64, u32, u32);
+
+/// The cache key for a font's bytes at a physical size and weight.
+pub(crate) fn triple(font: &Arc<[u8]>, raster: f32, weight: f32) -> Triple {
+    (
+        Arc::as_ptr(font) as *const () as u64,
+        raster.to_bits(),
+        weight.to_bits(),
+    )
+}
+
+/// The text work that survives a frame in one window: the packed glyph
+/// atlases, and a place for shared per-font metrics.
+///
+/// The app keeps one per window between frames. Nothing here is authoritative
+/// — every entry can be dropped and recomputed from the scene — and nothing
+/// reads it back into the scene. The shaped runs are cached apart, per
+/// thread, because they are asked for from both sides of a frame (see
+/// [`shaped`]).
+#[derive(Default)]
+pub(crate) struct Caches {
+    /// The packed glyph masks, one atlas per [`Triple`].
+    pub atlases: HashMap<Triple, Atlas>,
+    /// A slot per [`Triple`] for a value that is identical for every string
+    /// in that font at that size, and costs a glyph rasterization to compute
+    /// — the capital-H center, which [`crate::canvas::text_cap_center`]
+    /// measures by rasterizing an `H`.
+    pub shared: HashMap<Triple, Option<f32>>,
+}
+
+/// A shaped run, together with the font it was shaped from.
+struct Shaped {
+    /// The font bytes the run came from, held alive. This is what makes the
+    /// pointer in the [`Triple`] safe: while an entry lives, its font cannot
+    /// be freed and its address handed to a different font.
+    _font: Arc<[u8]>,
+    /// The shaping, shared with whoever asked for it.
+    run: Arc<TextLayout>,
+}
+
+/// How many shaped runs one thread may hold. A few hundred kilobytes of pen
+/// positions; past it the whole set is dropped rather than aged entry by
+/// entry, because text that changes every frame misses anyway and text that
+/// does not never gets near the limit.
+const RUN_LIMIT: usize = 4096;
+
+/// The runs shaped on this thread, by [`Triple`] and then by string, so a hit
+/// costs two hash lookups and no allocation.
+#[derive(Default)]
+struct Runs {
+    by_font: HashMap<Triple, HashMap<Box<str>, Shaped>>,
+    /// How many runs `by_font` holds, across every [`Triple`].
+    held: usize,
+}
+
+thread_local! {
+    /// The runs this thread has shaped (see [`Runs`]).
+    ///
+    /// Per thread rather than per window, because shaping is asked for from
+    /// both sides of a frame: the painter turning text into quads, and an app
+    /// measuring a label before it decides where to put it
+    /// ([`crate::Canvas::text_width`]). Both ask about the same strings, and
+    /// the canvas is built fresh every frame, so neither of them can own the
+    /// answer. Shaping is a pure function of the font, the size, the weight
+    /// and the string, so a thread that shares nothing is a thread that never
+    /// locks.
+    static RUNS: RefCell<Runs> = RefCell::new(Runs::default());
+}
+
+/// Shape `text` at `size` pixels per em, reusing the shaping an earlier call
+/// made of the same font at the same size and weight.
+///
+/// [`layout`] builds a shaper from the font bytes on every call — measured at
+/// twenty-nine microseconds for a dozen characters of a variable font — which
+/// is more than drawing the glyphs that shaping yields. A window of a few
+/// dozen labels re-shapes every one of them, and measures each of them again
+/// to lay them out, sixty times a second without this.
+///
+/// At a rack frame's volume (fifty labels of about eighteen characters across
+/// four sizes and two weights, nine hundred glyph quads) the live rack spent
+/// 3.2 ms a frame on its whole text phase before this existed. Measured with
+/// it, that frame's expansion is 0.36 ms — the quads, with nothing left to
+/// recompute — and the fifty measures that place the labels, their string
+/// formatting included, are 6 µs together.
+pub(crate) fn shaped(
+    font: &Arc<[u8]>,
+    text: &str,
+    size: f32,
+    weight: f32,
+) -> Option<Arc<TextLayout>> {
+    let key = triple(font, size, weight);
+    let hit = RUNS.with(|runs| {
+        runs.borrow()
+            .by_font
+            .get(&key)
+            .and_then(|runs| runs.get(text))
+            .map(|shaped| shaped.run.clone())
+    });
+    if let Some(run) = hit {
+        return Some(run);
+    }
+    // Shaped outside the borrow: the memo must not be held while the work it
+    // memoizes runs, or a measurement made from inside it meets it borrowed.
+    let run = Arc::new(layout(font, text, size, weight)?);
+    RUNS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.held >= RUN_LIMIT {
+            memo.by_font.clear();
+            memo.held = 0;
+        }
+        memo.held += 1;
+        memo.by_font.entry(key).or_default().insert(
+            text.into(),
+            Shaped {
+                _font: Arc::clone(font),
+                run: run.clone(),
+            },
+        );
+    });
+    Some(run)
+}
+
 /// A rasterized glyph mask, ready to be packed into an [`Atlas`].
 #[derive(Clone)]
 pub(crate) struct RasterGlyph {
@@ -115,6 +240,18 @@ pub(crate) struct RasterGlyph {
 /// Rasterizes the font's glyph `id` at `size` pixels per em into an 8-bit
 /// alpha mask, or `None` if the font is unusable or the glyph has no
 /// outlines (a space, for example).
+///
+/// The scaler is built from the font bytes here, as [`layout`] builds its
+/// shaper, and it costs about as much again: a frame whose glyph set is not
+/// packed yet was measured at 31 ms for the fifty labels of a rack frame,
+/// against the 0.36 ms the same frame costs once its glyphs are packed. That
+/// is why an editor's first frames, and the moment a new character appears in
+/// a readout, stand out as a `text` spike of ten to twenty milliseconds while
+/// a frame that changes nothing shows none. Nothing in a settled frame
+/// reaches this: every glyph it draws is already in the atlas. Should the
+/// spike matter, the fix is a scaler kept per `(font, size, weight)` —
+/// [`ScaleContext`] is a reusable scratchpad — and not another cache of these
+/// masks, which the atlas already is.
 ///
 /// `weight` instantiates the font's `wght` variation axis, exactly as in
 /// [`layout`].
@@ -307,6 +444,41 @@ impl Atlas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shaped run that comes from the cache must cost far less than
+    /// shaping it again: on this repo's machine, re-shaping twelve characters
+    /// of the variable font costs about twenty-nine microseconds and the
+    /// lookup about a tenth of one, because [`layout`] builds a shaper from
+    /// the font bytes afresh on every call. The ratio is what is asserted,
+    /// not the times: a busy machine slows both sides.
+    #[test]
+    fn a_cached_shaping_outranks_reshaping() {
+        use std::time::Instant;
+        let font: Arc<[u8]> = include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf")
+            .as_slice()
+            .into();
+        shaped(&font, "-12.4 dB", 20.0, 400.0).expect("the font shapes");
+        let mut sink = 0.0f32;
+        let t = Instant::now();
+        for _ in 0..4_000 {
+            sink += layout(&font, "-12.4 dB", 20.0, 400.0)
+                .expect("the font shapes")
+                .width;
+        }
+        let fresh = t.elapsed().as_secs_f64() * 1e6 / 4_000.0;
+        let t = Instant::now();
+        for _ in 0..100_000 {
+            sink += shaped(&font, "-12.4 dB", 20.0, 400.0)
+                .expect("the memo holds it")
+                .width;
+        }
+        let cached = t.elapsed().as_secs_f64() * 1e6 / 100_000.0;
+        assert!(
+            cached * 10.0 < fresh,
+            "a cached shaping cost {cached:.1} us against {fresh:.1} us to reshape"
+        );
+        assert!(sink > 0.0, "the shaped run has a width");
+    }
 
     /// The repo's example font, used by the layout and raster tests.
     fn example_font() -> Vec<u8> {

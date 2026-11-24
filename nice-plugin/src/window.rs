@@ -53,6 +53,7 @@ impl<U: frost::Process + 'static> PluginWindow<U> {
             factory,
             config,
             gui_context,
+            frames: std::sync::atomic::AtomicU64::new(0),
         });
         let this = Self {
             window,
@@ -217,6 +218,58 @@ struct FrameDriver<U: frost::Process + 'static> {
     factory: Factory<U>,
     config: WindowConfig,
     gui_context: Option<nice_plug::context::gui::GuiContext>,
+    /// Ticks answered, for `trace_frame`.
+    frames: std::sync::atomic::AtomicU64,
+}
+
+/// Whether the editor heartbeat lines are wanted. Read once: the variable is set
+/// before a plugin is loaded or an editor opened, so there is no moment in which
+/// a running editor could change it, and a per-frame `getenv` is not free.
+fn trace_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("NICE_EDITOR_TRACE").is_some())
+}
+
+/// One heartbeat every hundred frames, from inside the plugin.
+///
+/// The host's frame pump asks for one frame at a time and withholds the next
+/// request until it can see that the last one was answered, so every fix to a
+/// stuck editor ends up asking the same question: are ticks still arriving, and
+/// how often? Nothing the host logs can answer that — the frame happens in the
+/// plugin, on the host's thread, and the host only knows it posted a message.
+/// A hundred frames is about a second and a half at the rate the pump aims for,
+/// so a live editor is one line every so often and a silent one is the absence.
+fn trace_frame(title: &str, frames: &std::sync::atomic::AtomicU64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if !trace_on() {
+        return;
+    }
+    let nth = frames.fetch_add(1, Relaxed);
+    if nth.is_multiple_of(100) {
+        eprintln!("[editor] '{title}': frame {nth}");
+    }
+}
+
+/// Which graphics API this editor ended up drawing on, and on which adapter.
+///
+/// A plugin picks its device per window, for a surface the host never sees,
+/// while the host has already picked one for its own window. When the two
+/// picks disagree the process holds two or three live device contexts and the
+/// host's UI thread switches between them once per frame per window — which is
+/// the difference between a frame costing a millisecond and a quarter of a
+/// second, and it is invisible in every log we kept until this one.
+/// `NICE_EDITOR_TRACE=1` prints the pick once per editor, so "moving the rack
+/// is laggy with two editors open" is answerable from a log line instead of
+/// from a debugger nobody has installed.
+fn trace_backend(title: &str, adapter: &wgpu::Adapter) {
+    if !trace_on() {
+        return;
+    }
+    let info = adapter.get_info();
+    eprintln!(
+        "[editor] '{title}': drawing on {:?}, adapter {:?} ({:?})",
+        info.backend, info.name, info.device_type
+    );
 }
 
 impl<U: frost::Process + 'static> FrameDriver<U> {
@@ -232,8 +285,14 @@ impl<U: frost::Process + 'static> FrameDriver<U> {
             let surface = instance.create_surface(self.window.platform_handle())?;
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::LowPower,
-                    force_fallback_adapter: false,
+                    // The same question the host asks of its own window, so the
+                    // same answer. Asking for the low-power adapter instead —
+                    // which this did — steers an editor onto a different device,
+                    // usually a different graphics API, than the window it is
+                    // drawn inside of, and the host's UI thread pays a GPU
+                    // context switch once per frame per editor for it. A plugin
+                    // that wants to be nice to its host draws where the host
+                    // draws; see `frost::pin_gpu_backend`.
                     compatible_surface: Some(&surface),
                     ..Default::default()
                 })
@@ -252,6 +311,7 @@ impl<U: frost::Process + 'static> FrameDriver<U> {
             Ok::<_, HandlerError>((surface, adapter, device, queue))
         })?;
         let (surface, adapter, device, queue) = surface;
+        trace_backend(self.config.title, &adapter);
 
         let mut surface_config = surface
             .get_default_config(
@@ -293,6 +353,7 @@ impl<U: frost::Process + 'static> FrameDriver<U> {
     }
 
     fn tick(&self) -> Result<(), HandlerError> {
+        trace_frame(self.config.title, &self.frames);
         let Ok(mut guard) = self.engine.try_borrow_mut() else {
             return Ok(());
         };

@@ -21,6 +21,16 @@ use std::{
     },
 };
 
+/// Passes of the host's UI loop: one for every [`LiveSession::service`] call,
+/// which is what the host calls on the thread that owns the plugin windows. The
+/// editor frame pump in `graph::controls` posts one tick at a time and reads this
+/// to learn that the pass it woke has gone by — a plugin editor that is not
+/// answering may not fill that thread's message queue without limit.
+pub(crate) fn editor_passes() -> &'static AtomicU64 {
+    static PASSES: AtomicU64 = AtomicU64::new(0);
+    &PASSES
+}
+
 #[derive(Default)]
 struct Signals {
     callback: AtomicBool,

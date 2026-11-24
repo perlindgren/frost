@@ -2278,6 +2278,7 @@ dependencies = [
 name = "nice-rack-standalone"
 version = "0.1.0"
 dependencies = [
+ "frost",
  "nice-clap-host",
  "nice-common",
  "nice-rack",

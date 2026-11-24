@@ -32,6 +32,10 @@ struct Core<P: Process> {
     scene: Scene,
     process: P,
     vsync: bool,
+    /// The swap-chain depth (see `Config::frame_latency`), carried for
+    /// symmetry with the native config; the browser composites the canvas
+    /// and pays no attention to it.
+    frame_latency: u32,
     window_size: Option<[u32; 2]>,
     /// The physical-pixel size request, carried for symmetry with the
     /// native config; `create_window` ignores it on the web.
@@ -213,6 +217,7 @@ impl<P: Process> WebFrost<P> {
         scene: Scene,
         process: P,
         vsync: bool,
+        frame_latency: u32,
         window_size: Option<[u32; 2]>,
         window_size_px: Option<[u32; 2]>,
         fullscreen: bool,
@@ -230,6 +235,7 @@ impl<P: Process> WebFrost<P> {
                 scene,
                 process,
                 vsync,
+                frame_latency,
                 window_size,
                 window_size_px,
                 fullscreen,
@@ -298,6 +304,7 @@ impl<P: Process> WebFrost<P> {
             device,
             queue,
             core.vsync,
+            core.frame_latency,
             core.window_size,
             core.window_size_px,
             core.fullscreen,

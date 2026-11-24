@@ -16,6 +16,9 @@ pub(crate) use app::*;
 
 mod copy;
 
+/// Phase-by-phase frame timing, off unless `FROST_PROFILE` names a file.
+mod profile;
+
 /// The guest path: frost driven on a surface someone else made.
 pub mod embed;
 

@@ -118,6 +118,9 @@ impl LiveSession {
     /// Service main-thread callbacks and retire a returned graph. No wait for
     /// audio is performed. Error messages are produced here, never in process.
     pub fn service(&mut self) -> Result<LiveStatus, String> {
+        // One pass of the host's UI loop, for the editor frame pump's benefit:
+        // it posts the next tick only once it can see this number move.
+        crate::editor_passes().fetch_add(1, Ordering::Release);
         if let Ok(rack) = self.returned.pop() {
             drop(rack); // stopped handles return to their owning instances
             self.stopped = true;

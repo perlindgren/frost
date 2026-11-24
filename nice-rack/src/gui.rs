@@ -1,4 +1,5 @@
 mod flow_canvas;
+mod host_profile;
 mod timing;
 use crate::{
     Settings,
@@ -128,6 +129,10 @@ struct DropCache {
 }
 struct RackUi {
     drop_cache: Option<DropCache>,
+    /// The rack's share of its own timing, appended to the file
+    /// `FROST_PROFILE` names: the editor windows live in the idle hook, which
+    /// is outside the frame frost times.
+    host_profile: Option<host_profile::HostProfile>,
     runtime: Runtime,
     loader: Loader,
     font: Arc<[u8]>,
@@ -2203,6 +2208,7 @@ pub fn run(
     let icons = nice_common::fonts::icon_font();
     let ui = RackUi {
         drop_cache: None,
+        host_profile: host_profile::HostProfile::from_env(),
         runtime,
         loader: Box::new(loader),
         font,
@@ -3184,9 +3190,18 @@ impl Process for RackUi {
         false
     }
     fn native_about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let t_service = host_profile::millis();
         self.windows.service(event_loop, &mut self.runtime);
+        let t_capture = host_profile::millis();
         self.windows.capture(&mut self.runtime);
+        let t_tick = host_profile::millis();
         self.runtime.tick();
+        let t_end = host_profile::millis();
+        if let Some(profile) = self.host_profile.as_mut() {
+            profile.note(host_profile::SERVICE, t_capture - t_service, t_end);
+            profile.note(host_profile::CAPTURE, t_tick - t_capture, t_end);
+            profile.note(host_profile::TICK, t_end - t_tick, t_end);
+        }
         if self.runtime.closing && self.runtime.stopped() {
             event_loop.exit();
         }
@@ -3197,7 +3212,16 @@ impl Process for RackUi {
         id: winit::window::WindowId,
         event: &winit::event::WindowEvent,
     ) -> bool {
-        if self.windows.event(id, event, &mut self.runtime) {
+        let t_event = host_profile::millis();
+        let handled = self.windows.event(id, event, &mut self.runtime);
+        if let Some(profile) = self.host_profile.as_mut() {
+            profile.note(
+                host_profile::EVENT,
+                host_profile::millis() - t_event,
+                host_profile::millis(),
+            );
+        }
+        if handled {
             return true;
         }
         // The rack's own shortcuts, read here rather than in the frame: see

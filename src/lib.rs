@@ -728,6 +728,30 @@ pub struct Config {
     /// [`Context::set_vsync`]), and the [`Diagnostics`] overlay answers
     /// Alt-V with exactly that.
     pub vsync: bool,
+    /// How many frames the swap chain may hold: the frame **latency** the
+    /// display runs with.
+    ///
+    /// A presented frame is not on the panel the instant it is drawn; it
+    /// waits behind what the chain is already showing. At `1` — the default
+    /// — a vsync'd chain has one frame on the display and one being drawn,
+    /// so the frame drawn now is the frame the next vertical blank shows.
+    /// At `2`, wgpu's own default and what frost ran with before this option
+    /// existed, a second frame may queue behind it: the picture on the panel
+    /// was rendered one blank earlier, so every click and keystroke reaches
+    /// the process a refresh later than it has to.
+    ///
+    /// The depth is also the queue the GPU draws into. At `1` acquiring a
+    /// drawable waits for a free one, which paces a continuous redraw at the
+    /// refresh rate. At `2` it never waits, and a light scene outruns the
+    /// display: measured on a 60 Hz panel with an RTX 4090, an idle rack
+    /// drew 105–117 frames a second into a chain presenting 60, rendering
+    /// frames whose only destination was the discard bin.
+    ///
+    /// So the trade is latency against headroom: raise it when the GPU is
+    /// the slow part of the frame and a full refresh budget cannot be met
+    /// without the draw stalling on a drawable. `0` is read as `1` — a chain
+    /// with no spare image cannot present at all.
+    pub frame_latency: u32,
     /// Open the window already fullscreen.
     ///
     /// `true` asks for [`Fullscreen::Borderless(None)`] at creation: the
@@ -924,11 +948,12 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// Vsync on, windowed, a resizable window, bilinear upscaling, no bloom,
-    /// and the platform's default size.
+    /// Vsync on, one frame of swap-chain latency, windowed, a resizable
+    /// window, bilinear upscaling, no bloom, and the platform's default size.
     fn default() -> Self {
         Self {
             vsync: true,
+            frame_latency: 1,
             fullscreen: false,
             window_size: None,
             window_size_px: None,
@@ -972,6 +997,47 @@ pub(crate) fn record_adapter_name(name: &str) {
 /// has to be able to say what it measured.
 static ADAPTER_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// Name the graphics API this process draws on, so every window opened in it
+/// afterwards draws on that same API — including a plugin's editor.
+///
+/// A plugin builds its own device on its own surface, and nothing in the CLAP
+/// contract asks it to agree with the host. The two are not even offered the
+/// same choices: a child window is not a surface every backend will present,
+/// so a host drawing on the top-level window's API and an editor on whatever
+/// the child window accepts is the default state of a rack, not a mistake.
+/// When the picks disagree the process holds two or three live device
+/// contexts, and the host's UI thread — the one thread that draws every
+/// window, because a plugin's frames are ticked on it — switches GPU API once
+/// per frame per window. Measured in nice-rack with two of our own editors
+/// open, one pass of that thread cost 0.1 ms with every window on one API and
+/// 261 ms with them split across three: the difference between a window that
+/// tracks the mouse and one that does not.
+///
+/// `wgpu` narrows every instance it creates in the process, foreign modules
+/// included, to the backends named in `WGPU_BACKEND`, so writing the host's
+/// pick here aligns plugins we do not ship as well as our own. A value already
+/// in the environment is left alone — that is the escape hatch for a machine,
+/// or a plugin, for which the shared choice is the wrong one.
+///
+/// Returns the backend now in force, or `None` if the operator named one first.
+/// Call it from `main`, before anything else has started: it reads the
+/// environment and writes it, and writing it while another thread may be
+/// reading it is not sound.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pin_gpu_backend() -> Option<wgpu::Backend> {
+    if std::env::var_os("WGPU_BACKEND").is_some() {
+        return None;
+    }
+    let instance = Instance::default();
+    let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default())).ok()?;
+    let backend = adapter.get_info().backend;
+    // SAFETY: the host calls this first thing in `main`, before its audio,
+    // worker and input threads exist, so no other thread can be reading the
+    // environment while it is written.
+    unsafe { std::env::set_var("WGPU_BACKEND", backend.to_str()) };
+    Some(backend)
+}
+
 /// Opens the window and runs the event loop, calling `process` once per
 /// frame and drawing `scene` after each call.
 ///
@@ -1014,6 +1080,7 @@ pub fn run_configured<P: Process>(
         device,
         queue,
         config.vsync,
+        config.frame_latency,
         config.window_size,
         config.window_size_px,
         config.fullscreen,
@@ -1063,6 +1130,7 @@ pub fn run_configured<P: Process>(
         scene,
         process,
         config.vsync,
+        config.frame_latency,
         config.window_size,
         config.window_size_px,
         config.fullscreen,
