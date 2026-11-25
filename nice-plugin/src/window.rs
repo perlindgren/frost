@@ -148,7 +148,7 @@ impl<U: frost::Process + 'static> PluginWindow<U> {
                 );
             }
             Err(error) => eprintln!(
-                "{}: {error}; using baseview frame timer",
+                "{}: {error}; drawing on baseview redraw requests",
                 self.frame.config.title
             ),
         }
@@ -156,7 +156,7 @@ impl<U: frost::Process + 'static> PluginWindow<U> {
 }
 
 impl<U: frost::Process + 'static> WindowHandler for PluginWindow<U> {
-    fn on_frame(&self) -> Result<(), HandlerError> {
+    fn draw(&self) -> Result<(), HandlerError> {
         #[cfg(all(windows, feature = "unsafe"))]
         self.track_geometry();
         #[cfg(target_os = "macos")]
@@ -169,7 +169,16 @@ impl<U: frost::Process + 'static> WindowHandler for PluginWindow<U> {
             }
             return Ok(()); // AppKit drives rendering; don't render twice.
         }
-        self.frame.tick()
+        self.frame.tick()?;
+        // baseview 0.4 draws once per request and stops; the request is ours to
+        // make. Asking again here is what keeps an editor animating at all, and
+        // it is the editor's half of the deal the rack already makes with its own
+        // window, where `Frost::frame_is_redundant` decides whether to ask again.
+        // Idle editors therefore still repaint at the frame interval, as they did
+        // under 0.3.3's always-armed timer; narrowing that to "only while
+        // something moves" needs a damage signal from frost, not from baseview.
+        self.window.request_redraw();
+        Ok(())
     }
 
     fn on_event(&self, event: baseview::Event) -> EventStatus {

@@ -349,20 +349,22 @@ dependencies = [
 
 [[package]]
 name = "baseview"
-version = "0.3.3"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d82967887853b1ff1c31f973e0684504adfffcff4dac1eb7d0d82d3aafd0897"
+checksum = "5d74c34d835411d7fcc30896cd37d28f0f6f11415ac116898546c6e019762a7d"
 dependencies = [
  "block2 0.6.2",
  "bytemuck",
- "calloop 0.14.5",
+ "calloop 0.14.4",
  "dispatch2",
  "dpi",
  "keyboard-types",
+ "libloading 0.8.9",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "percent-encoding",
  "raw-window-handle",
  "tracing",
@@ -491,13 +493,14 @@ dependencies = [
 
 [[package]]
 name = "calloop"
-version = "0.14.5"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43b32313e937c8721c9d17ee9bf60699a6402b4b7c2cb6ac1bee0ffcaa4b4e5e"
+checksum = "4dbf9978365bac10f54d1d4b04f7ce4427e51f71d61f2fe15e3fed5166474df7"
 dependencies = [
  "bitflags 2.13.2",
  "polling",
  "rustix 1.1.4",
+ "slab",
  "tracing",
 ]
 

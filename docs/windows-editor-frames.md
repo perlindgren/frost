@@ -81,12 +81,15 @@ With that, four editors report the pick themselves and agree with the host:
 This is the one that made the rack unreadable rather than merely slow, and it
 was invisible in every log we had.
 
-frost's UI thread never goes idle, so a plugin's own `SetTimer` never fires
-(timer messages are generated inside `GetMessage` only when the queue is
-otherwise empty). A thread of ours therefore posts baseview's frame tick by
-hand — `PostMessageW(editor, WM_TIMER, 4242, 0)` — which is what
+frost's UI thread never goes idle, so a plugin's own timer never fires (timer
+messages are generated inside `GetMessage` only when the queue is otherwise
+empty), and under baseview 0.4.2 neither does its `WM_PAINT`, which is where
+drawing now happens: `WM_TIMER` merely invalidates, and only while baseview
+believes a redraw is outstanding. A thread of ours therefore drives the whole
+chain by hand — `WM_USER + 2` (baseview's request-redraw), `WM_TIMER` with its
+private id `0x42691`, then `WM_PAINT` — which is what
 [`start_editor_frame_pump`](../nice-clap-host/src/controls.rs#L505-L640)
-exists for. Until the fix it posted one every 15 ms per editor, forever,
+exists for. Until the fix it posted one tick every 15 ms per editor, forever,
 whether or not the last one had been drawn.
 
 A posted message, unlike a timer, never coalesces. So:
@@ -117,8 +120,9 @@ The pump now keeps **one** tick outstanding per editor
 * a hidden editor, a minimized rack, or a window that has not appeared yet is
   looked at twenty times a second instead of two hundred.
 
-One request outstanding per editor means the queue holds at most N messages
-instead of as many as the calendar allows. The loop can always empty it, and
+One request outstanding per editor means the queue holds at most three messages
+per editor — the count of a tick — instead of as many as the calendar allows.
+The loop can always empty it, and
 the aggregate frame rate becomes whatever the thread actually completes rather
 than whatever four plugins were promised.
 
@@ -133,21 +137,21 @@ as the runaway signature and stops the run.
 
 | editors, one API | gap p50 | gap p95 | gap max | loop iterations in 3 s |
 | --- | --- | --- | --- | --- |
-| 2 | 0.00 ms | 0.00 ms | 58.8 ms | 427 431 |
-| 4 | 0.00 ms | 0.00 ms | 70.3 ms | 207 435 |
+| 2 | 0.00 ms | 0.00 ms | 53.2 ms | 689 617 |
+| 4 | 0.00 ms | 0.00 ms | 45.9 ms | 365 333 |
 
 Against the 50.5 s above. The worst remaining gaps are tens of milliseconds,
-i.e. one late frame, not a queue.
+i.e. one late frame, not a queue. Both rows were taken on baseview 0.4.2 with
+the three-message tick; the run that produced them is §5 verbatim.
 
 That the bound did not simply switch the editors off is answered from inside
 the plugin: [`trace_frame`](../nice-plugin/src/window.rs#L242) prints a
-heartbeat every hundred ticks, and with four editors open each of them walked
-0 → 100 → 200 → 300 while the numbers above were measured — about 130 frames a
-second in total, from one thread, with the loop still answering messages at
-p95 < 1 ms.
+heartbeat every hundred ticks, and the two editors of the traced two-editor run
+each walked to frame 700 inside its nine seconds — about 78 frames a second
+each, from one thread, with the loop still answering messages at p95 < 1 ms.
 
 The opening phase is reported by the same probe and is still slow: worst gap
-1.9 s for two editors, 4.1 s for four, because each plugin builds its whole GUI
+1.9 s for two editors, 3.9 s for four, because each plugin builds its whole GUI
 on the UI thread — the rack's own heartbeat measured "attached its editor in
 876–944 ms" per plugin cold, and 147–166 ms for a warm rack. §6.
 

@@ -463,17 +463,22 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
 }
 /// Keep the plugin editor drawing when our own UI thread cannot clock it.
 ///
-/// baseview paints a window from one source only: the `WM_TIMER` whose id is its
-/// private `WIN_FRAME_TIMER`, armed for 15 ms inside `BaseviewWindow::create`
-/// (`platform/win/window.rs`) on whichever thread called `set_parent` — for us
-/// that is frost's UI thread. The window procedure ignores that message unless
-/// `wparam` carries the id, and ignores everything else for painting, so nothing
-/// else can produce a frame.
+/// baseview 0.4.2 draws in one place only: `WM_PAINT`, which reads the update
+/// rect, reports damage, calls `WindowHandler::draw` and validates
+/// (`platform/win/window.rs:631`). What baseview does by itself to get there is
+/// its private `RedrawTimer` — id `0x42691`, 15 ms, `window_state.rs:21` — and
+/// that timer does not draw: it calls `InvalidateRect`, and only while baseview
+/// believes a redraw is outstanding, dropping the message otherwise
+/// (`window.rs:640-652`). Nothing is armed at creation any more; the chain starts
+/// when the plugin asks for a frame and continues only while it keeps asking,
+/// which our editor handler does at the end of every `draw`.
 ///
 /// Windows does not queue a `WM_TIMER` when the interval elapses; it generates
 /// one inside `GetMessage`/`PeekMessage`, and only when the thread's queue holds
-/// no other message. A UI thread that keeps handing work to itself therefore
-/// never produces timer messages at all, however diligently it pumps. Measured
+/// no other message, and it generates a `WM_PAINT` the same way once something is
+/// invalidated. A UI thread that keeps handing work to itself therefore never
+/// produces timer messages at all, however diligently it pumps, and under 0.4.2
+/// both ends of the chain can starve together. Measured
 /// on the live rack, the thread owning the editor child used 36.3 % of a core
 /// with an editor open and 37.9 % with none — the spin is not the editor's — and
 /// 93.7 % with the rack window minimized, so its queue is never empty and the
@@ -483,8 +488,11 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
 /// anywhere to say so. Posting the tick by hand from outside the process changed
 /// that window from one colour to 247 within a second, while posting the same
 /// message with a different id changed nothing, which is what isolates the clock
-/// as the only broken link. REAPER's UI thread goes idle between frames, which
-/// is why the same plugin draws there and not here.
+/// as the only broken link. That was measured on baseview 0.3.3, whose `WM_TIMER`
+/// handler drew the frame itself; under 0.4.2 the same post would merely
+/// invalidate, so a tick here has to finish the job with a paint. REAPER's UI
+/// thread goes idle between frames, which is why the same plugin draws there and
+/// not here.
 ///
 /// A thread of our own does the posting because a second `SetTimer` would starve
 /// in exactly the same way. `PostMessageW` does not wait for the receiver, so a
@@ -515,11 +523,16 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
 /// here — traced, all four children were present within 50 µs of the pump
 /// starting, which is what moved the suspicion back onto the machine.
 ///
-/// The coupling to own: 4242 is baseview's private timer id, not an API. A
-/// baseview that renamed or re-armed it would stop drawing silently again — the
-/// same silence that hid this bug — which is why the class check is there and
-/// why this comment names the file to look in. Nor does this fix the cause:
-/// frost's UI thread still burns about a third of a core with nothing on
+/// The coupling to own: `0x42691` is baseview's private `RedrawTimer` id and
+/// `WM_USER + 2` its private request-redraw message (`window/handle.rs:28`),
+/// neither of them an API, and the tick also drives `WM_PAINT`, which is
+/// Windows'. A baseview that renamed any of them would stop drawing silently
+/// again — the same silence that hid this bug — which is why the class check is
+/// there and why this comment names the files to look in. 0.4.2 keeps the class
+/// prefix, so the child lookup is unaffected; it also gives its own hidden
+/// timer helper windows that same prefix, and those are top level, so searching
+/// only our children cannot mistake one for an editor. Nor does this fix the
+/// cause: frost's UI thread still burns about a third of a core with nothing on
 /// screen, and fixing that is what would make this pump unnecessary.
 /// Whether the editor pumps say what they found. `NICE_EDITOR_TRACE` set to
 /// anything turns it on; a release build is otherwise `release_max_level_off`,
@@ -540,11 +553,17 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
         use std::time::{Duration, Instant};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             FindWindowExW, GetClassNameW, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
-            WM_TIMER,
+            WM_PAINT, WM_TIMER, WM_USER,
         };
 
-        /// baseview's `WIN_FRAME_TIMER`, and the period it arms it with.
-        const FRAME_TICK: usize = 4242;
+        /// baseview's `RedrawTimer` id and the period it arms it with
+        /// (`window_state.rs:21`). Its handler invalidates the window, and only
+        /// while a redraw request is outstanding.
+        const REDRAW_TIMER: usize = 0x42691;
+        /// baseview's `BV_REQUEST_REDRAW` (`window/handle.rs:28`): the message
+        /// its own `WindowWaker` sends to mark a frame wanted, which arms the
+        /// timer above. Without it the timer message is ignored.
+        const BV_REQUEST_REDRAW: u32 = WM_USER + 2;
         const TICK_PERIOD: Duration = Duration::from_millis(15);
         /// How often the pump looks, which is finer than the tick it posts: the
         /// wait for an answered tick is bounded by this, not by the period.
@@ -684,7 +703,16 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
                             // Read before the post, so that what is being waited
                             // for is a pass that can have seen this message.
                             seen = served.load(Ordering::Acquire);
-                            let _ = unsafe { PostMessageW(editor, WM_TIMER, FRAME_TICK, 0) };
+                            // One tick is three messages, in the order 0.4.2
+                            // needs them: the private request makes baseview
+                            // count a redraw as outstanding, which its timer
+                            // handler demands before it will invalidate
+                            // anything, and the paint is what actually draws —
+                            // forced here rather than left to a queue this
+                            // thread never leaves empty.
+                            let _ = unsafe { PostMessageW(editor, BV_REQUEST_REDRAW, 0, 0) };
+                            let _ = unsafe { PostMessageW(editor, WM_TIMER, REDRAW_TIMER, 0) };
+                            let _ = unsafe { PostMessageW(editor, WM_PAINT, 0, 0) };
                             outstanding = true;
                             posted = now;
                             next = now + TICK_PERIOD;

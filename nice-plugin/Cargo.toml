@@ -16,7 +16,7 @@ plugin-buffer = { path = "../nice-tuner/crates/plugin-buffer", optional = true }
 crossbeam = { version = "0.8", optional = true }
 nice-common = { path = "../nice-common", features = ["widgets"] }
 frost = { path = ".." }
-baseview = { version = "=0.3.3", features = ["tracing"] }
+baseview = { version = "=0.4.2", features = ["tracing"] }
 nice-plug = { version = "0.4.2", default-features = false, features = ["editor", "vst3", "assert_process_allocs"] }
 wgpu = "30"
 pollster = "0.4"
