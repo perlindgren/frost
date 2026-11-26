@@ -1387,9 +1387,11 @@ enum MeterPos {
 ///   go as well, and so does the rack's output meter;
 /// * a branch **beside** this one in the same stage keeps its report: the two
 ///   are parallel and that clip never travelled through it;
-/// * the rack's input meter is upstream of everything, so it acknowledges the
-///   whole rack;
-/// * the output is last, and it has two faces — the OUT jack's meter on the
+/// * the capture entering the rack is metered twice over — the panel meter
+///   above the canvas and the `IN` jack's meter standing on it, one signal with
+///   two faces — so acknowledging either clears both, and both stand before
+///   every card, so either clears the rack end to end;
+/// * the output is last, and it has two faces too — the OUT jack's meter on the
 ///   canvas and the panel meter above — reading the one summed signal, so
 ///   acknowledging either clears both, and neither owes anything further.
 fn acknowledged(from: MeterPos, stages: &[Vec<GuiLane>]) -> Vec<MeterPos> {
@@ -1397,7 +1399,13 @@ fn acknowledged(from: MeterPos, stages: &[Vec<GuiLane>]) -> Vec<MeterPos> {
     let mut first_downstream = 0;
     let mut rest_of_branch: &[NodeId] = &[];
     match from {
-        MeterPos::MasterIn => {}
+        // Both input arms leave `first_downstream` at zero and the branch
+        // empty, which is what makes the loops below walk the whole rack. The
+        // `IN` jack cannot be left to the lookup after this match: `stages`
+        // holds cards, and the jack is not one, so it would find no stage,
+        // conclude nothing follows, and clear only itself.
+        MeterPos::MasterIn => out.push(MeterPos::Wire(INPUT_JACK.0, true)),
+        MeterPos::Wire(id, true) if id == INPUT_JACK.0 => out.push(MeterPos::MasterIn),
         MeterPos::MasterOut => {
             out.push(MeterPos::Wire(MASTER_WIRE_KEY, false));
             return out;
@@ -6263,8 +6271,14 @@ mod tests {
         let inwards = covers(MeterPos::MasterIn);
         assert_eq!(
             inwards.len(),
-            11,
-            "itself, every wire, the output jack's meter, and the output"
+            12,
+            "itself, the `IN` jack's own meter, every wire, the output jack's \
+             meter, and the output"
+        );
+        assert!(
+            inwards.contains(&MeterPos::Wire(INPUT_JACK.0, true)),
+            "the capture is metered twice over, and a clip acknowledged on the \
+             panel face must not stay red on the canvas face"
         );
         for id in [1, 3, 5, 7] {
             assert!(inwards.contains(&MeterPos::Wire(id, false)));
@@ -6280,10 +6294,44 @@ mod tests {
         );
     }
     #[test]
+    fn the_input_jack_meter_answers_for_the_rack_it_feeds() {
+        // The same reading as the panel meter above, standing on the canvas
+        // where the operator is looking. Clicking it used to clear itself and
+        // the output only, because the `IN` jack is not one of the cards the
+        // chain is read from, so the rack stayed red stage after stage with a
+        // clip the operator had just acknowledged.
+        let inwards = covers(MeterPos::Wire(INPUT_JACK.0, true));
+        assert_eq!(
+            inwards,
+            vec![
+                MeterPos::Wire(INPUT_JACK.0, true),
+                MeterPos::MasterIn,
+                MeterPos::Wire(1, false),
+                MeterPos::Wire(1, true),
+                MeterPos::Wire(3, false),
+                MeterPos::Wire(3, true),
+                MeterPos::Wire(5, false),
+                MeterPos::Wire(5, true),
+                MeterPos::Wire(7, false),
+                MeterPos::Wire(7, true),
+                MeterPos::Wire(MASTER_WIRE_KEY, false),
+                MeterPos::MasterOut,
+            ],
+            "everything the capture reaches answers for it, in signal order"
+        );
+        // And the other direction of the same rule: a clip made inside a card
+        // never went upstream, so the jack keeps its report.
+        assert!(
+            !covers(MeterPos::Wire(3, true)).contains(&MeterPos::Wire(INPUT_JACK.0, true)),
+            "the `IN` jack is before card 3, so it never carried that clip"
+        );
+    }
+    #[test]
     fn no_meter_is_answered_for_twice() {
         for from in [
             MeterPos::MasterIn,
             MeterPos::MasterOut,
+            MeterPos::Wire(INPUT_JACK.0, true),
             MeterPos::Wire(1, false),
             MeterPos::Wire(3, true),
             MeterPos::Wire(7, false),
