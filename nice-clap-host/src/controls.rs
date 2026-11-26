@@ -461,17 +461,30 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
         true
     }
 }
+
+/// Whether the editor pumps say what they found. `NICE_EDITOR_TRACE` set to
+/// anything turns it on; a release build is otherwise `release_max_level_off`,
+/// which is why every trace in this area is an `eprintln!` and not `log`.
+#[cfg(target_os = "windows")]
+fn trace_on() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("NICE_EDITOR_TRACE").is_some())
+}
+
 /// Keep the plugin editor drawing when our own UI thread cannot clock it.
 ///
 /// baseview 0.4.2 draws in one place only: `WM_PAINT`, which reads the update
 /// rect, reports damage, calls `WindowHandler::draw` and validates
 /// (`platform/win/window.rs:631`). What baseview does by itself to get there is
-/// its private `RedrawTimer` — id `0x42691`, 15 ms, `window_state.rs:21` — and
+/// its private `RedrawTimer` — id `0x42691`, 15 ms, `win/window_state.rs:21` — and
 /// that timer does not draw: it calls `InvalidateRect`, and only while baseview
 /// believes a redraw is outstanding, dropping the message otherwise
 /// (`window.rs:640-652`). Nothing is armed at creation any more; the chain starts
-/// when the plugin asks for a frame and continues only while it keeps asking,
-/// which our editor handler does at the end of every `draw`.
+/// when the plugin asks for a frame and continues only while it keeps asking. On
+/// Windows our editor handler asks again at the end of every frame it completes;
+/// on macOS a display link drives the drawing and the handler deliberately does
+/// not ask, because nothing should be drawn twice.
 ///
 /// Windows does not queue a `WM_TIMER` when the interval elapses; it generates
 /// one inside `GetMessage`/`PeekMessage`, and only when the thread's queue holds
@@ -510,11 +523,22 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
 /// the post, counted by `editor_passes` — and posts again after 100 ms of no such
 /// pass, which is also how a host gone quiet is woken up.
 ///
+/// A tick is three messages where a 0.3.3 tick was one, so the queue holds at
+/// most three per editor instead of one. The bound is what matters, not the
+/// count: what drowned the loop was a queue that grew faster than anything
+/// could drain it, and three times a bounded number is still bounded.
+///
 /// What is posted to is deliberately narrow: a direct child of *our* editor
 /// window whose class name starts with baseview's prefix, ticked only while it
 /// is visible and our window is not minimized, from the moment it exists until
 /// either it or our window stops existing. A plugin built on another toolkit is
-/// never sent anything, because its frame clock is its own business.
+/// never sent anything, because its frame clock is its own business. And the
+/// target is proven to live in this process immediately before each tick: a
+/// window handle is a number, a destroyed window's number can be handed to
+/// another process, and while a stray `WM_TIMER` or `WM_PAINT` is inert in
+/// stranger hands, baseview's private `WM_USER + 2` is not — that number means
+/// something to common controls, some of which read a pointer out of the two
+/// parameters we fill with nothing.
 ///
 /// The child is looked for until it appears rather than for a fixed spell, since
 /// baseview creates it on whichever thread answers the CLAP request and a slow
@@ -523,27 +547,18 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) -> bool {
 /// here — traced, all four children were present within 50 µs of the pump
 /// starting, which is what moved the suspicion back onto the machine.
 ///
-/// The coupling to own: `0x42691` is baseview's private `RedrawTimer` id and
-/// `WM_USER + 2` its private request-redraw message (`window/handle.rs:28`),
-/// neither of them an API, and the tick also drives `WM_PAINT`, which is
-/// Windows'. A baseview that renamed any of them would stop drawing silently
-/// again — the same silence that hid this bug — which is why the class check is
-/// there and why this comment names the files to look in. 0.4.2 keeps the class
-/// prefix, so the child lookup is unaffected; it also gives its own hidden
-/// timer helper windows that same prefix, and those are top level, so searching
-/// only our children cannot mistake one for an editor. Nor does this fix the
-/// cause: frost's UI thread still burns about a third of a core with nothing on
-/// screen, and fixing that is what would make this pump unnecessary.
-/// Whether the editor pumps say what they found. `NICE_EDITOR_TRACE` set to
-/// anything turns it on; a release build is otherwise `release_max_level_off`,
-/// which is why every trace in this area is an `eprintln!` and not `log`.
-#[cfg(target_os = "windows")]
-fn trace_on() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("NICE_EDITOR_TRACE").is_some())
-}
-
+/// The coupling this relies on: `0x42691` is baseview's private `RedrawTimer` id
+/// and `WM_USER + 2` its private request-redraw message
+/// (`wrappers/win32/window/handle.rs:29`), neither of them an API, and the tick
+/// also drives `WM_PAINT`, which is Windows'. A baseview that renamed any of
+/// them would stop drawing silently again — the same silence that hid this bug
+/// — which is why the class check is there and why this comment names the files
+/// to look in. 0.4.2 keeps the class prefix, so the child lookup is unaffected;
+/// it also gives its own hidden timer helper windows that same prefix, and those
+/// are top level, so searching only our children cannot mistake one for an
+/// editor. Nor does this fix the cause: frost's UI thread still burns about a
+/// third of a core with nothing on screen, and fixing that is what would make
+/// this pump unnecessary.
 #[allow(unsafe_code)]
 fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
     #[cfg(target_os = "windows")]
@@ -551,19 +566,25 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
         use std::ptr::null;
         use std::thread::sleep;
         use std::time::{Duration, Instant};
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            FindWindowExW, GetClassNameW, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
-            WM_PAINT, WM_TIMER, WM_USER,
+            FindWindowExW, GetClassNameW, GetWindowThreadProcessId, IsIconic, IsWindow,
+            IsWindowVisible, PostMessageW, WM_PAINT, WM_TIMER, WM_USER,
         };
 
-        /// baseview's `RedrawTimer` id and the period it arms it with
-        /// (`window_state.rs:21`). Its handler invalidates the window, and only
-        /// while a redraw request is outstanding.
+        /// baseview's `RedrawTimer` id (`win/window_state.rs:21`): the fixed id of
+        /// the one timer a baseview window owns, whose handler invalidates the
+        /// window and only while a redraw request is outstanding. It is a
+        /// constant rather than an allocated number, and the fifteen milliseconds
+        /// it is armed with are baseview's own — `TICK_PERIOD` below is ours.
         const REDRAW_TIMER: usize = 0x42691;
-        /// baseview's `BV_REQUEST_REDRAW` (`window/handle.rs:28`): the message
-        /// its own `WindowWaker` sends to mark a frame wanted, which arms the
-        /// timer above. Without it the timer message is ignored.
+        /// baseview's `BV_REQUEST_REDRAW`
+        /// (`wrappers/win32/window/handle.rs:29`): the message its own
+        /// `WindowWaker` sends to mark a frame wanted, which arms the timer
+        /// above. Without it the timer message is ignored.
         const BV_REQUEST_REDRAW: u32 = WM_USER + 2;
+        /// How often a tick is offered, matching baseview's own redraw period:
+        /// asking sooner than the timer behind it can fire buys nothing.
         const TICK_PERIOD: Duration = Duration::from_millis(15);
         /// How often the pump looks, which is finer than the tick it posts: the
         /// wait for an answered tick is bounded by this, not by the period.
@@ -592,6 +613,11 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
             return;
         };
         let top = win32.hwnd.get();
+        // Every editor this pump may tick is a window of this process: the plugin
+        // is loaded here, and baseview creates its child on whichever thread here
+        // answered the CLAP request. A handle owned by anyone else is a recycled
+        // number, and it is refused at the post below rather than sent to.
+        let ours = unsafe { GetCurrentProcessId() };
         // How the pump learns its tick was answered: one turn of the host's UI
         // loop is one pass, so the number going up since the post is the proof.
         let served = crate::editor_passes();
@@ -625,6 +651,8 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
                 let mut was_worth = false;
                 let mut found_once = false;
                 let mut missed = Duration::ZERO;
+                // Said once, not twice a second, if a handle ever stops being ours.
+                let mut refused = false;
                 let mut seen = served.load(Ordering::Acquire);
                 let mut outstanding = false;
                 let mut posted = Instant::now();
@@ -700,22 +728,41 @@ fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
                             outstanding = false;
                             nap = IDLE_PERIOD;
                         } else if now >= next && (!outstanding || now - posted >= RECOVERY) {
-                            // Read before the post, so that what is being waited
-                            // for is a pass that can have seen this message.
-                            seen = served.load(Ordering::Acquire);
-                            // One tick is three messages, in the order 0.4.2
-                            // needs them: the private request makes baseview
-                            // count a redraw as outstanding, which its timer
-                            // handler demands before it will invalidate
-                            // anything, and the paint is what actually draws —
-                            // forced here rather than left to a queue this
-                            // thread never leaves empty.
-                            let _ = unsafe { PostMessageW(editor, BV_REQUEST_REDRAW, 0, 0) };
-                            let _ = unsafe { PostMessageW(editor, WM_TIMER, REDRAW_TIMER, 0) };
-                            let _ = unsafe { PostMessageW(editor, WM_PAINT, 0, 0) };
-                            outstanding = true;
-                            posted = now;
-                            next = now + TICK_PERIOD;
+                            // The handle was ours when the editor opened, and a
+                            // window number is only unique while the window lives.
+                            // Checking it here, right before the post, is what
+                            // keeps a recycled number from being sent a message
+                            // some other control will read as a pointer.
+                            let mut owner = 0;
+                            if unsafe { GetWindowThreadProcessId(editor, &mut owner) } == 0
+                                || owner != ours
+                            {
+                                if trace_on() && !refused {
+                                    refused = true;
+                                    eprintln!(
+                                        "[pump] 0x{top:x}: {mine} is not ours anymore (owner \
+                                         {owner}, we are {ours}), refusing to tick it"
+                                    );
+                                }
+                                nap = IDLE_PERIOD;
+                            } else {
+                                // Read before the post, so that what is being waited
+                                // for is a pass that can have seen this message.
+                                seen = served.load(Ordering::Acquire);
+                                // One tick is three messages, in the order 0.4.2
+                                // needs them: the private request makes baseview
+                                // count a redraw as outstanding, which its timer
+                                // handler demands before it will invalidate
+                                // anything, and the paint is what actually draws —
+                                // forced here rather than left to a queue this
+                                // thread never leaves empty.
+                                let _ = unsafe { PostMessageW(editor, BV_REQUEST_REDRAW, 0, 0) };
+                                let _ = unsafe { PostMessageW(editor, WM_TIMER, REDRAW_TIMER, 0) };
+                                let _ = unsafe { PostMessageW(editor, WM_PAINT, 0, 0) };
+                                outstanding = true;
+                                posted = now;
+                                next = now + TICK_PERIOD;
+                            }
                         }
                     } else {
                         // No child of ours to clock right now. Twenty looks a

@@ -88,7 +88,7 @@ drawing now happens: `WM_TIMER` merely invalidates, and only while baseview
 believes a redraw is outstanding. A thread of ours therefore drives the whole
 chain by hand — `WM_USER + 2` (baseview's request-redraw), `WM_TIMER` with its
 private id `0x42691`, then `WM_PAINT` — which is what
-[`start_editor_frame_pump`](../nice-clap-host/src/controls.rs#L505-L640)
+[`start_editor_frame_pump`](../nice-clap-host/src/controls.rs#L563-L831)
 exists for. Until the fix it posted one tick every 15 ms per editor, forever,
 whether or not the last one had been drawn.
 
@@ -107,7 +107,7 @@ was not deadlocked: winit's pump timeout is a wait-timeout, not a deadline, so
 it drains until the queue is empty, and the queue was never empty.
 
 The pump now keeps **one** tick outstanding per editor
-([`controls.rs#L505-L640](../nice-clap-host/src/controls.rs#L505-L640)`):
+([`controls.rs#L563-L831`](../nice-clap-host/src/controls.rs#L563-L831)):
 
 * it posts, and waits for the proof the tick was dispatched — one pass of the
   host's UI loop since the post, counted by
@@ -118,7 +118,13 @@ The pump now keeps **one** tick outstanding per editor
 * after 100 ms with no proof it posts again, which is also how a host gone
   genuinely idle is woken up;
 * a hidden editor, a minimized rack, or a window that has not appeared yet is
-  looked at twenty times a second instead of two hundred.
+  looked at twenty times a second instead of two hundred;
+* and the window is proved to belong to this process at the moment of the post,
+  by `GetWindowThreadProcessId`, before any of the three messages go. A handle
+  is a number, a destroyed window's number goes back into circulation, and the
+  private request-redraw is a `WM_USER` offset rather than a reservation —
+  refused in that case, because every editor this pump can see was created in
+  this process, so a disagreement means a recycled number and nothing else.
 
 One request outstanding per editor means the queue holds at most three messages
 per editor — the count of a tick — instead of as many as the calendar allows.
@@ -142,7 +148,11 @@ as the runaway signature and stops the run.
 
 Against the 50.5 s above. The worst remaining gaps are tens of milliseconds,
 i.e. one late frame, not a queue. Both rows were taken on baseview 0.4.2 with
-the three-message tick; the run that produced them is §5 verbatim.
+the three-message tick; the run that produced them is §5 verbatim. Re-running
+the two-editor row after the process check went in moved the maximum by
+0.5 ms — 53.7 ms, both editors to frame 700 again — which is the expected
+result of a check that is supposed to change nothing except a case that never
+arises in a working rack.
 
 That the bound did not simply switch the editors off is answered from inside
 the plugin: [`trace_frame`](../nice-plugin/src/window.rs#L242) prints a
