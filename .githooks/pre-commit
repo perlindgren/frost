@@ -218,6 +218,23 @@ cargo clippy -p nice-clone -p nice-dist --all-targets -- -D warnings || {
     exit 1
 }
 
+# The graphic equaliser, by the same logic as its neighbours, and with the same
+# deliberate omission: no `--features standalone`, which has a job of its own in
+# the gate on both platforms. Nothing extra is asked of a machine either. Its one
+# new dependency is `realfft`, which is `rustfft`'s real-input wrapper: pure Rust
+# that picks its plan at run time instead of compiling one per instruction set, so
+# this lint needs no instruction-set floor — unlike the model plugin's step, a
+# line here without RUSTFLAGS reaches the lints rather than a build script's
+# refusal. What it is paid to watch is the arithmetic and the handoff: seven
+# sections solved per block, and a spectrum handed from the audio thread to the
+# editor through two rings, both of which are places where a warning is a wrong
+# number and not a style complaint.
+printf 'pre-commit: clippy -D warnings (the equaliser)...\n'
+cargo clippy -p nice-eq --all-targets -- -D warnings || {
+    printf 'pre-commit: clippy failed in nice-eq - commit aborted.\n' >&2
+    exit 1
+}
+
 # The rack, its host adapter and the two crates under them, named for the reason
 # this file has now written out eight times: the five sit in `members` and not in
 # `default-members`, so the clippy near the top of this file compiles none of them

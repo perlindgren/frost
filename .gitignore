@@ -90,6 +90,8 @@ nice-echo-settings.ron
 nice-echo-settings.ron.*
 nice-ecomplex-settings.ron
 nice-ecomplex-settings.ron.*
+nice-eq-settings.ron
+nice-eq-settings.ron.*
 
 # Rack-local audio device configuration.
 nice-rack-settings.ron

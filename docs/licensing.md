@@ -174,8 +174,9 @@ the font, its provenance README and its MIT notice, and
 to sit in `nice-tuner/assets/fonts/` while seven other crates named that path,
 which no manifest could record as a dependency — an asset seven editors share is
 not one plugin's property. The bundler ships the MIT text into every bundle the
-workspace builds, for the same reason as the OFL text: all eight editors embed the
-font, so all their distributions carry the permission.
+workspace builds, for the same reason as the OFL text: every plugin editor in the
+workspace embeds that font through `nice_common::fonts::icon_font()`, the rack
+included, so all their distributions carry the permission.
 
 ## Plugin and standalone release notices
 
@@ -202,7 +203,7 @@ applications and rack, with one shared notice set:
 ```sh
 cargo xtask package-release -p nice-tuner -p nice-nam -p nice-dist -p nice-phase \
   -p nice-clone -p nice-echo -p nice-ecomplex -p nice-wah -p nice-pi-face \
-  -p nice-rack --release --target aarch64-apple-darwin --locked
+  -p nice-eq -p nice-rack --release --target aarch64-apple-darwin --locked
 ```
 
 Use the required target triple explicitly (also for native builds), so a local

@@ -61,6 +61,7 @@ SUITES = {
     "echo": ["nice-echo"],
     "ecomplex": ["nice-ecomplex"],
     "clone": ["nice-clone", "nice-dist"],
+    "eq": ["nice-eq"],
     "rack": [
         "nice-rack",
         "nice-rack-engine",
@@ -92,6 +93,7 @@ LABEL = {
     "echo": "the Space Echo",
     "ecomplex": "the Echoplex",
     "clone": "the Clone and Nice Dist",
+    "eq": "the graphic equaliser",
     "rack": "the rack and its host adapter",
     ENGINE_SUITE: "the engine and its games",
     GRAPH_SUITE: "the two graph claims",

@@ -119,6 +119,7 @@ jobs:
       echo: ${{ steps.decide.outputs.echo || 'true' }}
       ecomplex: ${{ steps.decide.outputs.ecomplex || 'true' }}
       clone: ${{ steps.decide.outputs.clone || 'true' }}
+      eq: ${{ steps.decide.outputs.eq || 'true' }}
       rack: ${{ steps.decide.outputs.rack || 'true' }}
       engine: ${{ steps.decide.outputs.engine || 'true' }}
       graph: ${{ steps.decide.outputs.graph || 'true' }}
@@ -386,6 +387,19 @@ jobs:
       - name: Clippy, zero warnings, the standalone Clone
         run: cargo clippy -p nice-clone -p nice-dist --features standalone --all-targets -- -D warnings
 
+      # The graphic equaliser, named like every plugin above it for the same
+      # reason. No RUSTFLAGS: its new dependency is `realfft` over `rustfft`,
+      # which is plain Rust with a runtime-chosen plan, so unlike the model
+      # plugin's engine nothing in its graph refuses the default baseline.
+      - name: Clippy, zero warnings, the equaliser
+        run: cargo clippy -p nice-eq --all-targets -- -D warnings
+
+      # Its standalone half beside theirs, for the reason written out above:
+      # the binary, the audio owner and the settings file live behind
+      # `standalone`. ASIO is not fetched here either.
+      - name: Clippy, zero warnings, the standalone equaliser
+        run: cargo clippy -p nice-eq --features standalone --all-targets -- -D warnings
+
       # The rack and its four crates, named for the reason this file has now
       # written out eight times: `nice-rack`,
       # `nice-rack-engine`, `nice-clap-host`, `nice-rack-standalone` and
@@ -623,6 +637,25 @@ jobs:
           cargo test --no-fail-fast -p nice-clone -p nice-dist
           cargo test --no-fail-fast -p nice-clone -p nice-dist --features standalone
 
+      # The graphic equaliser. Its suite is the response — the ladder held to
+      # an octave grid, each band measured at its own label and at its
+      # neighbours, the lowest section proven a hill and the top section a
+      # shelf, stability at every rate the settings offer, the trim as the last
+      # word, two lanes that never borrow each other's memory — plus the
+      # analyser, which is measured rather than trusted: a full-scale sine
+      # reads 0 dB at its own bin for every window length, a column reports the
+      # loudest bin in it, the two taps are kept apart, and `off` counts no
+      # transforms at all. The host-facing parameter list, the settings round
+      # trip, the editor's geometry, and `tests/no_alloc.rs` as the audio
+      # thread's witness round it out. One test is an ignored printed report.
+      # None of it opens a device or a window, so the standalone half runs here
+      # too.
+      - name: Tests, the equaliser
+        if: needs.plan.outputs.eq == 'true'
+        run: |
+          cargo test --no-fail-fast -p nice-eq
+          cargo test --no-fail-fast -p nice-eq --features standalone
+
       # The rack's suites. `cargo test` does not run ignored tests unless asked,
       # so what runs here is the routing graph and its cycle rules, the live
       # graph's block boundary, the drop zones and stage layout, the
@@ -850,15 +883,15 @@ jobs:
       - name: Clippy, zero warnings, the shared crate with every feature
         run: cargo clippy -p nice-common --all-features --all-targets -- -D warnings
 
-      # The six plugins that take their audio from `nice_common::audio_io`,
-      # plain and standalone. They share two commands here rather than the
-      # twelve above because the reason for naming them — membership is not
-      # coverage — is one reason, not six, and one cargo invocation says it
+      # The eight crates that take their audio from `nice_common::audio_io`,
+      # plain and standalone. They share two commands here rather than one step
+      # per crate, because the reason for naming them — membership is not
+      # coverage — is one reason, not eight, and one cargo invocation says it
       # once.
       - name: Clippy, zero warnings, the plugins that use the shared audio
         run: |
-          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-dist -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
-          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-dist -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-dist -p nice-pi-face -p nice-echo -p nice-ecomplex -p nice-eq --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-dist -p nice-pi-face -p nice-echo -p nice-ecomplex -p nice-eq --features standalone --all-targets -- -D warnings
 
       # The rack and its four crates, on the machine whose audio they now use.
       # Same reason as every named step in this job — `members` without
@@ -945,6 +978,10 @@ jobs:
       - name: Tests, the Clone, standalone
         if: needs.plan.outputs.clone == 'true'
         run: cargo test --no-fail-fast -p nice-clone -p nice-dist --features standalone
+
+      - name: Tests, the equaliser, standalone
+        if: needs.plan.outputs.eq == 'true'
+        run: cargo test --no-fail-fast -p nice-eq --features standalone
 
       # The rack, on the platform its binary ships on. This step passes no
       # `--ignored` either, so the opt-ins listed on the Linux twin above stand
