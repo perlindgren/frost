@@ -390,16 +390,17 @@ impl Biquad {
     }
 }
 
-/// The equaliser: seven sections per lane, one trim, one rate, and the two
-/// states a crossfade needs.
+/// The equaliser: seven sections, one trim, one rate, and the two states a
+/// crossfade needs.
 pub struct Eq {
     rate: f32,
     /// The sections as the last block ran them — the near end of the blend.
     previous: [Coefs; BANDS],
     previous_gain: f32,
-    /// Per lane, because two lanes are the same equaliser with separate
-    /// memory: summing them would be the plugin deciding a host's mix.
-    state: [[Biquad; BANDS]; 2],
+    /// One history per section, not one per lane: the box has one input and one
+    /// output, so there is no second signal whose memory could be confused with
+    /// the first. A host wanting two lanes runs two instances.
+    state: [Biquad; BANDS],
     /// The last controls seen, so a rate change retunes from where the
     /// faders actually stand rather than from a stale set.
     held: Controls,
@@ -412,7 +413,7 @@ impl Eq {
             rate,
             previous: target_coefs(controls, rate),
             previous_gain: trim_gain(controls.gain_db),
-            state: [[Biquad::default(); BANDS]; 2],
+            state: [Biquad::default(); BANDS],
             held: *controls,
         }
     }
@@ -432,20 +433,15 @@ impl Eq {
     /// should settle to where the faders are, not sweep from wherever the
     /// last block happened to be on its way.
     pub fn reset(&mut self) {
-        self.state = [[Biquad::default(); BANDS]; 2];
+        self.state = [Biquad::default(); BANDS];
     }
 
-    /// Run one block of up to [`BLOCK`] samples on `lanes` lanes. The caller
-    /// copies through if the host asked for in-place buffers.
-    pub fn process(
-        &mut self,
-        controls: &Controls,
-        lanes: usize,
-        input: &[[f32; BLOCK]; 2],
-        output: &mut [[f32; BLOCK]; 2],
-    ) {
-        let n = input[0].len().min(output[0].len()).min(BLOCK);
-        let lanes = lanes.clamp(1, 2);
+    /// Run one block of up to [`BLOCK`] samples of one channel. The caller
+    /// copies through if the host asked for in-place buffers, and hands a slice
+    /// exactly as long as the block it wants — the last block of a take is
+    /// shorter than [`BLOCK`], and nothing past its end is touched.
+    pub fn process_mono(&mut self, controls: &Controls, input: &[f32], output: &mut [f32]) {
+        let n = input.len().min(output.len()).min(BLOCK);
         let target = target_coefs(controls, self.rate);
         let gain_from = self.previous_gain;
         let gain_target = trim_gain(controls.gain_db);
@@ -453,13 +449,11 @@ impl Eq {
             let u = (i as f32 + 1.0) / n as f32;
             let c = blend_set(self.previous, target, u);
             let gain = gain_from + (gain_target - gain_from) * u;
-            for lane in 0..lanes {
-                let mut sample = input[lane][i];
-                for (band, state) in self.state[lane].iter_mut().enumerate() {
-                    sample = state.process(c[band], sample);
-                }
-                output[lane][i] = sample * gain;
+            let mut sample = input[i];
+            for (band, state) in self.state.iter_mut().enumerate() {
+                sample = state.process(c[band], sample);
             }
+            output[i] = sample * gain;
         }
         self.previous = target;
         self.previous_gain = gain_target;
@@ -498,9 +492,9 @@ mod tests {
         controls
     }
 
-    /// Run one already-built equaliser in real blocks, on both lanes, and
-    /// hand back the left channel. The index handed to `signal` is the honest
-    /// one — the position in the stream — so a test's sine stays a sine.
+    /// Run one already-built equaliser in real blocks and hand back what came
+    /// out. The index handed to `signal` is the honest one — the position in
+    /// the stream — so a test's sine stays a sine.
     fn run_through(
         eq: &mut Eq,
         rate: f32,
@@ -509,30 +503,24 @@ mod tests {
         mut signal: impl FnMut(usize) -> f32,
     ) -> Vec<f32> {
         let total = (seconds * rate) as usize;
-        let mut input = [[0.0f32; BLOCK]; 2];
-        let mut output = [[0.0f32; BLOCK]; 2];
+        let mut input = [0.0f32; BLOCK];
+        let mut output = [0.0f32; BLOCK];
         let mut out: Vec<f32> = Vec::with_capacity(total);
         while out.len() < total {
             let n = BLOCK.min(total - out.len());
-            // The whole buffer is fed even on a short tail: `process` takes
-            // the array it is handed, and a test's tone is better continued
-            // than interrupted by zeros at the end of the run. One generator
-            // drives both lanes, which is the point: the lanes must be able
-            // to carry different signals elsewhere without being summed.
-            let (left, right) = input.split_at_mut(1);
-            for (i, sample) in left[0].iter_mut().enumerate() {
-                let v = signal(out.len() + i);
-                *sample = v;
-                right[0][i] = v;
+            // The whole buffer is fed even on a short tail: `process_mono`
+            // works on the slice it is handed, and a test's tone is better
+            // continued than interrupted by zeros at the end of the run.
+            for (i, sample) in input.iter_mut().enumerate() {
+                *sample = signal(out.len() + i);
             }
-            eq.process(controls, 2, &input, &mut output);
-            out.extend_from_slice(&output[0][..n]);
+            eq.process_mono(controls, &input, &mut output);
+            out.extend_from_slice(&output[..n]);
         }
         out
     }
 
-    /// Run the real `process` in real blocks at the house rate, on both
-    /// lanes, and hand back the left channel.
+    /// Run the real `process_mono` in real blocks at the house rate.
     fn run(controls: &Controls, seconds: f32, signal: impl FnMut(usize) -> f32) -> Vec<f32> {
         let mut eq = Eq::new(RATE, controls);
         run_through(&mut eq, RATE, seconds, controls, signal)
@@ -666,12 +654,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
-        eq.process(
-            &Controls::default(),
-            1,
-            &[[0.0; BLOCK]; 2],
-            &mut [[0.0; BLOCK]; 2],
-        );
+        eq.process_mono(&Controls::default(), &[0.0; BLOCK], &mut [0.0; BLOCK]);
     }
 
     #[test]
@@ -925,19 +908,16 @@ mod tests {
         // ramp is the filter's own rate of change, and the assertion is that
         // the block contains the ramp and not the step.
         let mut eq = Eq::new(RATE, &Controls::default());
-        let mut input = [[0.0f32; BLOCK]; 2];
-        let mut output = [[0.0f32; BLOCK]; 2];
-        for i in 0..BLOCK {
-            input[0][i] = 0.9;
-            input[1][i] = 0.9;
-        }
+        let mut input = [0.0f32; BLOCK];
+        let mut output = [0.0f32; BLOCK];
+        input.fill(0.9);
         let mut quiet = Controls::default();
-        eq.process(&quiet, 2, &input, &mut output);
+        eq.process_mono(&quiet, &input, &mut output);
         quiet.gain_db = MAX_DB;
-        eq.process(&quiet, 2, &input, &mut output);
+        eq.process_mono(&quiet, &input, &mut output);
         let mut worst = 0.0f32;
-        let mut previous = output[0][0];
-        for &sample in output[0].iter() {
+        let mut previous = output[0];
+        for &sample in output.iter() {
             worst = worst.max((sample - previous).abs());
             previous = sample;
         }
@@ -947,7 +927,7 @@ mod tests {
         );
         // And the block does end at the requested level: the ramp is across
         // the block, not an approach that never arrives.
-        let end = db(output[0][BLOCK - 1] / 0.9);
+        let end = db(output[BLOCK - 1] / 0.9);
         assert!(
             (end - MAX_DB).abs() < 0.1,
             "the block ended at {end} dB instead of {MAX_DB}"
@@ -1006,29 +986,25 @@ mod tests {
     }
 
     #[test]
-    fn two_lanes_get_the_same_equaliser_and_never_each_other() {
-        // A stereo host must not have its channels summed: the right lane
-        // carries its own copy of the same filter, and one lane's input can
-        // never appear in the other's output.
-        let mut eq = Eq::new(RATE, &one_band(2, 12.0));
-        let mut input = [[0.0f32; BLOCK]; 2];
-        let mut output = [[0.0f32; BLOCK]; 2];
-        let mut worst_left = 0.0f32;
-        let mut worst_right = 0.0f32;
-        for block in 0..200 {
-            for i in 0..BLOCK {
-                let n = block * BLOCK + i;
-                input[0][i] = (2.0 * PI * 400.0 * n as f32 / RATE).sin();
-                input[1][i] = (2.0 * PI * 400.0 * n as f32 / RATE).cos() * 0.5;
-            }
-            eq.process(&one_band(2, 12.0), 2, &input, &mut output);
-            for i in 0..BLOCK {
-                // Same filter, same input shape, different phase: the lanes
-                // stay a fixed ratio apart, which a sum would destroy.
-                worst_left = worst_left.max(output[0][i].abs());
-                worst_right = worst_right.max(output[1][i].abs());
-            }
-        }
-        assert!(worst_left > 1.0 && worst_right > 0.3 && worst_right < worst_left);
+    fn a_short_block_touches_only_the_samples_it_was_given() {
+        // What the mono port map leans on: the plugin hands this function a
+        // slice as long as the block the host asked for, and on the last block
+        // of a take that is shorter than `BLOCK`. Whatever sits past the end of
+        // the caller's output belongs to the caller, so the cascade writes its
+        // samples and stops — a host reading back `[..n]` after a short block
+        // must never be shown sound nobody played.
+        let controls = one_band(3, 9.0);
+        let mut eq = Eq::new(RATE, &controls);
+        let input = [0.25f32; 10];
+        let mut output = [7_777.0f32; BLOCK];
+        eq.process_mono(&controls, &input, &mut output);
+        assert!(
+            output[..10].iter().all(|s| s.is_finite()),
+            "a ten-sample block left a non-finite sample behind"
+        );
+        assert!(
+            output[10..].iter().all(|&s| s == 7_777.0),
+            "the block stopped at ten samples but the writing did not"
+        );
     }
 }

@@ -99,15 +99,15 @@ snapshot of the same samples, so the agile picture and the resolved one are the
 same instant rather than six different ones, and draws the selected window last
 and brightest over the other five.
 
-The transform runs on the UI thread. The audio path copies channel 0 of the
-watched end into a preallocated ring — the nice-tuner handoff — and the editor
-does the windowing, the transform and the reduction. So an FFT can never glitch
-audio at any size; with the editor closed no plan, buffer or scratch exists at
-all; and `Off` is not a blacked-out picture but the absence of the work, which
-one test proves by counting transforms over three frames: zero, three, eighteen.
+The transform runs on the UI thread. The audio path copies the watched end into
+a preallocated ring — the nice-tuner handoff — and the editor does the
+windowing, the transform and the reduction. So an FFT can never glitch audio at
+any size; with the editor closed no plan, buffer or scratch exists at all; and
+`Off` is not a blacked-out picture but the absence of the work, which one test
+proves by counting transforms over three frames: zero, three, eighteen.
 
 `SOURCE` decides what gets copied, never what gets computed for the audio: one
-lane copy per block for either single end, two for `Both`, none for `Off`.
+copy per block for either single end, two for `Both`, none for `Off`.
 `Both` is the default because it is the useful one — the equaliser's own curve
 appears as the gap between the two spectra, with the input behind it as the
 thing that was there first. Green and amber are the set's existing meter
@@ -118,10 +118,11 @@ peaked past it.
 
 Six RBJ peaking bells at Q = 1.4 and one RBJ high shelf at Q = 0.707, computed
 from the Audio-EQ-Cookbook formulae in normalised form, cascaded in ladder
-order. Stereo in, stereo out, the same coefficients through separate memory per
-lane: the pedal is mono and this plugin does not contradict that — feeding one
-input answers on one output — but nothing is ever summed, because folding two
-channels together would be the plugin making a host's mix decision.
+order. One input, one output, and one set of filter memory between them: the box
+is a mono equaliser, and nothing in it sums anything, because folding two
+channels together would be the plugin making a host's mix decision. A host that
+wants a stereo pair asks for two of these, each keeping its own memory, with the
+panning left where it belongs.
 
 Coefficients are solved once per block and crossfaded per sample against the
 previous set, and the trim slews by the same route, through zero as a
@@ -163,8 +164,13 @@ binary. The standalone tests need no hardware: the pump moves ring buffers
 through a real plugin instance and the settings file round-trips.
 
 The host cost is metered rather than estimated: in the rack's live probe, one
-instance of the bundle takes 9.4 µs of a 128-frame block at 48 kHz, 0.36 % of
-the block, and four instances take 35.7 µs, 1.34 %.
+instance of the bundle takes 4.5 µs of a 128-frame block at 48 kHz, 0.17 % of
+the block, and four instances take 17.4 µs, 0.65 %. The same probe on the stereo
+port map this card carried before read 9.4 µs and 35.7 µs, which is what half
+the filters and half the metered lanes should cost. That probe also prints the
+port map it read out of the bundle — `Channels(1) in / Channels(1) out` — so the
+declaration is checked against a host that loads the file, not only against a
+test in this crate.
 
 The editor/window bridge is shared in [nice-plugin](../nice-plugin/README.md).
 Plugin-specific view construction lives in `src/editor.rs`; standalone

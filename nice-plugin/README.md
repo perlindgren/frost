@@ -14,7 +14,7 @@ placement, even if a caller has enabled standalone support in the same build.
 
 The optional `standalone` feature adds one Apply/rollback owner and transport pump
 for Clone, Dist, Echo, Ecomplex, Eq, Phase, Pi Face and Wah. Mono layouts fold transport
-input and duplicate the mono output; Pi Face's and Eq's stereo layouts preserve both
+input and duplicate the mono output; Pi Face's second, stereo layout preserves both
 channels. Buffer bounds and plugin-declared layouts remain explicit. Tuner's test
 tone/analysis input and NAM's model/device path retain their specialized adapters;
 all ten use the same no-MIDI processing context and successful activation always

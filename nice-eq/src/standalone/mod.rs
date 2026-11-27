@@ -25,11 +25,11 @@ pub fn run(settings: Settings) -> Result<(), String> {
     let buffers = Arc::clone(&plugin.shared);
     let drops = Arc::clone(&plugin.shared);
     // The owner's fixed buffer is sized in samples, not frames: this plugin
-    // takes two lanes of `BLOCK` through every block, so the capacity is twice
-    // the block. Get that ratio wrong and the standalone panics on its first
-    // block, in a binary no test runs — the same construction is what
-    // `process::tests` build their pump from.
-    nice_plugin::standalone::run::<_, _, _, _, _, { crate::dsp::BLOCK }, { 2 * crate::dsp::BLOCK }>(
+    // takes one lane of `BLOCK` through every block, so the capacity is the
+    // block. Get that ratio wrong and the standalone panics on its first block,
+    // in a binary no test runs — the same construction is what `process::tests`
+    // build their pump from.
+    nice_plugin::standalone::run::<_, _, _, _, _, { crate::dsp::BLOCK }, { crate::dsp::BLOCK }>(
         plugin,
         editor,
         settings,

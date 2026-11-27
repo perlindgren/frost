@@ -2,7 +2,7 @@
 //! editor and a spectrum analyser under the faders. *Nice Eq* is this crate's
 //! own name; the first mode is an independent model of the band ladder of the
 //! 1987 Boss GE-7, named only as the machine that inspired it, and [`dsp`]'s
-//! assumption records — A-1 through A-8 — say which facts about that machine
+//! assumption records — A-1 through A-11 — say which facts about that machine
 //! came from the retained sources and which are this model's own choices.
 //!
 //! This file is the interface to the host: the parameters a host can automate,
@@ -10,14 +10,16 @@
 //! plugin-API identities, and the block loop that hands samples to [`dsp`].
 //!
 //! Two things about that loop are worth saying here rather than leaving to the
-//! code. The equaliser runs on both lanes of the main bus with separate filter
-//! memory per lane, because two lanes are one equaliser heard twice and never
-//! a mix decided here. And the analyser is fed, not run: `process()` copies
-//! channel 0 of whichever end the view is watching into a preallocated
-//! lock-free ring, and every transform happens on the editor's thread — where
-//! a 32 768-point window may take as long as it likes without making anybody's
-//! audio late. When the view says `off`, nothing is copied and nothing is
-//! counted: the cheapest analyser is the one that is not asked for.
+//! code. The equaliser is mono in and mono out, one signal through seven
+//! sections, because the box its layout comes from has one input jack and
+//! because what a stereo bus does with a mono processor — two instances, a
+//! duplicated send, a downmix made before it — is the host's decision and not
+//! one to be taken from it here. And the analyser is fed, not run: `process()`
+//! copies the watched end into a preallocated lock-free ring, and every
+//! transform happens on the editor's thread — where a 32 768-point window may
+//! take as long as it likes without making anybody's audio late. When the view
+//! says `off`, nothing is copied and nothing is counted: the cheapest analyser
+//! is the one that is not asked for.
 
 #![deny(unsafe_code)]
 
@@ -405,8 +407,9 @@ pub struct EqPlugin {
     params: Arc<EqParams>,
     shared: Arc<EqSharedState>,
     equaliser: dsp::Eq,
-    /// True-peak tracking of what arrives and what leaves, one estimator per
-    /// channel, kept alive between blocks for the reason in [`block_stats`].
+    /// True-peak tracking of what arrives and what leaves, kept alive between
+    /// blocks for the reason in [`block_stats`]: an estimator that restarts at
+    /// every block boundary misses the crest that rides across it.
     tp_in: [TruePeak; 2],
     tp_out: [TruePeak; 2],
     /// The analyser feed, one ring per tap. Producers stay here, on the audio
@@ -527,13 +530,18 @@ impl Plugin for EqPlugin {
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    /// Stereo in, stereo out. A graphic equaliser is a line-level box on the
-    /// end of a chain, and a line-level box has both channels: the seven
-    /// sections run identically on each, with their own memory, which is what
-    /// keeps a widened image widened instead of quietly summed to mono.
+    /// Mono in, mono out, the way the box this layout comes from is wired: one
+    /// input jack, seven band filters, one output. A host that wants a stereo
+    /// bus equalised puts two instances on it, or decides for itself what
+    /// reaches this one — either way that is the host's routing decision, and a
+    /// declared stereo pair here would only be this plugin volunteering to be
+    /// twice the box it is. Should a host hand over a wider buffer than the
+    /// layout declares, the sections still run on channel 0 and the other lanes
+    /// come back silent: silence is honest about a channel this equaliser has
+    /// no input for, where a copy would pretend and a sum would mix.
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
-        main_input_channels: NonZeroU32::new(2),
-        main_output_channels: NonZeroU32::new(2),
+        main_input_channels: NonZeroU32::new(1),
+        main_output_channels: NonZeroU32::new(1),
         ..AudioIOLayout::const_default()
     }];
 
@@ -602,6 +610,10 @@ impl Plugin for EqPlugin {
             && view.tap.wants_output();
 
         let channels = buffer.channels();
+        // Two rows because that is the shape `block_stats` measures and the
+        // analyser's ring expects from the pedal family's adapters; the second
+        // row is filled with silence and stays that way, which is exactly what a
+        // mono box's second lane is.
         let mut input = [[0.0f32; dsp::BLOCK]; 2];
         let mut output = [[0.0f32; dsp::BLOCK]; 2];
         let mut input_energy = 0.0f64;
@@ -623,12 +635,13 @@ impl Plugin for EqPlugin {
             let (energy, peak) = block_stats(&input, channels, n, &mut self.tp_in);
             input_energy += energy;
             input_peak = input_peak.max(peak);
-            // One equaliser, two lanes: the same seven sections at the same
-            // settings, run twice with their own memory. Should a host hand
-            // over a narrower buffer than the layout declares, the loop below
-            // simply copies back as many lanes as it was given.
+            // One signal through one cascade: channel 0 in, channel 0 out. A
+            // host that handed over more lanes than the layout declares gets
+            // silence in the ones there is no input for, because only the first
+            // row of the output scratch is ever written — never a copy of the
+            // first and never a sum of both.
             self.equaliser
-                .process(&controls, channels, &input, &mut output);
+                .process_mono(&controls, &input[0][..n], &mut output[0][..n]);
             let (energy, peak) = block_stats(&output, channels, n, &mut self.tp_out);
             output_energy += energy;
             output_peak = output_peak.max(peak);
@@ -739,6 +752,20 @@ mod tests {
                 "tap",
             ]
         );
+    }
+
+    #[test]
+    fn the_port_map_is_one_in_and_one_out() {
+        // A host builds its routing out of this declaration, so it is a promise
+        // in the same currency as a parameter id: two jacks here and two lanes
+        // of every session's audio are allocated for a box that answers on one.
+        // The hardware's own answer — one input jack, one output — is also the
+        // cheapest one to keep, because a mono declaration leaves widening,
+        // duplicating and downmixing where they have always been decided.
+        let layouts = EqPlugin::AUDIO_IO_LAYOUTS;
+        assert_eq!(layouts.len(), 1, "one box, one port map");
+        assert_eq!(layouts[0].main_input_channels.map(|c| c.get()), Some(1));
+        assert_eq!(layouts[0].main_output_channels.map(|c| c.get()), Some(1));
     }
 
     #[test]

@@ -132,7 +132,7 @@ order of weight:
 ## The analyser: where the work happens
 
 **The FFT runs on the UI thread, not the audio thread.** The audio path copies
-channel 0 into a preallocated SPSC ring — the nice-tuner handoff, which exists
+the block into a preallocated SPSC ring — the nice-tuner handoff, which exists
 for exactly this — and the editor's frame drain does the windowing, the
 transform and the reduction. Four consequences, all wanted:
 
@@ -166,7 +166,7 @@ because the size is a question about that picture.
 **A-8 — the view can be pointed at the input, the output, or both, and the
 audio thread copies only what is asked for.** The analyser's third selector is
 `in | out | both`: one snapshot per tap, two rings, and a copy made only at the
-end that is being watched — one lane copy per block for either single tap, two
+end that is being watched — one copy per block for either single tap, two
 for `both`, none at all for `off`. Two rings rather than one interleaved one
 because the two ends of the box have nothing to say to each other's timing: a
 half-filled input ring and a half-filled output ring are two honest states,
@@ -227,15 +227,31 @@ rate, and the dB axis is 0 … −84 dBFS.** Above Nyquist there is nothing to
 draw, and a picture whose x-axis silently changes meaning when the interface
 changes rate is worse than a picture that wastes some width at 44.1 kHz.
 
-## The signal path, per channel
+## The signal path
 
-Two channels in, two out, the same coefficients through separate memory per
-channel. A graphic equaliser belongs on a stereo bus as much as in front of an
-amp, and folding two channels into one would be the plugin deciding a host's
-mix decision for it. The pedal is mono and the plugin does not contradict that:
-feeding one input answers on one output, because the filters are per lane and
-nothing is ever summed. The analyser reads channel 0 — one picture of one
-signal, which is what a scope is.
+**A-11 — one input, one output.** The port map was a stereo pair until it was
+reversed, and the first argument is worth keeping because it was a reasonable
+one that did not survive being examined. It ran: a graphic equaliser belongs on
+a stereo bus as much as in front of an amp, so be ready for one — and the
+stereo declaration was never a mix, because each lane kept its own filter memory
+and nothing was ever summed. What it was is a promise of four jacks, and a
+promise that costs something to keep for no return: two histories of seven
+biquads, a second pass of the same seven sections on every block, and one
+routing decision taken in this crate that the host was always better placed to
+take. Two lanes of a mono box on a stereo bus are two instances, a duplicated
+send, or a downmix made before the box, and none of those three needs a second
+lane inside it. The assumption record cannot settle how the hardware is wired —
+the retained drawing was read for three facts and none of them is about jacks —
+so this is stated as this model's own choice, and the sentence the earlier
+drafts carried, that the pedal is mono, was a claim this file cannot testify to
+and goes with the reversal.
+
+So: one signal through seven sections in ladder order, one metered input, one
+metered output, one analyser tap at each end. A host that hands over a wider
+buffer than the layout declared gets channel 0 equalised and the other lanes
+silent, which is the answer the other mono cards in the set give: silence
+admits that there is no second input, where a copy would pretend there is one
+and a sum would invent one.
 
 Coefficients are recomputed once per block and crossfaded per sample against
 the previous set, which is the nice-wah discipline: a stepped automation lane
@@ -244,10 +260,10 @@ through the speakers. The output trim slews by the same route, through zero as
 a multiplier rather than as a phase inversion.
 
 Every change arrives at the DSP as a block-wide `Controls` read, so the sample
-loop touches no parameter and no atomic; the cascade's memory is
-`[[Biquad; 7]; 2]`, arrays with sizes the compiler knows, because the audio
-thread's allocation is asserted to be zero and a `Vec` in that loop is how such
-a proof gets quietly rewritten.
+loop touches no parameter and no atomic; the cascade's memory is `[Biquad; 7]`,
+an array with a size the compiler knows, because the audio thread's allocation
+is asserted to be zero and a `Vec` in that loop is how such a proof gets
+quietly rewritten.
 
 ## What the view promises
 

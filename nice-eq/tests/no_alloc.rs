@@ -13,12 +13,12 @@
 //! allocations on MSVC like anywhere else.
 //!
 //! What this is the evidence for, in the words the plugin's own promises use:
-//! the coefficient blend at the start of a block, the per-lane state of a stereo
-//! pair, the retune a rate change triggers, and the sweep a host writes between
-//! blocks all happen inside this thread's work. A `Vec` that appeared in any of
-//! those paths would not show up as a glitch a listener could point at; it would
-//! show up as the occasional block that arrives too late, which is why the claim
-//! is measured here instead of argued.
+//! the coefficient blend at the start of a block, the memory the cascade carries
+//! from one block to the next, the retune a rate change triggers, and the sweep a
+//! host writes between blocks all happen inside this thread's work. A `Vec` that
+//! appeared in any of those paths would not show up as a glitch a listener could
+//! point at; it would show up as the occasional block that arrives too late,
+//! which is why the claim is measured here instead of argued.
 
 // This binary sees only the slice of the filter it measures: the analyser's
 // enums are read by the UI and by `process()`, neither of which is here.
@@ -46,18 +46,15 @@ fn a_block_costs_nothing_to_the_allocator() {
         gain_db: -3.0,
     };
     let mut eq = Eq::new(48_000.0, &controls);
-    let input = [signal(); 2];
-    let mut output = [[0.0f32; BLOCK]; 2];
+    let input = signal();
+    let mut output = [0.0f32; BLOCK];
     // The first block through any filter is the one that used to be allowed to
     // prepare coefficients; measure after that, the way a host's real blocks
     // arrive.
-    eq.process(&controls, 2, &input, &mut output);
+    eq.process_mono(&controls, &input, &mut output);
     let counted = allocation_counter::measure(|| {
-        for _ in 0..64 {
-            // Both the stereo and the single-lane shape, because `process()`
-            // branches on the lane count and both branches are on the thread.
-            eq.process(&controls, 2, &input, &mut output);
-            eq.process(&controls, 1, &input, &mut output);
+        for _ in 0..128 {
+            eq.process_mono(&controls, &input, &mut output);
         }
     });
     assert_eq!(counted.count_total, 0, "the audio thread allocates");
@@ -71,8 +68,8 @@ fn a_block_costs_nothing_to_the_allocator() {
 fn moving_the_faders_costs_nothing_either() {
     let mut controls = Controls::default();
     let mut eq = Eq::new(48_000.0, &controls);
-    let input = [signal(); 2];
-    let mut output = [[0.0f32; BLOCK]; 2];
+    let input = signal();
+    let mut output = [0.0f32; BLOCK];
     let counted = allocation_counter::measure(|| {
         // Positions on purpose, not floats: the mode and the clamp a host may
         // hand in are part of the same path, and a mode change is exactly the
@@ -84,7 +81,7 @@ fn moving_the_faders_costs_nothing_either() {
             }
             controls.gain_db = MAX_DB - position as f32 * 0.5;
             controls.mode = position;
-            eq.process(&controls, 2, &input, &mut output);
+            eq.process_mono(&controls, &input, &mut output);
         }
     });
     assert_eq!(counted.count_total, 0, "automation allocates");
@@ -100,14 +97,14 @@ fn a_rate_change_costs_nothing_either() {
         gain_db: 2.0,
     };
     let mut eq = Eq::new(48_000.0, &controls);
-    let input = [signal(); 2];
-    let mut output = [[0.0f32; BLOCK]; 2];
+    let input = signal();
+    let mut output = [0.0f32; BLOCK];
     let counted = allocation_counter::measure(|| {
         for rate in [44_100.0f32, 48_000.0, 88_200.0, 96_000.0, 192_000.0] {
             eq.set_rate(rate);
-            eq.process(&controls, 2, &input, &mut output);
+            eq.process_mono(&controls, &input, &mut output);
             eq.reset();
-            eq.process(&controls, 2, &input, &mut output);
+            eq.process_mono(&controls, &input, &mut output);
         }
     });
     assert_eq!(counted.count_total, 0, "a rate change allocates");
