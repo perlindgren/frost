@@ -18,14 +18,11 @@ clack-host = "=0.2.0"
 clack-extensions = { version = "=0.2.0", features = ["clack-host", "audio-ports", "state", "latency", "gui", "params", "raw-window-handle_06"] }
 
 [target.'cfg(windows)'.dependencies]
-# Reading a plugin's window style and asking Windows to show that window, and
-# posting to it to keep its frame clock running; see `ensure_editor_child_shown`
-# and `start_editor_frame_pump` in src/controls.rs. The Threading feature is for
-# the process check that proves the window we post to is ours. Version matches
-# the one `nice-tuner/crates/window-position` already uses, so this adds no new
-# crate to the lock.
+# Public Win32 show/paint operations for embedded editor children. No private
+# toolkit messages are used. Versions stay aligned with window-position.
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }

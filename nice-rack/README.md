@@ -1,5 +1,8 @@
 # nice-rack
 
+For the integrated Windows/Baseview changes and macOS/Windows test commands, see
+[the migration notes](../docs/rack-baseview-migration.md).
+
 A standalone frost application for an in-process CLAP audio-effects chain. The
 GUI flows left to right through serial stages, with parallel branches stacked
 vertically. VST3 hosting remains a future step.

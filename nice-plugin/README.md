@@ -16,7 +16,8 @@ Editors use Baseview 0.4's `draw` and `request_redraw` API. Each successful
 frame requests one following animation frame, so meters and waveforms update
 without parameter notifications. Input and host state/parameter notifications
 also request a redraw through the window's public waker. Baseview coalesces
-requests; there is no host-owned private Win32 timer-message posting thread.
+requests. Nice Rack may supplement paint delivery on Windows using public
+Win32 paint operations; it does not send private Baseview timer messages.
 Windows editors still render on the host UI thread; this migration does not
 introduce renderer workers or remove possible GPU-acquisition waits.
 

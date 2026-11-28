@@ -1,0 +1,122 @@
+# Rack baseline / Windows rendering integration
+
+This branch merges `baseview-0.4.2` at `f507eba` (including `win-work` at
+`48a97c9`) into `codex/rack-baseline` at `7b71d7b`. It includes Nice EQ,
+the rack's input-clip acknowledgement fix, text caches, rendering diagnostics,
+and the Windows drag/redraw changes. It does not restore process isolation or
+GUI-replica experiments. Dependency source and existing dependency versions are
+unchanged; the EQ branch's declared FFT dependencies are included.
+
+## Scheduling and safety decisions
+
+- Keep the baseline's Baseview 0.4.2 redraw scheduling on macOS. Its own
+  view-bound display link invokes `draw`; do not restore the successor branch's
+  second display link. Keep the macOS 14 availability guard before view creation.
+- On Windows, retain a helper per editor to request paints when a busy host loop
+  starves ordinary paint generation. It uses public `InvalidateRect` and
+  `SendMessageTimeoutW(WM_PAINT)` operations, not Baseview's private timer id or
+  `WM_USER` offsets. Only direct Baseview children of our editor parent qualify.
+  A successful send acknowledges the paint handler's return. The helper waits at
+  most 100 ms for a handler; after failure it does not request another paint until
+  the outstanding update region has been validated. Closing an editor cancels
+  its helper before CLAP destroys the GUI. The UI thread never joins the helper.
+- The helper does not move plugin rendering off the owning GUI thread. Audio
+  still uses the existing DSP worker and topological graph order.
+- Backend selection never mutates the process environment. The rack and Nice
+  editors use the same surface-independent adapter query, then explicitly
+  configure their own wgpu instances. Separate plugin libraries have separate
+  caches; identical choices are a preference, not a guarantee across devices
+  or toolkits. `WGPU_BACKEND` supplied by the launcher is honoured explicitly.
+  Arbitrary third-party plugins remain responsible for their own graphics API.
+- Ordinary Frost applications do not opt into backend pinning automatically.
+  The upstream changes to text caching, drag handling, and default swapchain
+  latency do affect them and need runtime regression checks too.
+
+The measurements in [windows-editor-frames.md](windows-editor-frames.md) describe
+its earlier implementation. They are not performance measurements of this
+migration's public paint helper or explicit backend selection. Likewise,
+[macos-plugin-threading-findings.md](macos-plugin-threading-findings.md) records
+the earlier isolation experiment, not new benchmarks of this merged tree.
+
+## Build and test
+
+Rebuild plugin bundles as well as the rack: rebuilding the host alone does not
+update the code in previously built `.clap` files. Close the rack/DAW first,
+especially on Windows, where loaded DLLs cannot be replaced.
+
+From the repository root, on macOS:
+
+```sh
+for plugin in nice-tuner nice-nam nice-dist nice-phase nice-clone nice-echo nice-ecomplex nice-wah nice-pi-face nice-eq; do
+    cargo xtask bundle "$plugin" --release || break
+done
+cargo build -p nice-rack-standalone --release
+cargo run -p nice-rack-standalone --release
+```
+
+On Windows, use a Visual Studio Developer PowerShell (with MSVC on PATH):
+
+```powershell
+$env:RUSTFLAGS = '-Ctarget-cpu=x86-64-v3 -Ctarget-feature=+crt-static'
+foreach ($plugin in @('nice-tuner', 'nice-nam', 'nice-dist', 'nice-phase', 'nice-clone', 'nice-echo', 'nice-ecomplex', 'nice-wah', 'nice-pi-face', 'nice-eq')) {
+    cargo xtask bundle $plugin --release
+    if ($LASTEXITCODE -ne 0) { throw "Bundle failed: $plugin" }
+}
+cargo build -p nice-rack-standalone --release
+cargo run -p nice-rack-standalone --release
+```
+
+Bundles are written under `target/bundled`, or `$CARGO_TARGET_DIR/bundled` when
+that variable is set. Load those freshly rebuilt CLAP bundles in the rack;
+saved rack documents can still reference an older bundle elsewhere.
+
+On either platform:
+
+1. Open two, then four editors, including EQ. Confirm meters/analyser animate,
+   parameters affect audio, and the rack and editors remain responsive.
+2. Drag/resize rack and editor windows individually. Other editors should keep
+   responding. Minimize/restore the rack and individual editors; observe CPU
+   usage and confirm redraw resumes.
+3. Repeatedly close/reopen an editor, remove its plugin with its editor open,
+   and change audio settings. Check for stale windows, hangs, or lost state.
+4. Quit with several editors open. Reopen the rack and confirm saved states and
+   geometry restore. Test a third-party CLAP editor as well.
+5. Check an ordinary Frost animation/game for smooth rendering and input: shared
+   rendering changes must not silently trade game responsiveness for rack speed.
+
+For editor heartbeat/backend messages set `NICE_EDITOR_TRACE=1` before launch;
+for frame and host-loop timings set `FROST_PROFILE` to a report path. To compare
+backends, set `WGPU_BACKEND` before launch (for example `dx12` or `vulkan` on
+Windows, `metal` on macOS). Remove it to test automatic selection again.
+
+The existing native multi-editor probe is also available. Set
+`NICE_RACK_TEST_CLAPS` to full bundle paths separated by the platform's path-list
+separator (`:` on macOS, `;` on Windows), then run:
+
+```sh
+cargo test --release -p nice-rack --lib editors::tests::many_plugin_editors_do_not_drown_the_window_thread -- --ignored --exact --test-threads=1 --nocapture
+```
+
+This probe requires a desktop. Its measured loop gaps are not editor FPS.
+
+## Validation recorded on this branch
+
+Host: macOS/aarch64, Rust 1.100.0. The agent build uses
+`CARGO_TARGET_DIR=target/agent-build` to preserve the existing cache.
+
+- Rack, rack engine, CLAP adapter, shared plugin adapter, and EQ library tests:
+  220 passed, 12 explicit desktop/manual tests ignored.
+- EQ allocation-test target: 18 passed, one manual report ignored.
+- Frost library tests excluding `backend::tests`: 321 passed; the 151 tests in
+  that module were excluded, so this is not a GPU-regression verdict.
+- Native release rack and EQ standalone builds, and all ten release CLAP/VST3
+  bundle builds passed.
+- Windows MSVC cross-target check and strict Clippy passed for the rack, shared
+  editor, CLAP adapter and EQ, including EQ standalone and Windows placement.
+  This checks Rust compilation; it does not link or run Windows executables.
+- Frost's WebAssembly check passed, with the existing unused
+  `console_error_panic_hook` dependency warning. No dependency was removed.
+
+Visible-editor interaction/performance, game rendering, and Windows runtime
+behavior remain to be tested on the actual desktops. The earlier Windows timing
+numbers are not claimed for this revised implementation.

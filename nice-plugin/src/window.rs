@@ -6,18 +6,13 @@ use nice_common::WindowGeom;
 use nice_plug::context::gui::GuiContext;
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
     sync::Arc,
 };
 
 pub(crate) struct PluginWindow<U: frost::Process + 'static> {
     window: WindowContext,
 
-    frame: Rc<FrameDriver<U>>,
-    #[cfg(target_os = "macos")]
-    display_sync: RefCell<Option<macos_frame_sync::DisplaySync>>,
-    #[cfg(target_os = "macos")]
-    frame_error: Rc<RefCell<Option<HandlerError>>>,
+    frame: FrameDriver<U>,
     state: Arc<dyn WindowState>,
     standalone: bool,
 
@@ -47,28 +42,22 @@ impl<U: frost::Process + 'static> PluginWindow<U> {
         gui_context: Option<GuiContext>,
         standalone: bool,
     ) -> Result<Self, HandlerError> {
-        let frame = Rc::new(FrameDriver {
+        let frame = FrameDriver {
             window: window.clone(),
             engine: RefCell::new(None),
             factory,
             config,
             gui_context,
             frames: std::sync::atomic::AtomicU64::new(0),
-        });
+        };
         let this = Self {
             window,
             frame,
-            #[cfg(target_os = "macos")]
-            display_sync: RefCell::new(None),
-            #[cfg(target_os = "macos")]
-            frame_error: Rc::new(RefCell::new(None)),
             state,
             standalone,
             geom_saved: Cell::new(None),
         };
         this.frame.spawn_engine()?;
-        #[cfg(target_os = "macos")]
-        this.start_display_sync();
         #[cfg(all(windows, feature = "unsafe"))]
         if this.standalone && this.state.allow_placement() {
             let _ = window_position::restore(
@@ -123,77 +112,26 @@ impl<U: frost::Process + 'static> PluginWindow<U> {
             ),
         }
     }
-
-    #[cfg(target_os = "macos")]
-    fn start_display_sync(&self) {
-        let frame = Rc::downgrade(&self.frame);
-        let errors = Rc::clone(&self.frame_error);
-        match macos_frame_sync::DisplaySync::new(&self.window.platform_handle(), move || {
-            let Some(frame) = frame.upgrade() else {
-                return false;
-            };
-            match frame.tick() {
-                Ok(()) => true,
-                Err(error) => {
-                    *errors.borrow_mut() = Some(error);
-                    false
-                }
-            }
-        }) {
-            Ok(sync) => {
-                *self.display_sync.borrow_mut() = Some(sync);
-                eprintln!(
-                    "{}: editor rendering is display-synchronized",
-                    self.frame.config.title
-                );
-            }
-            Err(error) => eprintln!(
-                "{}: {error}; drawing on baseview redraw requests",
-                self.frame.config.title
-            ),
-        }
-    }
 }
 
 impl<U: frost::Process + 'static> WindowHandler for PluginWindow<U> {
     fn draw(&self) -> Result<(), HandlerError> {
         #[cfg(all(windows, feature = "unsafe"))]
         self.track_geometry();
-        #[cfg(target_os = "macos")]
-        if let Some(sync) = self.display_sync.borrow().as_ref() {
-            if let Some(error) = self.frame_error.borrow_mut().take() {
-                return Err(error);
-            }
-            if sync.has_panicked() {
-                return Err(HandlerError::from_boxed("display callback panicked".into()));
-            }
-            return Ok(()); // AppKit drives rendering; don't render twice.
-        }
         self.frame.tick()?;
-        // baseview 0.4 draws once per request and stops; the request is ours to
-        // make. Asking again here is what keeps an editor animating at all, and
-        // it is the editor's half of the deal the rack already makes with its own
-        // window, where `Frost::frame_is_redundant` decides whether to ask again.
-        // Idle editors therefore still repaint at the frame interval, as they did
-        // under 0.3.3's always-armed timer; narrowing that to "only while
-        // something moves" needs a damage signal from frost, not from baseview.
+        // Use Baseview's coalesced redraw API on every target. On macOS its
+        // own display link drives this draw callback; no second link is needed.
         self.window.request_redraw();
         Ok(())
     }
 
     fn on_event(&self, event: baseview::Event) -> EventStatus {
-        #[cfg(target_os = "macos")]
-        if matches!(
-            &event,
-            baseview::Event::Window(baseview::WindowEvent::WillClose)
-        ) {
-            self.display_sync.borrow_mut().take();
-        }
         if let Ok(mut guard) = self.frame.engine.try_borrow_mut()
             && let Some(engine) = guard.as_mut()
         {
             crate::input::forward(&mut engine.embedded, event, self.window.size().scale_factor);
         }
+        self.window.request_redraw();
         EventStatus::Captured
     }
 
@@ -219,8 +157,8 @@ impl<U: frost::Process + 'static> WindowHandler for PluginWindow<U> {
     }
 }
 
-// Shared only on the UI thread. The display callback holds a Weak reference,
-// so dropping an editor cannot leave a retained renderer or callback cycle.
+// Owned by the window thread. Baseview cancels its display/timer callbacks
+// when the editor closes.
 struct FrameDriver<U: frost::Process + 'static> {
     window: WindowContext,
     engine: RefCell<Option<Engine<U>>>,
@@ -289,19 +227,14 @@ impl<U: frost::Process + 'static> FrameDriver<U> {
         #[cfg(target_os = "macos")]
         macos_metal_view::prepare(&self.window.platform_handle(), scale)
             .map_err(|error| HandlerError::from(std::io::Error::other(error)))?;
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        frost::pin_gpu_backend();
+        let instance = frost::gpu_instance();
         let surface = pollster::block_on(async {
             let surface = instance.create_surface(self.window.platform_handle())?;
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
-                    // The same question the host asks of its own window, so the
-                    // same answer. Asking for the low-power adapter instead —
-                    // which this did — steers an editor onto a different device,
-                    // usually a different graphics API, than the window it is
-                    // drawn inside of, and the host's UI thread pays a GPU
-                    // context switch once per frame per editor for it. A plugin
-                    // that wants to be nice to its host draws where the host
-                    // draws; see `frost::pin_gpu_backend`.
+                    // Match the host's adapter preference. Backend selection is
+                    // explicit in gpu_instance; no process environment is changed.
                     compatible_surface: Some(&surface),
                     ..Default::default()
                 })
@@ -397,12 +330,5 @@ impl<U: frost::Process + 'static> FrameDriver<U> {
             },
             None => self.spawn_engine(),
         }
-    }
-}
-
-impl<U: frost::Process + 'static> Drop for PluginWindow<U> {
-    fn drop(&mut self) {
-        #[cfg(target_os = "macos")]
-        self.display_sync.get_mut().take();
     }
 }

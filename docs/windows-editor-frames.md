@@ -1,5 +1,11 @@
 # Why a rack with two editors open stopped answering its own windows
 
+> Historical measurements from the Windows branches. The baseline integration
+> replaces the private-message frame pump and process-environment mutation;
+> see [the migration decisions and test procedure](rack-baseview-migration.md).
+> These measurements have not been repeated for that implementation.
+
+
 > **Status.** Written 2026-11-24, after a night spent measuring the Windows
 > rack under the stress protocol it failed: all editors open, some minimized,
 > windows moved, parameters edited. Two causes, both measured before and after,

@@ -33,7 +33,8 @@ struct Owner {
 }
 impl Drop for Owner {
     fn drop(&mut self) {
-        if let Some(editor) = self.editor.take() {
+        if let Some(mut editor) = self.editor.take() {
+            editor.stop_frame_pump();
             let handle = self.instance.plugin_handle();
             if let Some(gui) = handle.get_extension::<PluginGui>() {
                 gui.destroy(&handle);

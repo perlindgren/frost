@@ -1,7 +1,7 @@
 //! Main-thread controls. Native parenting is where we hand a plugin a window of
 //! ours; the Win32 calls at the end of this file are the two places we then ask
 //! Windows about the child inside it — once to be sure it got shown, once to
-//! keep its frame clock running because our own UI thread starves it.
+//! request a paint when the host loop starves low-priority paint delivery.
 use super::*;
 use clack_host::events::{Pckn, event_types::ParamValueEvent};
 use raw_window_handle::HasWindowHandle;
@@ -17,8 +17,17 @@ pub(in crate::graph) struct Editor {
     // Holds the native parent alive until after PluginGui::destroy.
     _parent: Arc<dyn HasWindowHandle>,
     reveal_until: Option<std::time::Instant>,
+    frame_pump: Option<EditorFramePump>,
+}
+impl Drop for Editor {
+    fn drop(&mut self) {
+        self.stop_frame_pump();
+    }
 }
 impl Editor {
+    pub(in crate::graph) fn stop_frame_pump(&mut self) {
+        self.frame_pump.take();
+    }
     pub(in crate::graph) fn service(&mut self) {
         if let Some(deadline) = self.reveal_until
             && (std::time::Instant::now() >= deadline
@@ -196,13 +205,13 @@ impl LiveSession {
             // before releasing it. All operations use the main-thread handle.
             unsafe { gui.set_parent(&handle, window) }.map_err(|e| e.to_string())?;
             gui.show(&handle).map_err(|e| e.to_string())?;
-            start_editor_frame_pump(parent.as_ref());
             Ok(([size.width, size.height], resizable))
         })();
         if result.is_err() {
             gui.destroy(&handle);
         } else {
             owner.editor = Some(Editor {
+                frame_pump: start_editor_frame_pump(parent.as_ref()),
                 _parent: parent,
                 reveal_until: cfg!(target_os = "windows")
                     .then(|| std::time::Instant::now() + std::time::Duration::from_millis(500)),
@@ -224,8 +233,9 @@ impl LiveSession {
     }
     pub fn close_editor(&mut self, id: NodeId) {
         if let Some(owner) = self.owners.get_mut(&id)
-            && let Some(parent) = owner.editor.take()
+            && let Some(mut parent) = owner.editor.take()
         {
+            parent.stop_frame_pump();
             let handle = owner.instance.plugin_handle();
             if let Some(gui) = handle.get_extension::<PluginGui>() {
                 let _ = gui.hide(&handle);
@@ -472,367 +482,185 @@ fn trace_on() -> bool {
     *ON.get_or_init(|| std::env::var_os("NICE_EDITOR_TRACE").is_some())
 }
 
-/// Keep the plugin editor drawing when our own UI thread cannot clock it.
+/// Cancels the helper before CLAP destroys the editor. Never join on the UI
+/// thread: it can be the very thread a pending paint is waiting for.
+struct EditorFramePump(Arc<AtomicBool>);
+impl Drop for EditorFramePump {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Keep Baseview children painting when the host's busy message loop starves
+/// low-priority WM_PAINT generation. Only public Win32 painting operations are
+/// used: no Baseview timer id or private WM_USER message is assumed.
 ///
-/// baseview 0.4.2 draws in one place only: `WM_PAINT`, which reads the update
-/// rect, reports damage, calls `WindowHandler::draw` and validates
-/// (`platform/win/window.rs:631`). What baseview does by itself to get there is
-/// its private `RedrawTimer` — id `0x42691`, 15 ms, `win/window_state.rs:21` — and
-/// that timer does not draw: it calls `InvalidateRect`, and only while baseview
-/// believes a redraw is outstanding, dropping the message otherwise
-/// (`window.rs:640-652`). Nothing is armed at creation any more; the chain starts
-/// when the plugin asks for a frame and continues only while it keeps asking. On
-/// Windows our editor handler asks again at the end of every frame it completes;
-/// on macOS a display link drives the drawing and the handler deliberately does
-/// not ask, because nothing should be drawn twice.
-///
-/// Windows does not queue a `WM_TIMER` when the interval elapses; it generates
-/// one inside `GetMessage`/`PeekMessage`, and only when the thread's queue holds
-/// no other message, and it generates a `WM_PAINT` the same way once something is
-/// invalidated. A UI thread that keeps handing work to itself therefore never
-/// produces timer messages at all, however diligently it pumps, and under 0.4.2
-/// both ends of the chain can starve together. Measured
-/// on the live rack, the thread owning the editor child used 36.3 % of a core
-/// with an editor open and 37.9 % with none — the spin is not the editor's — and
-/// 93.7 % with the rack window minimized, so its queue is never empty and the
-/// clock never fires. That is the whole bug: a window that exists, is visible,
-/// owns a working swapchain, and is never once asked to draw a frame, which
-/// leaves it the colour of its class background brush forever with no error
-/// anywhere to say so. Posting the tick by hand from outside the process changed
-/// that window from one colour to 247 within a second, while posting the same
-/// message with a different id changed nothing, which is what isolates the clock
-/// as the only broken link. That was measured on baseview 0.3.3, whose `WM_TIMER`
-/// handler drew the frame itself; under 0.4.2 the same post would merely
-/// invalidate, so a tick here has to finish the job with a paint. REAPER's UI
-/// thread goes idle between frames, which is why the same plugin draws there and
-/// not here.
-///
-/// A thread of our own does the posting because a second `SetTimer` would starve
-/// in exactly the same way. `PostMessageW` does not wait for the receiver, so a
-/// plugin that stops listening cannot freeze the rack through us.
-///
-/// One tick is outstanding at a time, because posting is not the same as timing:
-/// a posted message, unlike a timer, never coalesces, so an unconditional 15 ms
-/// post demands 66 frames a second from the UI thread per editor, forever,
-/// whether or not the last one was ever drawn. Measured on this machine with four
-/// editors open and all four drawing: one turn of the host loop that had not
-/// begun for 50 seconds. Every tick waiting in the queue is another message that
-/// must be drained before that loop may wait, and draining is what makes the
-/// next frame late, so the queue feeds itself. The pump therefore posts when the
-/// previous tick has evidently been dispatched — one pass of the host loop since
-/// the post, counted by `editor_passes` — and posts again after 100 ms of no such
-/// pass, which is also how a host gone quiet is woken up.
-///
-/// A tick is three messages where a 0.3.3 tick was one, so the queue holds at
-/// most three per editor instead of one. The bound is what matters, not the
-/// count: what drowned the loop was a queue that grew faster than anything
-/// could drain it, and three times a bounded number is still bounded.
-///
-/// What is posted to is deliberately narrow: a direct child of *our* editor
-/// window whose class name starts with baseview's prefix, ticked only while it
-/// is visible and our window is not minimized, from the moment it exists until
-/// either it or our window stops existing. A plugin built on another toolkit is
-/// never sent anything, because its frame clock is its own business. And the
-/// target is proven to live in this process immediately before each tick: a
-/// window handle is a number, a destroyed window's number can be handed to
-/// another process, and while a stray `WM_TIMER` or `WM_PAINT` is inert in
-/// stranger hands, baseview's private `WM_USER + 2` is not — that number means
-/// something to common controls, some of which read a pointer out of the two
-/// parameters we fill with nothing.
-///
-/// The child is looked for until it appears rather than for a fixed spell, since
-/// baseview creates it on whichever thread answers the CLAP request and a slow
-/// attach is not a missing one: quitting early was a way to lose an editor with
-/// no error anywhere. It was not the cause of the editors that stopped drawing
-/// here — traced, all four children were present within 50 µs of the pump
-/// starting, which is what moved the suspicion back onto the machine.
-///
-/// The coupling this relies on: `0x42691` is baseview's private `RedrawTimer` id
-/// and `WM_USER + 2` its private request-redraw message
-/// (`wrappers/win32/window/handle.rs:29`), neither of them an API, and the tick
-/// also drives `WM_PAINT`, which is Windows'. A baseview that renamed any of
-/// them would stop drawing silently again — the same silence that hid this bug
-/// — which is why the class check is there and why this comment names the files
-/// to look in. 0.4.2 keeps the class prefix, so the child lookup is unaffected;
-/// it also gives its own hidden timer helper windows that same prefix, and those
-/// are top level, so searching only our children cannot mistake one for an
-/// editor. Nor does this fix the cause: frost's UI thread still burns about a
-/// third of a core with nothing on screen, and fixing that is what would make
-/// this pump unnecessary.
+/// Each helper invalidates once, then asks the owning UI thread to paint with a
+/// bounded SendMessageTimeout. Success acknowledges the actual paint handler,
+/// rather than an unrelated pass of the rack's idle hook. After a timeout it
+/// leaves the invalidation outstanding and waits for it to be validated before
+/// attempting another. There is no periodic recovery repost to a stuck window.
+/// Hidden/minimized windows sleep, and cancellation precedes editor destruction.
 #[allow(unsafe_code)]
-fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
+fn start_editor_frame_pump(parent: &dyn HasWindowHandle) -> Option<EditorFramePump> {
     #[cfg(target_os = "windows")]
     {
-        use std::ptr::null;
-        use std::thread::sleep;
-        use std::time::{Duration, Instant};
-        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            FindWindowExW, GetClassNameW, GetWindowThreadProcessId, IsIconic, IsWindow,
-            IsWindowVisible, PostMessageW, WM_PAINT, WM_TIMER, WM_USER,
+        use std::{ptr::null, thread::sleep, time::Duration};
+        use windows_sys::Win32::{
+            Graphics::Gdi::{GetUpdateRect, InvalidateRect},
+            System::Threading::GetCurrentProcessId,
+            UI::WindowsAndMessaging::{
+                FindWindowExW, GetClassNameW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+                SMTO_ABORTIFHUNG, SMTO_BLOCK, SMTO_ERRORONEXIT, SendMessageTimeoutW, WM_PAINT,
+            },
         };
-
-        /// baseview's `RedrawTimer` id (`win/window_state.rs:21`): the fixed id of
-        /// the one timer a baseview window owns, whose handler invalidates the
-        /// window and only while a redraw request is outstanding. It is a
-        /// constant rather than an allocated number, and the fifteen milliseconds
-        /// it is armed with are baseview's own — `TICK_PERIOD` below is ours.
-        const REDRAW_TIMER: usize = 0x42691;
-        /// baseview's `BV_REQUEST_REDRAW`
-        /// (`wrappers/win32/window/handle.rs:29`): the message its own
-        /// `WindowWaker` sends to mark a frame wanted, which arms the timer
-        /// above. Without it the timer message is ignored.
-        const BV_REQUEST_REDRAW: u32 = WM_USER + 2;
-        /// How often a tick is offered, matching baseview's own redraw period:
-        /// asking sooner than the timer behind it can fire buys nothing.
-        const TICK_PERIOD: Duration = Duration::from_millis(15);
-        /// How often the pump looks, which is finer than the tick it posts: the
-        /// wait for an answered tick is bounded by this, not by the period.
-        const POLL_PERIOD: Duration = Duration::from_millis(5);
-        /// How often it looks when there is nothing to draw: no editor window
-        /// yet, an editor the operator hid, or a rack sitting minimized.
-        const IDLE_PERIOD: Duration = Duration::from_millis(50);
-        /// baseview names each window class `Baseview-` plus a GUID, so the
-        /// prefix identifies the toolkit without hard-coding the GUID.
-        const BASEVIEW: [u16; 9] = [
-            b'B' as u16,
-            b'a' as u16,
-            b's' as u16,
-            b'e' as u16,
-            b'v' as u16,
-            b'i' as u16,
-            b'e' as u16,
-            b'w' as u16,
-            b'-' as u16,
-        ];
-
-        let Ok(handle) = parent.window_handle() else {
-            return;
-        };
+        let handle = parent.window_handle().ok()?;
         let RawWindowHandle::Win32(win32) = handle.as_raw() else {
-            return;
+            return None;
         };
         let top = win32.hwnd.get();
-        // Every editor this pump may tick is a window of this process: the plugin
-        // is loaded here, and baseview creates its child on whichever thread here
-        // answered the CLAP request. A handle owned by anyone else is a recycled
-        // number, and it is refused at the post below rather than sent to.
+        // SAFETY: reading our process id has no preconditions.
         let ours = unsafe { GetCurrentProcessId() };
-        // How the pump learns its tick was answered: one turn of the host's UI
-        // loop is one pass, so the number going up since the post is the proof.
-        let served = crate::editor_passes();
-        /// How long a posted tick may sit unanswered before the pump assumes the
-        /// host loop is idle rather than slow, and posts another to wake it. A
-        /// request left in a queue also wakes the wait that queue is parked on,
-        /// which is how an idle host starts drawing again.
-        const RECOVERY: Duration = Duration::from_millis(100);
-        /// How long our baseview child may be missing after having been there.
-        /// baseview destroys it when the editor closes, a moment before our own
-        /// window goes; past that the pump is watching a corpse.
-        const GONE_TOLERANCE: Duration = Duration::from_millis(1000);
-
-        let _ = std::thread::Builder::new()
-            .name("nice-clap-editor-tick".to_owned())
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stop = stopped.clone();
+        std::thread::Builder::new()
+            .name("nice-clap-editor-paint".to_owned())
             .spawn(move || {
-                // The window may still be on its way: baseview creates it on
-                // whichever thread answers the CLAP request first, and a pump
-                // that gave up after a fixed spell could silently lose an editor
-                // whose window arrived late. Measured, that turned out not to be
-                // what was wrong here — every child was there within 50 µs — but
-                // it is a way to lose an editor without a sound, so the pump now
-                // ends only when the window itself does, or when a child it had
-                // is gone. `NICE_EDITOR_TRACE` prints which of those happened,
-                // and whether a child it found ever counted as worth drawing.
-                let started = Instant::now();
-                let complain_at = started + Duration::from_secs(2);
-                let mut announced = false;
-                let mut complained = false;
-                let mut judged = false;
-                let mut was_worth = false;
-                let mut found_once = false;
-                let mut missed = Duration::ZERO;
-                // Said once, not twice a second, if a handle ever stops being ours.
-                let mut refused = false;
-                let mut seen = served.load(Ordering::Acquire);
-                let mut outstanding = false;
-                let mut posted = Instant::now();
-                let mut next = Instant::now();
-                /// The class name of a window, for the trace only. Returns an
-                /// empty string for a nameless window rather than failing.
-                fn class_name(hwnd: isize) -> String {
-                    let mut name = [0u16; 64];
-                    let len = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) }
-                        .clamp(0, name.len() as i32) as usize;
-                    String::from_utf16_lossy(&name[..len])
-                }
+                let mut child_seen = None;
+                let mut pending = false;
                 loop {
-                    let now = Instant::now();
-                    let mut nap = POLL_PERIOD;
+                    if stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let mut owner = 0;
+                    // SAFETY: Win32 validates the opaque handle. No references
+                    // or pointers into plugin memory are passed to these APIs.
+                    if unsafe { GetWindowThreadProcessId(top, &mut owner) } == 0 || owner != ours {
+                        return;
+                    }
+                    // SAFETY: child enumeration accepts a live or stale HWND;
+                    // a destroyed parent yields no child. Buffers below are sized.
                     let mut child = unsafe { FindWindowExW(top, 0, null(), null()) };
                     let mut editor = 0;
-                    let mut mine = String::new();
                     while child != 0 {
                         let mut name = [0u16; 64];
+                        // SAFETY: the buffer is writable for its declared length.
                         let len =
                             unsafe { GetClassNameW(child, name.as_mut_ptr(), name.len() as i32) }
                                 .clamp(0, name.len() as i32) as usize;
-                        if len >= BASEVIEW.len() && name[..BASEVIEW.len()] == BASEVIEW {
+                        if name[..len].starts_with(&[
+                            b'B' as u16,
+                            b'a' as u16,
+                            b's' as u16,
+                            b'e' as u16,
+                            b'v' as u16,
+                            b'i' as u16,
+                            b'e' as u16,
+                            b'w' as u16,
+                            b'-' as u16,
+                        ]) {
                             editor = child;
-                            if trace_on() {
-                                mine = class_name(child);
-                            }
                             break;
                         }
+                        // SAFETY: as for the first enumeration call above.
                         child = unsafe { FindWindowExW(top, child, null(), null()) };
                     }
-                    if editor != 0 {
-                        found_once = true;
-                        missed = Duration::ZERO;
-                        if !announced && trace_on() {
-                            announced = true;
-                            eprintln!(
-                                "[pump] 0x{top:x}: found {mine} after {:?}",
-                                started.elapsed()
-                            );
-                        }
-                        // Ticking a hidden editor would be the plugin rendering
-                        // at sixty frames a second for nobody.
-                        let worth_drawing = unsafe { IsWindowVisible(editor) } != 0
-                            && unsafe { IsIconic(top) } == 0;
-                        if trace_on() && (!judged || worth_drawing != was_worth) {
-                            judged = true;
-                            was_worth = worth_drawing;
-                            eprintln!(
-                                "[pump] 0x{top:x}: {mine} is {} (child visible {}, ours \
-                                 minimized {})",
-                                if worth_drawing {
-                                    "on screen"
-                                } else {
-                                    "off screen"
-                                },
-                                unsafe { IsWindowVisible(editor) } != 0,
-                                unsafe { IsIconic(top) } != 0
-                            );
-                        }
-                        // The queue this tick went into is the one the host
-                        // drains once per pass, so a pass since the post is the
-                        // proof the tick was dispatched and may be followed.
-                        if served.load(Ordering::Acquire) != seen {
-                            outstanding = false;
-                        }
-                        if !worth_drawing {
-                            // Nothing on screen to fill, so nothing worth
-                            // waiting an hour for: coming back costs one post.
-                            // Looking twenty times a second instead of two
-                            // hundred is what a hidden editor should cost.
-                            outstanding = false;
-                            nap = IDLE_PERIOD;
-                        } else if now >= next && (!outstanding || now - posted >= RECOVERY) {
-                            // The handle was ours when the editor opened, and a
-                            // window number is only unique while the window lives.
-                            // Checking it here, right before the post, is what
-                            // keeps a recycled number from being sent a message
-                            // some other control will read as a pointer.
-                            let mut owner = 0;
-                            if unsafe { GetWindowThreadProcessId(editor, &mut owner) } == 0
-                                || owner != ours
-                            {
-                                if trace_on() && !refused {
-                                    refused = true;
-                                    eprintln!(
-                                        "[pump] 0x{top:x}: {mine} is not ours anymore (owner \
-                                         {owner}, we are {ours}), refusing to tick it"
-                                    );
-                                }
-                                nap = IDLE_PERIOD;
-                            } else {
-                                // Read before the post, so that what is being waited
-                                // for is a pass that can have seen this message.
-                                seen = served.load(Ordering::Acquire);
-                                // One tick is three messages, in the order 0.4.2
-                                // needs them: the private request makes baseview
-                                // count a redraw as outstanding, which its timer
-                                // handler demands before it will invalidate
-                                // anything, and the paint is what actually draws —
-                                // forced here rather than left to a queue this
-                                // thread never leaves empty.
-                                let _ = unsafe { PostMessageW(editor, BV_REQUEST_REDRAW, 0, 0) };
-                                let _ = unsafe { PostMessageW(editor, WM_TIMER, REDRAW_TIMER, 0) };
-                                let _ = unsafe { PostMessageW(editor, WM_PAINT, 0, 0) };
-                                outstanding = true;
-                                posted = now;
-                                next = now + TICK_PERIOD;
-                            }
-                        }
-                    } else {
-                        // No child of ours to clock right now. Twenty looks a
-                        // second costs nothing, and the window is not going to
-                        // arrive any sooner for being waited on harder.
-                        nap = IDLE_PERIOD;
-                        if unsafe { IsWindow(top) } == 0 {
+                    if editor == 0 {
+                        if child_seen.is_some() {
                             return;
                         }
-                        if found_once {
-                            // It was here and now it is not: the editor is being
-                            // closed, and our own window is next. Polling it for
-                            // the rest of the session would be the leak this pump
-                            // is supposed to avoid, so retire and say so.
-                            missed += IDLE_PERIOD;
-                            if missed >= GONE_TOLERANCE {
-                                if trace_on() {
-                                    eprintln!(
-                                        "[pump] 0x{top:x}: our child is gone, retiring after \
-                                         {:?}",
-                                        started.elapsed()
-                                    );
-                                }
-                                return;
-                            }
-                        } else if !complained && now >= complain_at {
-                            complained = true;
-                            if trace_on() {
-                                // One look two levels deep: a toolkit that nests
-                                // its drawing window one row down would otherwise
-                                // look identical to one that is not there.
-                                let mut list = String::new();
-                                let mut kid = unsafe { FindWindowExW(top, 0, null(), null()) };
-                                while kid != 0 {
-                                    list.push_str(&class_name(kid));
-                                    let mut inner =
-                                        unsafe { FindWindowExW(kid, 0, null(), null()) };
-                                    while inner != 0 {
-                                        list.push_str(" > ");
-                                        list.push_str(&class_name(inner));
-                                        inner =
-                                            unsafe { FindWindowExW(kid, inner, null(), null()) };
-                                    }
-                                    list.push_str(", ");
-                                    kid = unsafe { FindWindowExW(top, kid, null(), null()) };
-                                }
-                                if list.is_empty() {
-                                    list.push_str("none");
-                                }
-                                eprintln!(
-                                    "[pump] 0x{top:x}: never had a baseview child, {:?} in; \
-                                     underneath this window: {list}",
-                                    started.elapsed()
-                                );
-                            }
-                        }
+                        sleep(Duration::from_millis(50));
+                        continue;
                     }
-                    sleep(nap);
+                    if child_seen.is_some_and(|old| old != editor) {
+                        return; // never transfer an old editor's clock to another
+                    }
+                    child_seen = Some(editor);
+                    // SAFETY: these queries validate handles and write only owner.
+                    if unsafe { GetWindowThreadProcessId(editor, &mut owner) } == 0 || owner != ours
+                    {
+                        return;
+                    }
+                    // SAFETY: pure Win32 window-state queries.
+                    if unsafe { IsWindowVisible(editor) } == 0 || unsafe { IsIconic(top) } != 0 {
+                        sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                    // A timed-out handler may still be painting. Do not request
+                    // again until that invalidation has been validated.
+                    // SAFETY: null rect asks only whether an update region exists.
+                    if pending && unsafe { GetUpdateRect(editor, std::ptr::null_mut(), 0) } != 0 {
+                        sleep(Duration::from_millis(15));
+                        continue;
+                    }
+                    if stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    // SAFETY: null rect invalidates the window's client area.
+                    // WM_PAINT has no pointer parameters; timeout bounds this
+                    // helper's wait even when foreign GUI code stops answering.
+                    let painted = unsafe {
+                        InvalidateRect(editor, null(), 0);
+                        SendMessageTimeoutW(
+                            editor,
+                            WM_PAINT,
+                            0,
+                            0,
+                            SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT,
+                            100,
+                            std::ptr::null_mut(),
+                        )
+                    } != 0;
+                    pending = !painted;
+                    if !painted && trace_on() {
+                        eprintln!("[editor-paint] 0x{editor:x}: paint timed out or window closed");
+                    }
+                    sleep(Duration::from_millis(15));
                 }
-            });
+            })
+            .ok()?;
+        Some(EditorFramePump(stopped))
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = parent;
+        None
     }
 }
 
 #[cfg(test)]
 mod parameter_change_tests {
     use super::*;
+    #[test]
+    fn editor_drop_cancels_the_paint_helper_before_releasing_the_parent() {
+        struct Parent(Arc<AtomicBool>);
+        impl HasWindowHandle for Parent {
+            fn window_handle(
+                &self,
+            ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
+            {
+                Err(raw_window_handle::HandleError::Unavailable)
+            }
+        }
+        impl Drop for Parent {
+            fn drop(&mut self) {
+                assert!(
+                    self.0.load(Ordering::Acquire),
+                    "parent released before cancellation"
+                );
+            }
+        }
+        let stopped = Arc::new(AtomicBool::new(false));
+        let editor = Editor {
+            _parent: Arc::new(Parent(stopped.clone())),
+            reveal_until: None,
+            frame_pump: Some(EditorFramePump(stopped.clone())),
+        };
+        assert!(!stopped.load(Ordering::Acquire));
+        drop(editor);
+        assert!(stopped.load(Ordering::Acquire));
+    }
+
     #[test]
     fn a_value_rescan_marks_state_dirty_and_invalidates_metadata() {
         let signals = Callbacks::default();

@@ -2260,7 +2260,6 @@ dependencies = [
  "crossbeam",
  "frost",
  "keyboard-types",
- "macos-frame-sync",
  "macos-metal-view",
  "nice-common",
  "nice-plug",

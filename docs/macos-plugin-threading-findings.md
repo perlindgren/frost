@@ -1,5 +1,11 @@
 # macOS plugin threading and isolation findings
 
+> These are archived isolation measurements. The later baseline/Windows merge
+> keeps in-process hosting and is described in
+> [rack-baseview-migration.md](rack-baseview-migration.md); no isolation options
+> are reintroduced there.
+
+
 ## Archive and current baseline
 
 This branch, `codex/rack-baseline`, contains the in-process implementation and

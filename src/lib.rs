@@ -997,45 +997,43 @@ pub(crate) fn record_adapter_name(name: &str) {
 /// has to be able to say what it measured.
 static ADAPTER_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Name the graphics API this process draws on, so every window opened in it
-/// afterwards draws on that same API — including a plugin's editor.
+/// Select a preferred backend for instances created through [`gpu_instance`].
 ///
-/// A plugin builds its own device on its own surface, and nothing in the CLAP
-/// contract asks it to agree with the host. The two are not even offered the
-/// same choices: a child window is not a surface every backend will present,
-/// so a host drawing on the top-level window's API and an editor on whatever
-/// the child window accepts is the default state of a rack, not a mistake.
-/// When the picks disagree the process holds two or three live device
-/// contexts, and the host's UI thread — the one thread that draws every
-/// window, because a plugin's frames are ticked on it — switches GPU API once
-/// per frame per window. Measured in nice-rack with two of our own editors
-/// open, one pass of that thread cost 0.1 ms with every window on one API and
-/// 261 ms with them split across three: the difference between a window that
-/// tracks the mouse and one that does not.
-///
-/// `wgpu` narrows every instance it creates in the process, foreign modules
-/// included, to the backends named in `WGPU_BACKEND`, so writing the host's
-/// pick here aligns plugins we do not ship as well as our own. A value already
-/// in the environment is left alone — that is the escape hatch for a machine,
-/// or a plugin, for which the shared choice is the wrong one.
-///
-/// Returns the backend now in force, or `None` if the operator named one first.
-/// Call it from `main`, before anything else has started: it reads the
-/// environment and writes it, and writing it while another thread may be
-/// reading it is not sound.
+/// No process environment is changed. Independently loaded Nice plugins make
+/// the same surface-independent query in their own copy of Frost, then use the
+/// preference for their editor surface. This aligns our windows on typical
+/// systems, but cannot dictate the backend of arbitrary third-party plugins.
+/// `WGPU_BACKEND`, when supplied by the launcher, takes precedence.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pin_gpu_backend() -> Option<wgpu::Backend> {
     if std::env::var_os("WGPU_BACKEND").is_some() {
         return None;
     }
-    let instance = Instance::default();
-    let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default())).ok()?;
-    let backend = adapter.get_info().backend;
-    // SAFETY: the host calls this first thing in `main`, before its audio,
-    // worker and input threads exist, so no other thread can be reading the
-    // environment while it is written.
-    unsafe { std::env::set_var("WGPU_BACKEND", backend.to_str()) };
-    Some(backend)
+    *PREFERRED_GPU_BACKEND.get_or_init(|| {
+        let instance = Instance::default();
+        block_on(instance.request_adapter(&RequestAdapterOptions::default()))
+            .ok()
+            .map(|adapter| adapter.get_info().backend)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static PREFERRED_GPU_BACKEND: std::sync::OnceLock<Option<wgpu::Backend>> =
+    std::sync::OnceLock::new();
+
+/// Create an instance using the launcher's environment or our explicit backend
+/// preference. Unlike process-environment mutation, this is safe after threads
+/// or foreign plugins have started. Call [`pin_gpu_backend`] first to select a
+/// preference; applications that do not call it keep wgpu's normal selection.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn gpu_instance() -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
+    if std::env::var_os("WGPU_BACKEND").is_none()
+        && let Some(Some(backend)) = PREFERRED_GPU_BACKEND.get()
+    {
+        descriptor.backends = wgpu::Backends::from(*backend);
+    }
+    wgpu::Instance::new(descriptor)
 }
 
 /// Opens the window and runs the event loop, calling `process` once per
@@ -1064,7 +1062,7 @@ pub fn run_configured<P: Process>(
 ) -> Result<(), Box<dyn Error>> {
     log::info!("frost starting up");
 
-    let instance = Instance::default();
+    let instance = gpu_instance();
     let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default()))
         .expect("no suitable GPU adapter found");
     log::info!("using adapter: {:?}", adapter.get_info().name);

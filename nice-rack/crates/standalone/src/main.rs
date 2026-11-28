@@ -38,15 +38,8 @@ fn main() {
         }
         return;
     }
-    // One graphics API for the whole process, named before anything that could
-    // pick another. Every plugin editor the operator opens draws on the thread
-    // that owns the rack window, and a plugin whose device lives on a different
-    // API than the rack's costs that thread a GPU context switch once a frame
-    // per window: two editors, three APIs, and a window stops tracking the
-    // mouse. `pin_gpu_backend` writes the rack's own pick where even a plugin we
-    // do not ship will read it. It happens here, first, because it writes the
-    // environment and no other thread may be reading it, and because the scan
-    // for plugins that `run` performs would otherwise get its say first.
+    // Prefer the same backend query our own plugin editors use. This does not
+    // mutate the environment or constrain arbitrary third-party renderers.
     frost::pin_gpu_backend();
     if let Err(error) = nice_rack::run(|path| {
         // SAFETY: dropping a CLAP entry into this explicitly in-process host
