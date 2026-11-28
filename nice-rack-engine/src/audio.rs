@@ -42,7 +42,7 @@ impl AudioBuffer {
     }
 }
 
-/// An already prepared processor. Implementations must not allocate, block or
+/// An already prepared processor. Implementations must not allocate, perform unbounded waits or
 /// perform file/lifecycle work in process/reset. Layout and latency are fixed
 /// until a new plan is prepared. Native plugin activation is a separate step.
 pub trait Processor: Send {
@@ -55,6 +55,29 @@ pub trait Processor: Send {
         output: &mut AudioBuffer,
         frames: usize,
     ) -> Result<(), ProcessError>;
+    /// Start independent work. The default executes synchronously. A deferred
+    /// implementation must finish by the graph-wide deadline and poison its
+    /// endpoint on timeout; no output may be read until `finish_process` returns.
+    fn is_deferred(&self) -> bool {
+        false
+    }
+    fn begin_process(
+        &mut self,
+        input: &AudioBuffer,
+        output: &mut AudioBuffer,
+        frames: usize,
+        _deadline: Instant,
+    ) -> Result<(), ProcessError> {
+        self.process(input, output, frames)
+    }
+    fn finish_process(
+        &mut self,
+        _output: &mut AudioBuffer,
+        _frames: usize,
+    ) -> Result<(), ProcessError> {
+        Ok(())
+    }
+    fn flush_parameters(&mut self) {}
     fn reset(&mut self) {}
     /// Stop native processing on the audio thread before returning handles.
     fn stop(&mut self) {}
@@ -602,7 +625,15 @@ fn apply_gain(buffer: &mut AudioBuffer, frames: usize, gain: f32) {
     }
 }
 
+#[derive(Default)]
+struct PendingBlock {
+    started: Option<Instant>,
+    bypassed: bool,
+    paused: bool,
+    arrival: Option<WireSample>,
+}
 struct Node {
+    pending: PendingBlock,
     kind: NodeKind,
     input: AudioBuffer,
     output: AudioBuffer,
@@ -636,6 +667,8 @@ struct OutputBus {
 /// a control/main thread; block-boundary handover is not implemented yet.
 pub struct PreparedRack {
     nodes: Vec<Node>,
+    levels: Vec<Vec<usize>>,
+    sample_rate: f64,
     input_channels: usize,
     output_buses: Vec<OutputBus>,
     max_frames: usize,
@@ -738,6 +771,7 @@ impl PreparedRack {
                     .ok_or(PrepareError::BufferBudgetExceeded)?,
             );
             nodes.push(Node {
+                pending: PendingBlock::default(),
                 kind,
                 input: AudioBuffer::new(in_count, max_frames),
                 output: AudioBuffer::new(out_count, max_frames),
@@ -765,7 +799,33 @@ impl PreparedRack {
                 channels: kind.inputs().unwrap().count(),
             })
             .collect();
+        // Compile dependency levels once. Indices remain topological, so every
+        // source buffer is settled before a level starts. Siblings are submitted
+        // together before any deferred processor in that level is awaited.
+        let deferred = nodes.iter().any(|node| {
+            node.processor
+                .as_ref()
+                .is_some_and(|slot| slot.processor.is_deferred())
+        });
+        let mut depths = vec![0usize; nodes.len()];
+        let mut levels: Vec<Vec<usize>> = Vec::new();
+        for (index, node) in nodes.iter().enumerate() {
+            let depth = if deferred {
+                node.edges
+                    .iter()
+                    .map(|edge| depths[edge.source] + 1)
+                    .max()
+                    .unwrap_or(0)
+            } else {
+                index
+            };
+            depths[index] = depth;
+            levels.resize_with(levels.len().max(depth + 1), Vec::new);
+            levels[depth].push(index);
+        }
         Ok(Self {
+            levels,
+            sample_rate: 48000.0,
             nodes,
             input_channels: inputs[0].1.outputs().unwrap().count(),
             output_buses,
@@ -878,6 +938,13 @@ impl PreparedRack {
         }
         self.timings = Some((times, sample_rate));
     }
+    /// Set the block-deadline rate before handing this plan to its worker.
+    /// Native synchronous plans do not wait; deferred processors share this
+    /// deadline. The default is 48 kHz until a transport supplies its rate.
+    pub fn set_sample_rate(&mut self, rate: f64) {
+        assert!(rate.is_finite() && rate > 0.0);
+        self.sample_rate = rate;
+    }
     pub fn latency_samples(&self) -> usize {
         self.latency
     }
@@ -925,76 +992,162 @@ impl PreparedRack {
                 started,
                 budget: deadline,
             });
-        for index in 0..self.nodes.len() {
-            let (before, after) = self.nodes.split_at_mut(index);
-            let node = &mut after[0];
-            let node_started = node.timing_slot.map(|_| Instant::now());
-            node.input.clear(frames);
-            node.output.clear(frames);
-            for edge in &mut node.edges {
-                edge.delay
-                    .add(&before[edge.source].output, &mut node.input, frames);
-            }
-            match node.kind {
-                NodeKind::Input(_) => {
-                    for (source, destination) in input.iter().zip(&mut node.output.0) {
-                        destination[..frames].copy_from_slice(&source[..frames]);
+        let block_deadline =
+            Instant::now() + std::time::Duration::from_secs_f64(frames as f64 / self.sample_rate);
+        for level in &self.levels {
+            for &index in level {
+                let (before, after) = self.nodes.split_at_mut(index);
+                let node = &mut after[0];
+                node.pending.started = node.timing_slot.map(|_| Instant::now());
+                node.input.clear(frames);
+                node.output.clear(frames);
+                for edge in &mut node.edges {
+                    edge.delay
+                        .add(&before[edge.source].output, &mut node.input, frames);
+                }
+                match node.kind {
+                    NodeKind::Input(_) => {
+                        for (source, destination) in input.iter().zip(&mut node.output.0) {
+                            destination[..frames].copy_from_slice(&source[..frames]);
+                        }
+                        // The capture jack's trim sits on the wire leaving the
+                        // node, so every card downstream shares the level the
+                        // meter shows — the same shape as the master output
+                        // stage, mirrored to the front of the rack. The meter
+                        // reads the trimmed signal, because that is the signal
+                        // the rack feeds itself, before its outgoing break switch.
+                        if let Some(slot) = node.wire_out {
+                            apply_gain(&mut node.output, frames, wires.gain(slot));
+                            let level = wire_level(&node.output, frames, &mut node.tp_out);
+                            wires.publish(slot, level);
+                            // Capture is metered at the source, then its outgoing
+                            // switch cuts the feed to every downstream branch.
+                            if wires.open_at(slot) {
+                                node.output.clear(frames);
+                            }
+                        }
                     }
-                    // The capture jack's trim sits on the wire leaving the
-                    // node, so every card downstream shares the level the
-                    // meter shows — the same shape as the master output
-                    // stage, mirrored to the front of the rack. The meter
-                    // reads the trimmed signal, because that is the signal
-                    // the rack feeds itself, before its outgoing break switch.
-                    if let Some(slot) = node.wire_out {
-                        apply_gain(&mut node.output, frames, wires.gain(slot));
-                        let level = wire_level(&node.output, frames, &mut node.tp_out);
-                        wires.publish(slot, level);
-                        // Capture is metered at the source, then its outgoing
-                        // switch cuts the feed to every downstream branch.
-                        if wires.open_at(slot) {
-                            node.output.clear(frames);
+                    NodeKind::Plugin { .. } => {
+                        // A wire trim sits on the wire itself: the input trim
+                        // scales the summed buffer before the processor sees it,
+                        // so the plugin and everything downstream share what the
+                        // wire actually carries. The two slots are copied out
+                        // first because measuring a wire borrows two of the node's
+                        // fields at once.
+                        let wire_in = node.wire_in;
+                        let bypassed = node.processor.as_ref().unwrap().bypassed
+                            || wire_in.is_some_and(|slot| wires.bypassed_at(slot));
+                        let paused = wire_in.is_some_and(|slot| wires.paused_at(slot));
+                        if !bypassed {
+                            node.bypass.advance(&node.input, frames);
+                        }
+                        if let Some(trim) = wire_in.filter(|_| !bypassed && !paused) {
+                            apply_gain(&mut node.input, frames, wires.gain(trim));
+                        }
+                        // Input meters sit on the plugin side of the cable break.
+                        // Bypass ignores the break; otherwise both the processor and
+                        // its input meter receive silence. Reset reconstruction history
+                        // so a previously live wire cannot leak a stale peak past it.
+                        let input_broken =
+                            !bypassed && wire_in.is_some_and(|slot| wires.open_at(slot));
+                        if input_broken {
+                            node.input.clear(frames);
+                            for meter in &mut node.tp_in {
+                                meter.reset();
+                            }
+                        }
+                        let arrival = wire_in
+                            .is_some()
+                            .then(|| wire_level(&node.input, frames, &mut node.tp_in));
+                        node.pending.bypassed = bypassed;
+                        node.pending.paused = paused;
+                        node.pending.arrival = arrival;
+                        if !paused {
+                            node.processor
+                                .as_mut()
+                                .unwrap()
+                                .processor
+                                .begin_process(
+                                    &node.input,
+                                    &mut node.output,
+                                    frames,
+                                    block_deadline,
+                                )
+                                .map_err(|_| ProcessError::NodeFailed(node.id))?;
+                        }
+                    }
+
+                    NodeKind::Output(_) => {
+                        // The rack's master output trim: a gain stage on the
+                        // wire entering the jack, so what the meter shows is
+                        // what leaves to the DAC — the summed signal after the
+                        // unity mixer, scaled. Only the primary output carries
+                        // a slot; auxiliary lane outputs have none and copy
+                        // through untouched. The jack carries a switch like
+                        // any card's stub: it measures before it breaks, so
+                        // the meter keeps reading what arrives at the stub
+                        // while an open circuit holds the DAC silent. Only
+                        // the primary output carries a slot; auxiliary lane
+                        // outputs have none and copy through untouched.
+                        let wire_in = node.wire_in;
+                        if let Some(slot) = wire_in {
+                            apply_gain(&mut node.input, frames, wires.gain(slot));
+                        }
+                        for (source, destination) in node.input.0.iter().zip(&mut node.output.0) {
+                            destination[..frames].copy_from_slice(&source[..frames]);
+                        }
+                        if let Some(slot) = wire_in {
+                            let level = wire_level(&node.output, frames, &mut node.tp_out);
+                            wires.publish(slot, level);
+                            // Publish first, then break: the meter describes
+                            // the signal reaching the jack, the cleared
+                            // buffer keeps it out of the audio device.
+                            if wires.open_at(slot) {
+                                node.output.clear(frames);
+                            }
+                        }
+                    }
+                    NodeKind::ChannelMap { .. }
+                        if node.input.channels() != node.output.channels() =>
+                    {
+                        // A join folds every input to their mean — the stereo
+                        // pair keeps its exact (L + R) * 0.5 form, which a halved
+                        // sum reproduces bit for bit — and a split hands the
+                        // first channel to every output. Equal widths never reach
+                        // here; the copy arm below carries those.
+                        let (inputs, outputs) = (node.input.channels(), node.output.channels());
+                        let inputs = &node.input.0[..inputs];
+                        let outputs = &mut node.output.0[..outputs];
+                        for frame in 0..frames {
+                            let value = if outputs.len() < inputs.len() {
+                                let sum: f32 = inputs.iter().map(|lane| lane[frame]).sum();
+                                sum / inputs.len() as f32
+                            } else {
+                                inputs[0][frame]
+                            };
+                            for lane in outputs.iter_mut() {
+                                lane[frame] = value;
+                            }
+                        }
+                    }
+                    _ => {
+                        for (source, destination) in node.input.0.iter().zip(&mut node.output.0) {
+                            destination[..frames].copy_from_slice(&source[..frames]);
                         }
                     }
                 }
-                NodeKind::Plugin { .. } => {
-                    // A wire trim sits on the wire itself: the input trim
-                    // scales the summed buffer before the processor sees it,
-                    // so the plugin and everything downstream share what the
-                    // wire actually carries. The two slots are copied out
-                    // first because measuring a wire borrows two of the node's
-                    // fields at once.
+            }
+            for &index in level {
+                let node = &mut self.nodes[index];
+                if let Some(processor) = &mut node.processor {
                     let (wire_in, wire_out) = (node.wire_in, node.wire_out);
-                    let bypassed = node.processor.as_ref().unwrap().bypassed
-                        || wire_in.is_some_and(|slot| wires.bypassed_at(slot));
-                    let paused = wire_in.is_some_and(|slot| wires.paused_at(slot));
-                    if !bypassed {
-                        node.bypass.advance(&node.input, frames);
-                    }
-                    if let Some(trim) = wire_in.filter(|_| !bypassed && !paused) {
-                        apply_gain(&mut node.input, frames, wires.gain(trim));
-                    }
-                    // Input meters sit on the plugin side of the cable break.
-                    // Bypass ignores the break; otherwise both the processor and
-                    // its input meter receive silence. Reset reconstruction history
-                    // so a previously live wire cannot leak a stale peak past it.
-                    let input_broken = !bypassed && wire_in.is_some_and(|slot| wires.open_at(slot));
-                    if input_broken {
-                        node.input.clear(frames);
-                        for meter in &mut node.tp_in {
-                            meter.reset();
-                        }
-                    }
-                    let arrival = wire_in
-                        .is_some()
-                        .then(|| wire_level(&node.input, frames, &mut node.tp_in));
-                    let processor = node.processor.as_mut().unwrap();
-                    // Bypass changes routing, not time: keep the effect's
-                    // history current with actual input. Only Pause suspends DSP.
+                    let bypassed = node.pending.bypassed;
+                    let paused = node.pending.paused;
+                    let arrival = node.pending.arrival;
                     if !paused {
                         processor
                             .processor
-                            .process(&node.input, &mut node.output, frames)
+                            .finish_process(&mut node.output, frames)
                             .map_err(|_| ProcessError::NodeFailed(node.id))?;
                     }
                     if bypassed {
@@ -1033,76 +1186,23 @@ impl PreparedRack {
                         wires.publish(slot, level);
                     }
                 }
-                NodeKind::Output(_) => {
-                    // The rack's master output trim: a gain stage on the
-                    // wire entering the jack, so what the meter shows is
-                    // what leaves to the DAC — the summed signal after the
-                    // unity mixer, scaled. Only the primary output carries
-                    // a slot; auxiliary lane outputs have none and copy
-                    // through untouched. The jack carries a switch like
-                    // any card's stub: it measures before it breaks, so
-                    // the meter keeps reading what arrives at the stub
-                    // while an open circuit holds the DAC silent. Only
-                    // the primary output carries a slot; auxiliary lane
-                    // outputs have none and copy through untouched.
-                    let wire_in = node.wire_in;
-                    if let Some(slot) = wire_in {
-                        apply_gain(&mut node.input, frames, wires.gain(slot));
-                    }
-                    for (source, destination) in node.input.0.iter().zip(&mut node.output.0) {
-                        destination[..frames].copy_from_slice(&source[..frames]);
-                    }
-                    if let Some(slot) = wire_in {
-                        let level = wire_level(&node.output, frames, &mut node.tp_out);
-                        wires.publish(slot, level);
-                        // Publish first, then break: the meter describes
-                        // the signal reaching the jack, the cleared
-                        // buffer keeps it out of the audio device.
-                        if wires.open_at(slot) {
-                            node.output.clear(frames);
-                        }
-                    }
+                if let (Some((times, _)), Some(started), Some(node_started), Some(slot)) = (
+                    &self.timings,
+                    started,
+                    node.pending.started,
+                    node.timing_slot,
+                ) {
+                    let end = Instant::now();
+                    times.publish(
+                        slot,
+                        ProcessingTime {
+                            incoming: node_started.duration_since(started).as_secs_f64() / deadline,
+                            added: end.duration_since(node_started).as_secs_f64() / deadline,
+                        },
+                        end,
+                        end.duration_since(started),
+                    );
                 }
-                NodeKind::ChannelMap { .. } if node.input.channels() != node.output.channels() => {
-                    // A join folds every input to their mean — the stereo
-                    // pair keeps its exact (L + R) * 0.5 form, which a halved
-                    // sum reproduces bit for bit — and a split hands the
-                    // first channel to every output. Equal widths never reach
-                    // here; the copy arm below carries those.
-                    let (inputs, outputs) = (node.input.channels(), node.output.channels());
-                    let inputs = &node.input.0[..inputs];
-                    let outputs = &mut node.output.0[..outputs];
-                    for frame in 0..frames {
-                        let value = if outputs.len() < inputs.len() {
-                            let sum: f32 = inputs.iter().map(|lane| lane[frame]).sum();
-                            sum / inputs.len() as f32
-                        } else {
-                            inputs[0][frame]
-                        };
-                        for lane in outputs.iter_mut() {
-                            lane[frame] = value;
-                        }
-                    }
-                }
-                _ => {
-                    for (source, destination) in node.input.0.iter().zip(&mut node.output.0) {
-                        destination[..frames].copy_from_slice(&source[..frames]);
-                    }
-                }
-            }
-            if let (Some((times, _)), Some(started), Some(node_started), Some(slot)) =
-                (&self.timings, started, node_started, node.timing_slot)
-            {
-                let end = Instant::now();
-                times.publish(
-                    slot,
-                    ProcessingTime {
-                        incoming: node_started.duration_since(started).as_secs_f64() / deadline,
-                        added: end.duration_since(node_started).as_secs_f64() / deadline,
-                    },
-                    end,
-                    end.duration_since(started),
-                );
             }
         }
         let Self {
@@ -1117,6 +1217,15 @@ impl PreparedRack {
         }
         drop(graph_observation);
         Ok(())
+    }
+    /// Apply queued controls on the audio thread, including while transport is
+    /// idle. This does not advance DSP time or process synthetic audio.
+    pub fn flush_parameters(&mut self) {
+        for node in &mut self.nodes {
+            if let Some(slot) = &mut node.processor {
+                slot.processor.flush_parameters();
+            }
+        }
     }
     /// Call on the processing thread before handing the plan back for destruction.
     pub fn stop(&mut self) {

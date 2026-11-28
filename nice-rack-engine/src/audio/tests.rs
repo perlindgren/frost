@@ -274,3 +274,119 @@ fn timing_observes_each_short_block_without_allocating_or_changing_audio() {
     assert_eq!(times.summary(NodeId(1)).unwrap().calls, 4);
     assert_eq!(times.summary(NodeId(3)).unwrap().calls, 4);
 }
+
+/// A deterministic two-phase processor: completion asserts that every sibling
+/// was submitted first. No scheduler timing assumptions or extra worker threads.
+struct Deferred {
+    begun: Arc<std::sync::atomic::AtomicUsize>,
+    siblings: usize,
+    failed: bool,
+    deadline: Arc<std::sync::Mutex<Option<Instant>>>,
+}
+impl Processor for Deferred {
+    fn is_deferred(&self) -> bool {
+        true
+    }
+    fn process(
+        &mut self,
+        _: &AudioBuffer,
+        _: &mut AudioBuffer,
+        _: usize,
+    ) -> Result<(), ProcessError> {
+        panic!("must use two-phase dispatch")
+    }
+    fn begin_process(
+        &mut self,
+        input: &AudioBuffer,
+        output: &mut AudioBuffer,
+        frames: usize,
+        deadline: Instant,
+    ) -> Result<(), ProcessError> {
+        let mut shared = self.deadline.lock().unwrap();
+        if let Some(first) = *shared {
+            assert_eq!(first, deadline, "one deadline for the block");
+        } else {
+            *shared = Some(deadline);
+        }
+        for (source, dest) in input.0.iter().zip(&mut output.0) {
+            dest[..frames].copy_from_slice(&source[..frames]);
+        }
+        self.begun.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn finish_process(&mut self, _: &mut AudioBuffer, _: usize) -> Result<(), ProcessError> {
+        assert_eq!(
+            self.begun.load(std::sync::atomic::Ordering::SeqCst),
+            self.siblings
+        );
+        if self.failed {
+            Err(ProcessError::ProcessorFailed)
+        } else {
+            Ok(())
+        }
+    }
+}
+#[test]
+fn deferred_siblings_start_before_waiting_and_failures_silence_external_outputs() {
+    for failed in [false, true] {
+        let c = Channels::Mono;
+        let graph = RackGraph {
+            nodes: [
+                (NodeId(0), NodeKind::Input(c)),
+                (
+                    NodeId(1),
+                    NodeKind::Plugin {
+                        inputs: c,
+                        outputs: c,
+                    },
+                ),
+                (
+                    NodeId(2),
+                    NodeKind::Plugin {
+                        inputs: c,
+                        outputs: c,
+                    },
+                ),
+                (NodeId(3), NodeKind::Mixer(c)),
+                (NodeId(4), NodeKind::Output(c)),
+            ]
+            .into(),
+            connections: [(0, 1), (0, 2), (1, 3), (2, 3), (3, 4)]
+                .map(|(a, b)| Connection {
+                    from: NodeId(a),
+                    to: NodeId(b),
+                })
+                .into(),
+            ..RackGraph::default()
+        };
+        let begun = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deadline = Arc::new(std::sync::Mutex::new(None));
+        let slots = [1, 2]
+            .map(|id| {
+                (
+                    NodeId(id),
+                    ProcessorSlot {
+                        processor: Box::new(Deferred {
+                            begun: begun.clone(),
+                            siblings: 2,
+                            failed: failed && id == 1,
+                            deadline: deadline.clone(),
+                        }) as Box<dyn Processor>,
+                        bypassed: false,
+                    },
+                )
+            })
+            .into();
+        let mut rack = PreparedRack::prepare(&graph, slots, 64).unwrap();
+        let mut out = [99.; 64];
+        let mut group = [&mut out[..]];
+        let result = rack.process(&[&[0.25; 64]], &mut [&mut group], 64);
+        if failed {
+            assert_eq!(result, Err(ProcessError::NodeFailed(NodeId(1))));
+            assert_eq!(out, [0.; 64]);
+        } else {
+            result.unwrap();
+            assert_eq!(out, [0.5; 64]);
+        }
+    }
+}

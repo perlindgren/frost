@@ -11,6 +11,10 @@ name = "nam_unload"
 harness = false
 
 [dependencies]
+rack-ipc = { path = "../nice-rack/crates/ipc" }
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+winit = "0.30.13"
 raw-window-handle = "0.6"
 rtrb = "0.4"
 nice-rack-engine = { path = "../nice-rack-engine" }

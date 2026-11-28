@@ -1276,6 +1276,22 @@ impl Runtime {
         {
             native_error = Some(error);
         }
+        if (self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.is_finished())
+            || (self.worker.is_none() && self.action.is_some()))
+            && let Some(session) = &mut self.session
+        {
+            match session.isolated_snapshot_ready() {
+                Ok(false) => return, // polled next frame; never wait on a helper
+                Ok(true) => {}
+                Err(error) => {
+                    self.diagnostic = Some(error.clone());
+                    self.message = error;
+                }
+            }
+        }
         if self
             .worker
             .as_ref()

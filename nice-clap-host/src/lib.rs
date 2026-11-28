@@ -4,6 +4,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod graph;
+pub mod isolated;
 pub use graph::{Binding, EditorEvent, GraphReport, LiveAudio, LiveSession, LiveStatus, Parameter};
 
 use clack_extensions::{audio_ports::*, gui::*, latency::*, params::*, state::*};
@@ -104,7 +105,7 @@ impl HostHandlers for Host {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Descriptor {
     pub id: String,
     pub name: String,
@@ -125,8 +126,24 @@ static LOADED: Mutex<Vec<(PathBuf, PluginEntry)>> = Mutex::new(Vec::new());
 /// An entry whose lifetime is managed by Clack. Instantiation stays on the
 /// caller's main thread. Only explicitly trusted entries may be loaded.
 #[derive(Clone)]
-pub struct Entry(PluginEntry);
+pub struct Entry {
+    native: Option<PluginEntry>,
+    remote: Option<isolated::RemoteEntry>,
+}
 impl Entry {
+    fn native(&self) -> Result<&PluginEntry, String> {
+        self.native
+            .as_ref()
+            .ok_or_else(|| "Native operation requested on an isolated entry".into())
+    }
+    /// Launch metadata inspection in a helper; no plugin library is loaded here.
+    pub fn isolated(path: &Path, executable: &Path) -> Result<Self, String> {
+        isolated::RemoteEntry::inspect(path, executable).map(|remote| Self {
+            native: None,
+            remote: Some(remote),
+        })
+    }
+
     /// Load native executable code, including any dynamic-library constructors.
     ///
     /// The library then stays mapped for the life of the process, whether or
@@ -151,7 +168,10 @@ impl Entry {
             .find(|(kept, _)| *kept == key)
             .map(|(_, entry)| entry.clone());
         if let Some(entry) = known {
-            return Ok(Self(entry));
+            return Ok(Self {
+                native: Some(entry),
+                remote: None,
+            });
         }
         // SAFETY: caller accepts the same native-library and CLAP contracts.
         // The lock above was released before this call: loading runs the
@@ -159,11 +179,14 @@ impl Entry {
         // while holding our mutex.
         let entry = unsafe { PluginEntry::load(path) }
             .map_err(|error| error.to_string())
-            .map(Self)?;
+            .map(|native| Self {
+                native: Some(native),
+                remote: None,
+            })?;
         LOADED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push((key, entry.0.clone()));
+            .push((key, entry.native.as_ref().unwrap().clone()));
         Ok(entry)
     }
 
@@ -172,6 +195,9 @@ impl Entry {
         &self,
         id: &str,
     ) -> Result<(nice_rack_engine::Channels, nice_rack_engine::Channels), String> {
+        if let Some(remote) = &self.remote {
+            return remote.main_channels(id);
+        }
         let class = CString::new(id).map_err(|error| error.to_string())?;
         let shared = Callbacks::default();
         let main = shared.clone();
@@ -183,7 +209,7 @@ impl Entry {
         )
         .map_err(|error| error.to_string())?;
         let mut instance =
-            PluginInstance::<Host>::new(|_| shared, |_| main, &self.0, &class, &info)
+            PluginInstance::<Host>::new(|_| shared, |_| main, self.native()?, &class, &info)
                 .map_err(|error| error.to_string())?;
         let handle = instance.plugin_handle();
         let extension = handle
@@ -209,8 +235,11 @@ impl Entry {
     }
 
     pub fn descriptors(&self) -> Result<Vec<Descriptor>, String> {
+        if let Some(remote) = &self.remote {
+            return Ok(remote.descriptors());
+        }
         let factory = self
-            .0
+            .native()?
             .get_plugin_factory()
             .ok_or("CLAP entry has no plugin factory")?;
         factory
@@ -263,8 +292,9 @@ impl Entry {
             "0.1.0",
         )
         .map_err(|e| e.to_string())?;
-        let mut instance = PluginInstance::<Host>::new(|_| shared, |_| main, &self.0, &id, &info)
-            .map_err(|e| e.to_string())?;
+        let mut instance =
+            PluginInstance::<Host>::new(|_| shared, |_| main, self.native()?, &id, &info)
+                .map_err(|e| e.to_string())?;
         pump(&mut instance, &signals);
         let (inputs, outputs) = {
             let handle = instance.plugin_handle();

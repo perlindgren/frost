@@ -2,6 +2,22 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 fn main() {
     let args: Vec<_> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--clap-helper") {
+        let result = match (args.get(2), args.get(3)) {
+            // SAFETY: the operator selected this native plugin through the rack.
+            (Some(address), Some(token)) => unsafe {
+                nice_clap_host::isolated::run_helper(address, token)
+            },
+            _ => Err("Missing helper connection arguments".into()),
+        };
+        if let Err(error) = result {
+            eprintln!("nice-rack helper: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let isolated = args.iter().any(|arg| arg == "--isolate");
+    let executable = std::env::current_exe().expect("Locate nice-rack executable");
     if args.get(1).map(String::as_str) == Some("--list-devices") {
         let snapshot = nice_common::devices::snapshot(
             // A listing typed by hand names no backend; the parent half of
@@ -23,13 +39,19 @@ fn main() {
         }
         return;
     }
-    if let Err(error) = nice_rack::run(|path| {
+    let result = nice_rack::run(move |path| {
         // SAFETY: dropping a CLAP entry into this explicitly in-process host
         // selects native code to execute. The operator must trust that entry
         // and its CLAP contract; paths/metadata cannot establish this property.
         // This is the same explicit executable boundary as clap-probe.
-        unsafe { nice_clap_host::Entry::load(path) }
-    }) {
+        if isolated {
+            nice_clap_host::Entry::isolated(path, &executable)
+        } else {
+            unsafe { nice_clap_host::Entry::load(path) }
+        }
+    });
+    nice_clap_host::isolated::finish_shutdown();
+    if let Err(error) = result {
         eprintln!("nice-rack: {error}");
         std::process::exit(1);
     }

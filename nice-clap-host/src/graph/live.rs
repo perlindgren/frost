@@ -23,6 +23,7 @@ pub struct LiveSession {
     bindings: BTreeMap<NodeId, Binding>,
     graph: RackGraph,
     owners: BTreeMap<NodeId, Owner>,
+    pub(crate) remote_owners: BTreeMap<NodeId, crate::isolated::RemoteOwner>,
     returned: rtrb::Consumer<Box<PreparedRack>>,
     stop: Arc<AtomicBool>,
     stopped: bool,
@@ -51,6 +52,18 @@ impl Drop for LiveAudio {
     }
 }
 impl LiveAudio {
+    pub fn flush_parameters(&mut self) {
+        if let Some(rack) = &mut self.rack {
+            rack.flush_parameters();
+        }
+    }
+    /// Reset on the owning audio thread between blocks.
+    pub fn reset(&mut self) {
+        if let Some(rack) = &mut self.rack {
+            rack.reset();
+        }
+    }
+
     /// The empty/stopping path silences output. No waiting, graph allocation,
     /// native destruction, state I/O or lifecycle activation occurs here.
     pub fn process(
@@ -121,6 +134,13 @@ impl LiveSession {
         if let Ok(rack) = self.returned.pop() {
             drop(rack); // stopped handles return to their owning instances
             self.stopped = true;
+        }
+        for (&id, owner) in &mut self.remote_owners {
+            owner.poll();
+            if let Some(error) = &owner.failure {
+                self.stop.store(true, Ordering::Release);
+                return Err(format!("Isolated plugin {id:?}: {error}"));
+            }
         }
         for (&id, owner) in &mut self.owners {
             owner.service();
@@ -209,6 +229,7 @@ impl LiveSession {
     ) -> Result<(Self, LiveAudio), String> {
         Self::build(
             BTreeMap::new(),
+            BTreeMap::new(),
             graph,
             bindings,
             sample_rate,
@@ -238,8 +259,22 @@ impl LiveSession {
         max_frames: usize,
         states: &BTreeMap<NodeId, Vec<u8>>,
     ) -> Result<(Self, LiveAudio), String> {
+        let (owners, remotes) = previous.map_or_else(
+            || (BTreeMap::new(), BTreeMap::new()),
+            |previous| {
+                // A live processor still owns its endpoint. Never give a new
+                // plan access to that same request/output slot concurrently.
+                let remotes = if previous.stopped {
+                    previous.remote_owners
+                } else {
+                    BTreeMap::new()
+                };
+                (previous.owners, remotes)
+            },
+        );
         Self::build(
-            previous.map_or_else(BTreeMap::new, |previous| previous.owners),
+            owners,
+            remotes,
             graph,
             bindings,
             sample_rate,
@@ -249,6 +284,7 @@ impl LiveSession {
     }
     fn build(
         mut previous: BTreeMap<NodeId, Owner>,
+        mut previous_remotes: BTreeMap<NodeId, crate::isolated::RemoteOwner>,
         graph: &RackGraph,
         bindings: &BTreeMap<NodeId, Binding>,
         sample_rate: f64,
@@ -272,6 +308,7 @@ impl LiveSession {
             return Err("Each plugin node needs one class ID".into());
         }
         let mut owners = BTreeMap::new();
+        let mut remote_owners = BTreeMap::new();
         let mut processors = BTreeMap::new();
         let setup = (|| {
             for (&id, binding) in bindings {
@@ -279,6 +316,41 @@ impl LiveSession {
                     unreachable!()
                 };
                 let (inputs, outputs) = (inputs.count(), outputs.count());
+                if let Some(remote) = &binding.entry.remote {
+                    let kept = previous_remotes.remove(&id).filter(|owner| {
+                        owner.reusable(
+                            remote,
+                            &binding.class,
+                            sample_rate,
+                            max_frames,
+                            inputs,
+                            outputs,
+                        )
+                    });
+                    let (owner, processor) = match kept {
+                        Some(mut owner) => {
+                            let processor = owner.processor();
+                            (owner, processor)
+                        }
+                        None => remote.prepare(
+                            &binding.class,
+                            sample_rate,
+                            max_frames,
+                            inputs,
+                            outputs,
+                            states.get(&id).map(Vec::as_slice),
+                        )?,
+                    };
+                    remote_owners.insert(id, owner);
+                    processors.insert(
+                        id,
+                        ProcessorSlot {
+                            processor: Box::new(processor) as Box<dyn Processor>,
+                            bypassed: false,
+                        },
+                    );
+                    continue;
+                }
                 // The instance in front of this card is only worth carrying if it
                 // still answers to it. Refused, it dies here with the rest of what
                 // this edit did not carry, its editor with it.
@@ -320,7 +392,7 @@ impl LiveSession {
             }
             return Err(error);
         }
-        let rack = match PreparedRack::prepare(graph, processors, max_frames) {
+        let mut rack = match PreparedRack::prepare(graph, processors, max_frames) {
             Ok(rack) => Box::new(rack),
             Err(error) => {
                 for owner in owners.values_mut() {
@@ -329,6 +401,7 @@ impl LiveSession {
                 return Err(error.to_string());
             }
         };
+        rack.set_sample_rate(sample_rate);
         let latency = rack.latency_samples();
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = rtrb::RingBuffer::new(1);
@@ -337,6 +410,7 @@ impl LiveSession {
                 bindings: bindings.clone(),
                 graph: graph.clone(),
                 owners,
+                remote_owners,
                 returned: receiver,
                 stop: stop.clone(),
                 stopped: false,

@@ -19,6 +19,7 @@ mod x11;
 /// surface — is not something a plugin will accept as an editor's parent, and
 /// the frame comes from the X11 loop in `x11` instead.
 enum Frame {
+    Remote,
     Winit(Arc<Window>),
     #[cfg(target_os = "linux")]
     X11(x11::Frame),
@@ -177,6 +178,21 @@ impl Windows {
     pub fn capture(&self, runtime: &mut Runtime) {
         for (&id, frame) in &self.windows {
             match frame {
+                Frame::Remote => {
+                    if let Some(g) = runtime
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.isolated_geometry(id))
+                    {
+                        runtime.editor_geometry.insert(
+                            id,
+                            EditorGeometry {
+                                position: g.position,
+                                size: g.size,
+                            },
+                        );
+                    }
+                }
                 Frame::Winit(window) => {
                     if window.inner_size().width == 0 || window.inner_size().height == 0 {
                         continue;
@@ -264,6 +280,16 @@ impl Windows {
             // a session to judge it by again.
             return;
         }
+        if let Some(session) = &mut runtime.session {
+            for error in session.isolated_editor_errors() {
+                runtime.message = error;
+            }
+            for id in session.closed_isolated_editors() {
+                self.close_window(id);
+                self.forget(id);
+            }
+        }
+        self.capture(runtime);
         self.close_orphaned(runtime);
         // Anything the user still wants that the rebuild took away goes back
         // on the queue: dropping a plugin into the rack is not a request to
@@ -286,7 +312,7 @@ impl Windows {
                                     service.resize(id, [w, h]);
                                 }
                             }
-                            None => {}
+                            Some(Frame::Remote) | None => {}
                         },
                         nice_clap_host::EditorEvent::Show | nice_clap_host::EditorEvent::Hide => {
                             let visible = matches!(event, nice_clap_host::EditorEvent::Show);
@@ -298,7 +324,7 @@ impl Windows {
                                         service.visible(id, visible);
                                     }
                                 }
-                                None => {}
+                                Some(Frame::Remote) | None => {}
                             }
                         }
                         nice_clap_host::EditorEvent::Closed => {
@@ -327,7 +353,7 @@ impl Windows {
                     }
                     continue;
                 }
-                None => {}
+                Some(Frame::Remote) | None => {}
             }
             let Some(card) = runtime.cards.iter().find(|c| c.id == id) else {
                 // The card left the rack, and its instance with it, so an
@@ -336,6 +362,31 @@ impl Windows {
                 continue;
             };
             let saved = runtime.editor_geometry.get(&id).copied();
+            if runtime
+                .session
+                .as_ref()
+                .is_some_and(|s| s.editor_is_isolated(id))
+            {
+                let geometry = nice_clap_host::isolated::Geometry {
+                    position: saved.and_then(|g| g.position),
+                    size: saved.map_or([640, 480], |g| g.size),
+                };
+                match runtime
+                    .session
+                    .as_mut()
+                    .unwrap()
+                    .open_isolated_editor(id, geometry)
+                {
+                    Ok(()) => {
+                        self.windows.insert(id, Frame::Remote);
+                    }
+                    Err(error) => {
+                        self.forget(id);
+                        runtime.message = error;
+                    }
+                }
+                continue;
+            }
             #[cfg(target_os = "linux")]
             if matches!(self.wayland_shell, Some(true)) {
                 let name = card.name.clone();

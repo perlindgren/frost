@@ -15,6 +15,8 @@ use std::{
     sync::mpsc::{Receiver, SyncSender, sync_channel},
 };
 
+const PARAMETER_CAPACITY: usize = 256;
+
 type ReturnHandle = (
     StoppedPluginAudioProcessor<Host>,
     Option<PluginInstanceError>,
@@ -89,7 +91,7 @@ impl Owner {
         outputs: usize,
     ) -> Result<ClapProcessor, String> {
         let (returned, receiver) = sync_channel(1);
-        let (changes, incoming_changes) = rtrb::RingBuffer::new(256);
+        let (changes, incoming_changes) = rtrb::RingBuffer::new(PARAMETER_CAPACITY);
         let input = vec![vec![0.0; frames]; inputs];
         let input_ports = AudioPorts::with_capacity(inputs, 1);
         let output_ports = AudioPorts::with_capacity(outputs, 1);
@@ -131,7 +133,7 @@ impl Owner {
             latency,
             steady_time: 0,
             changes: incoming_changes,
-            events: Vec::with_capacity(64),
+            events: Vec::with_capacity(PARAMETER_CAPACITY),
             restart: self.signals.clone(),
         })
     }
@@ -179,6 +181,32 @@ struct ClapProcessor {
     restart: Callbacks,
 }
 impl Processor for ClapProcessor {
+    fn flush_parameters(&mut self) {
+        self.events.clear();
+        // A state-save fence must include the entire bounded queue, not only
+        // the first processing batch. Capacity was reserved during activation.
+        while self.events.len() < PARAMETER_CAPACITY {
+            let Ok(event) = self.changes.pop() else { break };
+            self.events.push(event);
+        }
+        let requested = self.restart.0.process.swap(false, Ordering::AcqRel);
+        if self.events.is_empty() && !requested {
+            return;
+        }
+        let changed = !self.events.is_empty();
+        let mut handle = self.processor.as_mut().unwrap().plugin_handle();
+        if let Some(params) = handle.get_extension::<clack_extensions::params::PluginParams>() {
+            params.flush_active(
+                &mut handle,
+                &InputEvents::from_buffer(&self.events),
+                &mut OutputEvents::from(&mut OutputChanges::new(&self.restart.0.changed)),
+            );
+            if changed {
+                self.restart.mark_dirty();
+            }
+        }
+    }
+
     fn latency_samples(&self) -> usize {
         self.latency
     }
@@ -483,7 +511,7 @@ impl Entry {
         )
         .map_err(|error| error.to_string())?;
         let mut instance =
-            PluginInstance::<Host>::new(|_| shared, |_| main, &self.0, &class, &info)
+            PluginInstance::<Host>::new(|_| shared, |_| main, self.native()?, &class, &info)
                 .map_err(|error| error.to_string())?;
         pump(&mut instance, &signals);
         if let Some(mut bytes) = state {
@@ -499,7 +527,7 @@ impl Entry {
         // restore a snapshot before port validation and activation.
         let _ = save_state(&mut instance)?;
         let (returned, receiver) = sync_channel(1);
-        let (changes, incoming_changes) = rtrb::RingBuffer::new(256);
+        let (changes, incoming_changes) = rtrb::RingBuffer::new(PARAMETER_CAPACITY);
         let input = vec![vec![0.0; frames]; inputs];
         let input_ports = AudioPorts::with_capacity(inputs, 1);
         let output_ports = AudioPorts::with_capacity(outputs, 1);
@@ -544,7 +572,7 @@ impl Entry {
                 latency,
                 steady_time: 0,
                 changes: incoming_changes,
-                events: Vec::with_capacity(64),
+                events: Vec::with_capacity(PARAMETER_CAPACITY),
                 restart: signals,
             },
         ))

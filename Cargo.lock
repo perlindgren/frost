@@ -2004,9 +2004,13 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "nice-rack-engine",
+ "rack-ipc",
  "raw-window-handle",
+ "ron",
  "rtrb 0.4.1",
+ "serde",
  "windows-sys 0.52.0",
+ "winit",
 ]
 
 [[package]]
@@ -3053,6 +3057,13 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rack-ipc"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
+]
 
 [[package]]
 name = "rack-window-input"

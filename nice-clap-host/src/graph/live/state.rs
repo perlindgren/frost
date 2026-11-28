@@ -34,21 +34,24 @@ impl LiveSession {
     /// Instances reporting non-parameter or parameter-value changes. Reading
     /// this does not acknowledge them: only successful capture does that.
     pub fn dirty_instances(&self) -> Vec<NodeId> {
-        self.owners
+        self.remote_owners
             .iter()
-            .filter_map(|(&id, owner)| {
+            .filter_map(|(&id, owner)| owner.dirty.then_some(id))
+            .chain(self.owners.iter().filter_map(|(&id, owner)| {
                 owner
                     .signals
                     .0
                     .changed
                     .load(Ordering::Acquire)
                     .then_some(id)
-            })
+            }))
             .collect()
     }
 
-    /// Capture every instance for an explicit full save.
-    /// CLAP permits state saving while active; this must run on the main thread.
+    /// Capture local instances and collect confirmed isolated state.
+    /// For a fresh full isolated save, first poll `isolated_snapshot_ready` until
+    /// ready. This method never waits for remote callbacks. CLAP permits local
+    /// state saving while active; this must run on the main thread.
     pub fn save_states(&mut self) -> Result<BTreeMap<NodeId, Vec<u8>>, String> {
         self.capture_states(false)
     }
@@ -60,7 +63,9 @@ impl LiveSession {
     }
 
     /// Recovery requires a stopped graph even though serialization itself does
-    /// not. Keep that lifecycle requirement explicit at the recovery entry point.
+    /// not. For isolated instances, await `isolated_snapshot_ready` across UI
+    /// frames first; after a failure these bytes are only the last confirmed
+    /// cache. Keep that lifecycle requirement explicit at the recovery entry point.
     pub fn snapshot(&mut self) -> Result<BTreeMap<NodeId, Vec<u8>>, String> {
         if !self.stopped {
             return Err("Stop the graph before saving state".into());
@@ -71,6 +76,16 @@ impl LiveSession {
     fn capture_states(&mut self, changed_only: bool) -> Result<BTreeMap<NodeId, Vec<u8>>, String> {
         let mut states = BTreeMap::new();
         let mut pending = Vec::new();
+        let mut remote_pending = Vec::new();
+        for (&id, owner) in &mut self.remote_owners {
+            owner.poll();
+            if !changed_only || owner.dirty {
+                if let Some(bytes) = &owner.state {
+                    states.insert(id, bytes.clone());
+                }
+                remote_pending.push(id);
+            }
+        }
         for (&id, owner) in &mut self.owners {
             let Some(capture) = PendingCapture::begin(&owner.signals, changed_only) else {
                 continue;
@@ -81,6 +96,9 @@ impl LiveSession {
             {
                 states.insert(id, bytes);
             }
+        }
+        for id in remote_pending {
+            self.remote_owners.get_mut(&id).unwrap().dirty = false;
         }
         for capture in pending {
             capture.commit();

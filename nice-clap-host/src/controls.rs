@@ -27,7 +27,7 @@ impl Editor {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Parameter {
     pub id: u32,
     pub name: String,
@@ -79,7 +79,7 @@ impl Owner {
         ));
     }
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum EditorEvent {
     Resize(u32, u32),
     Show,
@@ -127,6 +127,9 @@ impl HostParamsImplMainThread for Callbacks {
 }
 impl LiveSession {
     pub fn editor_supported(&mut self, id: NodeId) -> bool {
+        if let Some(owner) = self.remote_owners.get(&id) {
+            return owner.editor_supported;
+        }
         let Some(owner) = self.owners.get_mut(&id) else {
             return false;
         };
@@ -216,11 +219,18 @@ impl LiveSession {
     /// again — the number it was opened for outlived the plugin it was opened on.
     /// It is the rack's to take down.
     pub fn has_editor(&self, id: NodeId) -> bool {
+        if let Some(owner) = self.remote_owners.get(&id) {
+            return owner.editor_open;
+        }
         self.owners
             .get(&id)
             .is_some_and(|owner| owner.editor.is_some())
     }
     pub fn close_editor(&mut self, id: NodeId) {
+        if let Some(owner) = self.remote_owners.get_mut(&id) {
+            owner.close();
+            return;
+        }
         if let Some(owner) = self.owners.get_mut(&id)
             && let Some(parent) = owner.editor.take()
         {
@@ -233,7 +243,12 @@ impl LiveSession {
         }
     }
     pub fn close_editors(&mut self) {
-        let ids: Vec<_> = self.owners.keys().copied().collect();
+        let ids: Vec<_> = self
+            .owners
+            .keys()
+            .chain(self.remote_owners.keys())
+            .copied()
+            .collect();
         for id in ids {
             self.close_editor(id);
         }
@@ -292,6 +307,9 @@ impl LiveSession {
         events
     }
     pub fn parameters(&mut self, id: NodeId) -> Vec<Parameter> {
+        if let Some(owner) = self.remote_owners.get(&id) {
+            return owner.parameters.clone();
+        }
         let Some(owner) = self.owners.get_mut(&id) else {
             return Vec::new();
         };
@@ -333,6 +351,9 @@ impl LiveSession {
             .collect()
     }
     pub fn set_parameter(&mut self, id: NodeId, param: u32, value: f64) -> Result<(), String> {
+        if let Some(owner) = self.remote_owners.get_mut(&id) {
+            return owner.parameter(param, value);
+        }
         if !value.is_finite() {
             return Err("Invalid parameter value".into());
         }

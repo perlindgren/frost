@@ -1,6 +1,6 @@
 # nice-rack
 
-A standalone frost application for an in-process CLAP audio-effects chain. The
+A standalone frost application for a CLAP audio-effects chain. The
 GUI flows left to right through serial stages, with parallel branches stacked
 vertically. VST3 hosting remains a future step.
 
@@ -9,6 +9,38 @@ vertically. VST3 hosting remains a future step.
 ```sh
 cargo run -p nice-rack-standalone --release
 ```
+
+Process isolation is opt-in:
+
+```sh
+cargo run -p nice-rack-standalone --release -- --isolate
+```
+
+This starts one copy of the rack executable as a helper for each plugin instance.
+Each helper owns its plugin, GUI main thread, and persistent audio worker. No
+plugin changes or separate helper installation are required. Editor windows are
+independent top-level windows; Linux editors use X11/XWayland. Audio uses shared
+memory with bounded copies, and independent branches submit their work before
+waiting for completion. Serial dependencies remain serial. Control messages use
+local loopback ports only; no internet service is involved.
+
+A missed audio-block deadline silences that block and enters the rack's existing
+recovery path, using the last confirmed plugin state. Controls and shutdown do
+not wait for foreign GUI code on the rack's UI thread. Full state capture is
+acknowledged asynchronously, including flushing queued parameter edits; a failed
+capture retains confirmed state and reports a diagnostic. Startup/activation is
+still synchronous with a startup timeout. Scheduling currently uses ordinary OS
+threads: measure 32/64/128-frame operation on each platform before relying on
+small buffers. Isolation adds transport/scheduling cost, and is not a security
+sandbox or protection from a shared GPU/driver failure. See
+[the implementation and test notes](../docs/rack-process-isolation.md).
+Paired automated DSP and editor-host responsiveness trials are available through
+[the isolation benchmark](../docs/rack-isolation-benchmark.md).
+
+For the macOS measurements and third-party threading limitations, see
+[macOS plugin threading findings](../docs/macos-plugin-threading-findings.md).
+Full isolation is experimental at small buffers; `--gui-isolate` is a benchmark
+flag using inactive editor replicas, not a production nice-rack hosting option.
 
 The small `crates/window-input` wrapper reads the macOS and Windows cursor during
 OS file drags, which winit 0.30 does not include in its drop events. Its native
@@ -36,9 +68,10 @@ deleted once plugins attach natively.
 
 The small `crates/standalone` executable is the native-loading trust boundary.
 The nice-rack application library denies unsafe code; the executable makes the
-single unsafe call needed to load the operator's selected native CLAP entry.
-Dropping a plugin runs native code in this process. It does not provide crash
-isolation or make an arbitrary third-party plugin safe.
+unsafe call needed to load the operator's selected native CLAP entry.
+By default that native code runs in this process. With `--isolate`, loading and
+execution happen in supervised helper processes instead. Neither mode makes
+arbitrary third-party native code trustworthy.
 
 ## Main view
 

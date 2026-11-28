@@ -1,0 +1,10 @@
+[package]
+name = "rack-ipc"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "Checked shared audio memory boundary for Nice Rack helper processes"
+
+[dependencies]
+memmap2 = "=0.9.11"
