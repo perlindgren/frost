@@ -236,13 +236,18 @@ impl<P: Process> Embedded<P> {
         // (there is no loop, and no key of frost's should close the
         // host's window). `vsync: false` is not a preference here — a
         // guest's present mode is forced anyway — it is the honest value
-        // for a frame whose next frame arrives whenever the host wakes.
+        // for a frame whose next frame arrives whenever the host wakes. The
+        // depth that follows it is inert for the same reason: a guest has no
+        // window of its own, so `Frost::chain_latency` leaves the chain at
+        // the surface's default — the two frames in flight the host's own
+        // present mode expects.
         let mut frost = Frost::new(
             instance.clone(),
             adapter,
             device.clone(),
             queue.clone(),
             false,
+            2,
             None,
             None,
             false,

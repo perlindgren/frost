@@ -1,6 +1,6 @@
 # Nice binary downloads
 
-Each platform archive contains nine CLAP plugins, nine VST3 plugins, ten standalone
+Each platform archive contains ten CLAP plugins, ten VST3 plugins, eleven standalone
 executables (including Nice Rack), and the accompanying licence and attribution
 files. NAM models and cabinet impulse responses are not included. The games are
 not part of these downloads. No Rust installation is needed to use the binaries.
@@ -72,7 +72,7 @@ Use a new version tag to replace a published release.
 The workflow pins Rust 1.100.0 and uses `--locked`. Hosted runner images and system
 packages can still change; byte-for-byte reproducibility is not claimed. Release
 builds validate legal-text provenance and archive contents, test the packaging
-code, and inspect all 28 native binaries. Windows imports of a dynamic MSVC/UCRT
+code, and inspect all 31 native binaries. Windows imports of a dynamic MSVC/UCRT
 runtime or unreviewed DLL fail the build. macOS permits only system library load
 commands and checks signatures. Linux fails on missing linked libraries and
 prints its resolved dependencies. These checks do not replace audio/GUI testing

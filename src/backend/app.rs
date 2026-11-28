@@ -41,6 +41,7 @@ use winit::window::{Window, WindowId};
 use crate::backend::bloom::Bloom;
 use crate::backend::copy::pad_rows;
 use crate::backend::frame::*;
+use crate::backend::profile::{FrameProfile, Phase};
 #[cfg(target_arch = "wasm32")]
 use crate::backend::wasm::hide_fallback;
 use crate::backend::windowing::*;
@@ -115,6 +116,12 @@ pub(crate) struct Frost<P: Process> {
     /// that makes a `Context::set_vsync` flip visible exactly once (see
     /// `apply_vsync_change`).
     surface_vsync: bool,
+    /// The `Config`'s swap-chain depth (`Config::frame_latency`), applied as
+    /// `desired_maximum_frame_latency` wherever frost owns the window. A
+    /// guest's chain is the host's business: there the depth is left at
+    /// whatever the surface's default config asked for (see
+    /// [`Self::chain_latency`]).
+    frame_latency: u32,
     /// The `Config`'s initial window inner size in logical pixels, or
     /// `None` for the platform default; used once in `create_window`.
     window_size: Option<[u32; 2]>,
@@ -337,15 +344,17 @@ pub(crate) struct Frost<P: Process> {
     /// The frame's arena bytes, assembled here and uploaded once, kept
     /// between frames for its capacity alone.
     arena_staging: Vec<u8>,
-    /// The rasterized glyph atlas for each distinct `(font, size, weight)`
-    /// triple, keyed by the font buffer's pointer, the size's bits and the
-    /// weight's bits. Kept between
-    /// frames so unchanged text never re-rasterizes and its pixel buffer —
-    /// and therefore the GPU texture in `sprite_resources` — keeps a stable
-    /// identity. A repack (a newly packed glyph) replaces the buffer and
-    /// bumps its generation; the stale texture is evicted from
-    /// `sprite_resources` right after the text is expanded.
-    text_atlases: HashMap<(u64, u32, u32), text::Atlas>,
+    /// This window's text caches: the glyph atlas per `(font, size, weight)`
+    /// triple (keyed by the font buffer's pointer and the two numbers' bits)
+    /// and the shared per-font metrics. Kept between frames so unchanged text
+    /// never re-rasterizes and its pixel buffer — and therefore the GPU
+    /// texture in `sprite_resources` — keeps a stable identity. A repack (a
+    /// newly packed glyph) replaces the buffer and bumps its generation; the
+    /// stale texture is evicted from `sprite_resources` right after the text
+    /// is expanded. The shaped runs these atlases are drawn from are memoized
+    /// per thread instead, in `text::shaped`, because they are shared by the
+    /// measuring and the painting of the same label.
+    text: text::Caches,
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,
@@ -400,6 +409,66 @@ pub(crate) struct Frost<P: Process> {
     /// `Diagnostics` overlay's own nodes: the tagged subset of
     /// `frame_draw_calls` (see `Context::frame_diagnostic_draw_calls`).
     frame_diagnostic_draw_calls: u32,
+    /// Phase-by-phase timing of the frames since the last report, present
+    /// only when `FROST_PROFILE` named a file to write (see
+    /// [`FrameProfile`]). `None` costs one branch per phase.
+    profile: Option<FrameProfile>,
+    /// Whether the idle hook ran since the last frame was drawn. Windows
+    /// pumps a window's modal move and size loops without ever emitting
+    /// `AboutToWait`, and a host that keeps its own machinery — plugin editor
+    /// windows, meters, timers — on that hook stops dead for the length of a
+    /// drag unless the frame path serves it too. See [`Self::service`].
+    idle_served: bool,
+    /// Whether the event loop has ever reported that it is about to wait:
+    /// proof that this backend emits the hook at all. A backend that never
+    /// does would find every frame redundant and never draw, so the judgement
+    /// in [`Self::frame_is_redundant`] is only trusted once the wait has been
+    /// seen — the same evidence the note in [`Self::idle_served`] rests on.
+    wait_seen: bool,
+    /// Whether the frame in progress was reached through the event loop's own
+    /// wait hook (`idle_served` at the time [`Self::service`] ran). `false`
+    /// means the platform was pumping messages around a modal loop — a window
+    /// drag — and the frames it produces are its own. See
+    /// [`Self::frame_is_redundant`].
+    os_pumped: bool,
+    /// Whether a key, button, wheel or touch event arrived since the last
+    /// frame was drawn: the input a skipped frame must not swallow. See
+    /// [`Self::frame_is_redundant`].
+    input_seen: bool,
+    /// The last window the platform reported moving on this event loop, and
+    /// when it said so. Every window on the loop reports — this app's own and a
+    /// host's plugin editors alike — and which one is moving is what decides
+    /// whose drag a stream of pump frames belongs to. See [`drag_is_ours`].
+    last_moved: Option<(WindowId, f64)>,
+    /// The window's inner size at the last frame drawn. A size the platform
+    /// has moved to since then is content no drawn frame has shown yet, so it
+    /// rules a frame out as redundant.
+    frame_size: PhysicalSize<u32>,
+    /// Whether a `RedrawRequested` is owed to this app: one request is
+    /// outstanding at a time, cleared when the event arrives and set again
+    /// when a frame is drawn or when the loop is about to wait with nothing
+    /// pending. A frame dropped as redundant (see
+    /// [`Self::frame_is_redundant`]) deliberately does *not* re-request: the
+    /// platform's modal drag pump answers its own redraw requests as fast as
+    /// they can be posted, and re-arming there measured 55,000 loop
+    /// iterations a second — a core spent posting paints at a window that was
+    /// only being moved, and a UI thread no longer able to service anything
+    /// else. The wait hook is what picks the stream back up.
+    redraw_requested: bool,
+    /// When the last `RedrawRequested` arrived, drawn or dropped: the
+    /// watchdog in `about_to_wait` re-asks when a request has gone this long
+    /// unanswered, which is the only way a request the platform never
+    /// answers — an invalidate swallowed by a minimize, say — can cost the
+    /// app its frame stream. See [`Self::redraw_requested`].
+    last_redraw: f64,
+    /// When the last frame finished, or `0.0` before the first. The distance
+    /// between frames is the only place the time a stream spends *not* drawing
+    /// is visible, and a frame dropped as redundant ends one too.
+    frame_end: f64,
+    /// Set when the loop went to waiting, cleared by the next frame. Says
+    /// whether the gap between two frames ended in a wake-up or in a queue
+    /// pumped under the loop by a modal drag.
+    waited_since_frame: bool,
     /// The expected frame rate in Hz: the refresh rate of the monitor the
     /// window sits on, as winit reports it. `None` when vsync is off
     /// (presentation is uncapped) or the rate is unknown; see
@@ -662,6 +731,7 @@ impl<P: Process> Frost<P> {
         device: Device,
         queue: Queue,
         vsync: bool,
+        frame_latency: u32,
         window_size: Option<[u32; 2]>,
         window_size_px: Option<[u32; 2]>,
         fullscreen: bool,
@@ -842,6 +912,7 @@ impl<P: Process> Frost<P> {
             queue,
             vsync,
             surface_vsync: vsync,
+            frame_latency,
             window_size,
             window_size_px,
             fullscreen,
@@ -900,7 +971,7 @@ impl<P: Process> Frost<P> {
             arena_stride,
             sprite_binds: HashMap::new(),
             arena_staging: Vec::new(),
-            text_atlases: HashMap::new(),
+            text: text::Caches::default(),
             format: None,
             linear_surface: false,
             hdr_frames: false,
@@ -912,6 +983,20 @@ impl<P: Process> Frost<P> {
             frame_processing_ms: 0.0,
             frame_draw_calls: 0,
             frame_diagnostic_draw_calls: 0,
+            profile: FrameProfile::from_env(now_millis()),
+            wait_seen: false,
+            // Pumped, not idle: an app driven from outside the event loop —
+            // a guest's `step`, a test's — never emits `AboutToWait`, and a
+            // frame there is a frame somebody asked for.
+            os_pumped: true,
+            input_seen: false,
+            last_moved: None,
+            frame_size: PhysicalSize::new(0, 0),
+            redraw_requested: false,
+            last_redraw: now_millis(),
+            frame_end: 0.0,
+            waited_since_frame: false,
+            idle_served: false,
             expected_fps: None,
             scene,
             keys: HashSet::new(),
@@ -1017,11 +1102,139 @@ impl<P: Process> Frost<P> {
     /// it says nothing about who should be woken next, because that is not
     /// frost's business any more than choosing the cadence is.
     pub(crate) fn step(&mut self) {
+        let t_frame = now_millis();
+        let waited = std::mem::take(&mut self.waited_since_frame);
+        if let Some(profile) = self.profile.as_mut()
+            && self.frame_end > 0.0
+        {
+            profile.idle(t_frame - self.frame_end, waited);
+        }
         self.apply_pending_resize();
         self.render();
+        if let Some(profile) = self.profile.as_mut() {
+            let draws = self.frame_draw_calls;
+            profile.frame(now_millis() - t_frame, draws, now_millis());
+        }
+        self.frame_end = now_millis();
         if self.exit_requested {
             log::debug!("process requested exit; the host decides");
         }
+    }
+
+    /// One phase of the frame in progress, timed from `from` — a
+    /// `now_millis` taken immediately before the phase — to now. Records
+    /// nothing when `FROST_PROFILE` did not ask for the profile.
+    fn note_phase(&mut self, phase: Phase, from: f64) {
+        if let Some(profile) = self.profile.as_mut() {
+            profile.phase(phase, now_millis() - from);
+        }
+    }
+
+    /// Serve the application's idle hook from the frame path when the event
+    /// loop did not get there first, and say which of the two happened.
+    ///
+    /// `about_to_wait` is where a host keeps its own machinery alive — the rack
+    /// services plugin editor windows and pumps its runtime there — and on
+    /// Windows it is not emitted while a window's modal move or size loop is
+    /// running. Measured, not assumed: sixty frames of a dragged window, and
+    /// the hook called zero times across them while frames kept coming, so the
+    /// editors sat frozen for the whole drag. The frames are what the drag
+    /// produces, so the hook rides along with them. The wait hook notes that
+    /// it ran ([`Self::idle_served`]) and a frame that finds the note serves
+    /// nothing, so the hook still runs at most once per loop iteration.
+    ///
+    /// The note is also how a frame learns it came from a pump rather than a
+    /// wait, which is what [`Self::frame_is_redundant`] asks.
+    fn service(&mut self, event_loop: &ActiveEventLoop) {
+        self.os_pumped = std::mem::take(&mut self.idle_served);
+        if self.os_pumped {
+            return;
+        }
+        let t_hook = now_millis();
+        self.process.native_about_to_wait(event_loop);
+        self.note_phase(Phase::Wait, t_hook);
+    }
+
+    /// Whether the frame in progress has nothing to show that the last drawn
+    /// frame did not already show, and may be dropped.
+    ///
+    /// A window drag is a second event loop. Windows runs a modal message
+    /// pump for the length of a title-bar or border drag, and that pump keeps
+    /// posting the redraws frost re-arms: measured on the rack, a dragged
+    /// window produced frames at 43–79 a second, and the time each one spent
+    /// was not the ~3.5 ms of drawing — `acquire` alone waited 4.5–15 ms, up
+    /// to 81 ms, because a frame queued behind a chain busy presenting to a
+    /// compositor that is itself busy moving a window. The drag's own motion
+    /// is what those frames were competing with, and it was losing: the
+    /// window moved in jumps.
+    ///
+    /// A frame drawn while the pump is driving shows the same picture as the
+    /// one already on the panel — the window's content has not changed, only
+    /// where the compositor is putting it — so it is dropped, the compositor
+    /// stretches the frame it has, and **no other is asked for**. That last
+    /// part is not a refinement: the first build of this drop re-armed every
+    /// dropped frame, and measured itself into the ground. A dragged rack
+    /// window reached 55,044 dropped frames in two seconds — 27,000 loop
+    /// iterations a second, a whole core spent posting paints at a window that
+    /// was only being moved, with the rack's editors, its audio and its other
+    /// windows queueing behind those posts. The drag felt fine and the run
+    /// ended with a window that would not close.
+    ///
+    /// So the stream stops here, and the wait hook picks it up: `about_to_wait`
+    /// asks for a frame whenever it finds none outstanding (see
+    /// [`Self::redraw_requested`]). One dropped frame per pump, silence for
+    /// its length, drawing again the instant the pump lets go. Nothing of the
+    /// app runs during those milliseconds, which is exactly what they are
+    /// worth: the thread belongs to the drag.
+    ///
+    /// Anything genuinely new overrides the judgement: input the process has
+    /// not seen yet, a size the window has moved to — the chain is the old
+    /// one and a rebuild is owed — a pending resize coming due, a close
+    /// question the process is owed, and an exit, whose last frame has to be
+    /// drawn before the loop ends. Animation is the price: a meter freezes for
+    /// the length of its own window's drag, which is what the pointer's own
+    /// motion is worth. Once the pump ends the wait hook returns, and every
+    /// frame after it is drawn again — and a loop that has never been seen
+    /// waiting at all ([`Self::wait_seen`]) is never assumed to be pumping.
+    ///
+    /// The silence belongs to the window being dragged, and to that one only. A
+    /// host's plugin editors sit on this same event loop, their moves arrive
+    /// here, and the pump dragging one of them drives this app's redraws too.
+    /// Measured with two editors open and one of them dragged across the screen:
+    /// the rack was asked 117 times in 2.26 s, drew one frame and dropped 116 —
+    /// it sat still for the whole drag of a window that is not it, while the
+    /// editors went on painting at 43–63 fps off the frames it had thrown away.
+    /// A frame is therefore redundant only while *its* window is the one moving;
+    /// see [`drag_is_ours`].
+    fn frame_is_redundant(&self, window_id: WindowId) -> bool {
+        // Only this app's own window is ever judged. A request from another
+        // window — a host's plugin editor, for one — is that window's pixels,
+        // and a discarded `RedrawRequested` leaves its region validated: the
+        // window would keep showing whatever was underneath it.
+        if self.window_id != Some(window_id) {
+            return false;
+        }
+        if self.os_pumped
+            || !self.wait_seen
+            || self.input_seen
+            || self.exit_requested
+            || self.close_request
+        {
+            return false;
+        }
+        // Somebody else's drag: this window's picture is as still as ever, and
+        // the compositor is busy elsewhere, but it is not being moved.
+        if !drag_is_ours(self.last_moved, window_id, now_millis()) {
+            return false;
+        }
+        if self.resize_pending.size.is_some() {
+            return false;
+        }
+        // No window means no event loop of frost's drawing this frame: a
+        // guest's `step` is a frame somebody asked for, always.
+        self.window
+            .as_ref()
+            .is_some_and(|window| window.inner_size() == self.frame_size)
     }
 
     /// A size the host reports, taken the way a live resize has always been
@@ -1209,7 +1422,13 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 }
             }
         }
+        let t_wait = now_millis();
         self.process.native_about_to_wait(event_loop);
+        self.note_phase(Phase::Wait, t_wait);
+        // The hook ran; the frame that follows this wait owes it nothing.
+        self.wait_seen = true;
+        self.idle_served = true;
+        self.waited_since_frame = true;
         #[cfg(not(target_arch = "wasm32"))]
         if self.window_occluded && !self.process.render_when_occluded() {
             // There is no present to pace a hidden window. Keep maintenance
@@ -1217,6 +1436,21 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             let deadline =
                 hidden_wake_deadline(std::time::Instant::now(), event_loop.control_flow());
             event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(deadline));
+        }
+        // A frame dropped as redundant (see [`Self::frame_is_redundant`])
+        // asks for no other, which is the one gap in the continuous stream —
+        // and the drag's pump is quieter for it. Here the loop is waiting on
+        // its own accord, which is exactly when drawing is safe again, so
+        // this is where the outstanding request is made whole: the window
+        // resumes on its own the moment the pump lets go, rather than waiting
+        // for someone to move the mouse.
+        let unanswered = now_millis() - self.last_redraw > LOST_REDRAW_MS;
+        if (!self.redraw_requested || unanswered)
+            && (!self.window_occluded || self.process.render_when_occluded())
+            && let Some(window) = self.window.as_ref()
+        {
+            window.request_redraw();
+            self.redraw_requested = true;
         }
         // Drain the gamepad events accumulated since the last poll, so the
         // state gilrs keeps for its connected gamepads is current before
@@ -1239,12 +1473,43 @@ impl<P: Process> ApplicationHandler for Frost<P> {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
+        // A key, a button, a wheel notch or a touch is information the
+        // process has not had yet, and a frame dropped as redundant (see
+        // [`Self::frame_is_redundant`]) must not swallow it. Marked before
+        // the process is asked, because a host that handles the event itself
+        // returns below and the mark would never be made.
+        //
+        // Pointer *motion* is deliberately not on that list: Windows keeps
+        // sending moves to the window under the cursor while a title-bar drag
+        // runs, which is exactly the frame the pump keeps asking for and the
+        // one that shows nothing new. Where the loop waits normally, a
+        // hovering cursor is drawn anyway. And only this app's own window
+        // counts: a host's editor window taking a click is that window's
+        // business, served on the idle hook, not a reason to redraw this one.
+        if self.window_id == Some(window_id)
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            )
+        {
+            self.input_seen = true;
+        }
+        // Which window the platform is moving, noted before the process is
+        // asked because a host that takes the move for itself — every plugin
+        // editor does — returns below, and this app still has to know whose
+        // drag the frames arriving now belong to. See [`drag_is_ours`].
+        if matches!(event, WindowEvent::Moved(_)) {
+            self.last_moved = Some((window_id, now_millis()));
+        }
         if self
             .process
-            .native_window_event(event_loop, _window_id, &event)
+            .native_window_event(event_loop, window_id, &event)
         {
             return;
         }
@@ -1364,9 +1629,35 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Whatever was outstanding has arrived.
+                self.redraw_requested = false;
+                self.last_redraw = now_millis();
                 if self.window_occluded && !self.process.render_when_occluded() {
                     // Discard a redraw queued just before occlusion as well.
                     return;
+                }
+                // A drag of this or any other window can reach a frame without
+                // the loop ever waiting, and a host's editor windows are
+                // serviced on the wait hook: serve it here if it was skipped.
+                self.service(event_loop);
+                if self.frame_is_redundant(window_id) {
+                    // A frame the modal pump asked for with nothing new to
+                    // show: draw nothing, and ask for no other. The asking is
+                    // what makes this the whole fix — a pump answers a redraw
+                    // request as fast as it can be posted, so re-arming here
+                    // spends a core on the pump instead of on the drag.
+                    if let Some(profile) = self.profile.as_mut() {
+                        profile.skipped(now_millis());
+                    }
+                    self.frame_end = now_millis();
+                    return;
+                }
+                // From here the frame is real: the input it was measured
+                // against is spent, and the size it covers is the size the
+                // next frame is measured against.
+                self.input_seen = false;
+                if let Some(window) = self.window.as_ref() {
+                    self.frame_size = window.inner_size();
                 }
                 self.step();
                 // A process that asked to leave has its last frame drawn
@@ -1380,6 +1671,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                     // it, so request the next frame to keep animation
                     // running continuously.
                     window.request_redraw();
+                    self.redraw_requested = true;
                 }
             }
             _ => {}
@@ -1418,6 +1710,40 @@ fn hidden_wake_deadline(
         winit::event_loop::ControlFlow::WaitUntil(deadline) if deadline > now => deadline.min(next),
         _ => next,
     }
+}
+
+/// How long a redraw request may go unanswered before the wait hook asks for
+/// one again. Long enough that no honest gap in the frame stream reaches it:
+/// the longest gap by design is a window drag, and a drag's frames are
+/// dropped but still *arrive*, so this clock never runs during one. Short
+/// enough that a request the platform swallows costs a hiccup rather than a
+/// window. See [`Frost::redraw_requested`].
+const LOST_REDRAW_MS: f64 = 250.0;
+
+/// How long a window may go without reporting a move before the drag it was in
+/// is taken to be over, and its frames are judged by what it has to show again
+/// instead of being taken for the drag's own. A held title bar reports a move
+/// every step of the pointer, tens of milliseconds apart, so this is a window
+/// let go and nothing else; it is also the longest a window's picture may go
+/// without a frame for that reason. See [`drag_is_ours`].
+const DRAG_QUIET_MS: f64 = 250.0;
+
+/// Whether the drag in progress is `window_id`'s own: the last window the
+/// platform reported moving is this one, and it reported it no more than
+/// [`DRAG_QUIET_MS`] ago.
+///
+/// Windows sends a move for every step of a title-bar or border drag, so a
+/// window being held keeps refreshing the stamp, and a quarter of a second
+/// without one is a window that has been let go. Nothing unattributed counts
+/// either: no move ever, or a move of a different window, leaves the frames
+/// drawn. Being wrong in that direction costs one frame of a stream that had
+/// nothing new in it; being wrong the other way costs a window its picture,
+/// which is the difference the user came here to complain about.
+///
+/// The identifier is generic so the decision — whose move, and how recent — can
+/// be weighed on its own: `winit` hands out one dummy id and no other.
+fn drag_is_ours<Id: PartialEq>(moved: Option<(Id, f64)>, window_id: Id, now: f64) -> bool {
+    moved.is_some_and(|(moved, at)| moved == window_id && now - at <= DRAG_QUIET_MS)
 }
 
 /// How long a window's size must hold still before the engine rebuilds for
@@ -1565,16 +1891,20 @@ impl<P: Process> Frost<P> {
         // The default config picks the first supported presentation mode;
         // apply the user's vsync request explicitly.
         config.present_mode = present_mode_for(self.vsync);
+        if let Some(latency) = self.chain_latency() {
+            config.desired_maximum_frame_latency = latency;
+        }
         surface.configure(&self.device, &config);
         // There is a swap chain now, so the guard in `acquire_frame` opens.
         self.surface_unconfigured = false;
         self.surface_vsync = self.vsync;
         log::info!(
-            "surface configured at {}x{}, format {:?}, present_mode {:?}",
+            "surface configured at {}x{}, format {:?}, present_mode {:?}, latency {}",
             config.width,
             config.height,
             config.format,
-            config.present_mode
+            config.present_mode,
+            config.desired_maximum_frame_latency
         );
         // The `Auto*` modes resolve inside wgpu to the first concrete mode
         // the backend advertises, so the line above can say `AutoNoVsync`
@@ -1629,6 +1959,18 @@ impl<P: Process> Frost<P> {
         )
     }
 
+    /// The swap-chain depth to configure, or `None` to leave the surface's
+    /// own default alone.
+    ///
+    /// frost's window gets the `Config`'s depth, with `0` read as `1` —
+    /// wgpu maps the depth to `depth + 1` swap-chain images on Vulkan and
+    /// Metal, and a chain cannot present with no spare image. A guest gets
+    /// `None`: its frames join a chain the host set up, and a host that runs
+    /// Mailbox expects the two frames in flight wgpu defaults to.
+    fn chain_latency(&self) -> Option<u32> {
+        self.window.is_some().then(|| self.frame_latency.max(1))
+    }
+
     /// Reconfigures the swap chain at the window's current size: format
     /// negotiation, the presentation mode the user's vsync request maps
     /// to, the configure itself, and the pipeline rebuild a surface-format
@@ -1636,6 +1978,7 @@ impl<P: Process> Frost<P> {
     /// (see `apply_vsync_change`); returns the configuration the surface
     /// now runs with, or `None` while no surface exists.
     fn reconfigure_surface(&mut self) -> Option<SurfaceConfiguration> {
+        let t_chain = now_millis();
         let pixel_size = self.pixel_size();
         let configured = self.surface.as_ref().and_then(|surface| {
             // A surface and an adapter with no format in common is a fact
@@ -1672,11 +2015,17 @@ impl<P: Process> Frost<P> {
             // refresh, whatever the vsync flag says; a windowed app gets the
             // mode its request maps to.
             config.present_mode = present_mode_for(self.window.is_some() && self.vsync);
+            if let Some(latency) = self.chain_latency() {
+                config.desired_maximum_frame_latency = latency;
+            }
             surface.configure(&self.device, &config);
             Some(config)
         });
         let Some(config) = configured else {
             self.surface_unconfigured = true;
+            if let Some(profile) = self.profile.as_mut() {
+                profile.reconfigured(now_millis() - t_chain, "chain unavailable");
+            }
             return None;
         };
         self.surface_unconfigured = false;
@@ -1692,7 +2041,42 @@ impl<P: Process> Frost<P> {
             self.set_up_pipelines(config.format);
             self.format = Some(config.format);
         }
+        if self.profile.is_some() {
+            let took = now_millis() - t_chain;
+            let chain = self.chain_summary(&config);
+            if let Some(profile) = self.profile.as_mut() {
+                profile.reconfigured(took, chain);
+            }
+        }
         Some(config)
+    }
+
+    /// How the swap chain reads from the outside, for the profile report:
+    /// the size it was configured at, the mode asked for next to the modes
+    /// this surface actually offers, the frame latency wgpu was left with,
+    /// and the backend. A chain being rebuilt thirty times a second and a
+    /// display being waited on at thirty times a second look identical in the
+    /// phase lines; the latency and the mode are what tell them apart, and
+    /// both default to values this crate never sets.
+    fn chain_summary(&self, config: &SurfaceConfiguration) -> String {
+        let offered = self
+            .surface
+            .as_ref()
+            .map(|surface| {
+                format!(
+                    " (offers {:?})",
+                    surface.get_capabilities(&self.adapter).present_modes
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "chain {}x{} {:?}{offered}, latency {}, {:?}",
+            config.width,
+            config.height,
+            config.present_mode,
+            config.desired_maximum_frame_latency,
+            self.adapter.get_info().backend,
+        )
     }
 
     /// Take a resize from the platform without honouring it yet.
@@ -2947,6 +3331,7 @@ impl<P: Process> Frost<P> {
         if self.surface_unconfigured {
             self.reconfigure_surface();
         }
+        let t_acquire = now_millis();
         let (output, reconfigure) = self.acquire_frame();
         // A texture in hand is the surface's current output, and wgpu
         // lets the chain be neither reconfigured nor asked again while
@@ -2964,6 +3349,7 @@ impl<P: Process> Frost<P> {
         let Some(output) = output else {
             return;
         };
+        self.note_phase(Phase::Acquire, t_acquire);
         log::trace!("render: acquired surface texture, submitting frame");
         // The frame's processing probe: the engine's CPU time for this
         // frame, from here (the acquire is done — it may have waited on the
@@ -3014,6 +3400,7 @@ impl<P: Process> Frost<P> {
         let typed = &self.typed;
         let mouse_buttons = &self.mouse_buttons;
         let gilrs = self.gilrs.as_ref();
+        let t_process = now_millis();
         {
             let mut ctx = Context {
                 canvas: &mut canvas,
@@ -3043,6 +3430,8 @@ impl<P: Process> Frost<P> {
             };
             process.process(&mut ctx, dt);
         }
+        self.note_phase(Phase::Process, t_process);
+        let t_visit = now_millis();
         // The wheel delta belongs to this frame only: reset the accumulator
         // so a frame that never reads it discards the delta rather than
         // leaking it into the next.
@@ -3053,16 +3442,20 @@ impl<P: Process> Frost<P> {
         // The user's process ran; now update the scene tree itself: every
         // node's `Node::process`, children before their parent.
         self.scene.visit();
+        self.note_phase(Phase::Visit, t_visit);
+        let t_list = now_millis();
         // The scene was just updated; draw it into the frame's draw list.
         canvas.draw_scene(&self.scene);
+        self.note_phase(Phase::DrawList, t_list);
+        let t_text = now_millis();
         // Expand the text into per-glyph sprite quads before the sort, so
         // each glyph keeps its node's position in the paint order.
-        canvas.expand_text(&mut self.text_atlases);
+        canvas.expand_text(&mut self.text);
         // An atlas that packed new glyphs this frame replaced its pixel
         // buffer, so the texture keyed to the old buffer is stale: drop it
         // before the sprite draws, so the fresh buffer uploads and a
         // recycled address can never serve the old texture.
-        for atlas in self.text_atlases.values_mut() {
+        for atlas in self.text.atlases.values_mut() {
             if let Some(stale) = atlas.take_stale_key() {
                 self.sprite_resources.remove(&stale);
                 // And the bind groups that bind the old texture, for the same
@@ -3076,6 +3469,8 @@ impl<P: Process> Frost<P> {
         // group, ascending z, lower z behind. The sorts are stable, so
         // draws with equal keys keep call order and the last drawn is on
         // top.
+        self.note_phase(Phase::Text, t_text);
+        let t_pack = now_millis();
         let draws = canvas.paint_order();
 
         // The frame's light field: the scene's lights packed in call order
@@ -3324,6 +3719,8 @@ impl<P: Process> Frost<P> {
             emissive_attachment,
         ];
 
+        self.note_phase(Phase::Pack, t_pack);
+        let t_encode = now_millis();
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor { label: None });
@@ -3749,6 +4146,8 @@ impl<P: Process> Frost<P> {
         // so a surface that has since resized to exactly the render size
         // finds nothing to reuse and drops the buffer for good.
         self.blit_target = target;
+        self.note_phase(Phase::Encode, t_encode);
+        let t_submit = now_millis();
         self.queue.submit([encoder.finish()]);
         // Record this frame's processing time and draw-call count before the
         // present: the frame's own `Context` already went out without them,
@@ -3757,7 +4156,10 @@ impl<P: Process> Frost<P> {
         self.frame_processing_ms = now_millis() - t0;
         self.frame_draw_calls = draw_calls;
         self.frame_diagnostic_draw_calls = diagnostic_draws;
+        self.note_phase(Phase::Submit, t_submit);
+        let t_present = now_millis();
         self.queue.present(output);
+        self.note_phase(Phase::Present, t_present);
         log::trace!("render: frame presented");
         // A `Context::set_vsync` in this frame's process moved the user's
         // vsync request; this frame presented at the old mode, so the swap
@@ -3782,6 +4184,9 @@ impl<P: Process> Frost<P> {
             // configure again. An unconfigured chain alone is not evidence
             // that the native surface was lost.
             self.surface_gone("surface not configured");
+            if let Some(profile) = self.profile.as_mut() {
+                profile.no_texture();
+            }
             return (None, false);
         }
         match surface.get_current_texture() {
@@ -3794,11 +4199,17 @@ impl<P: Process> Frost<P> {
                 // below, this one is followed by a reconfigure, so a repeat is
                 // a machine doing something and not merely waiting.
                 log::info!("suboptimal surface texture, reconfiguring");
+                if let Some(profile) = self.profile.as_mut() {
+                    profile.suboptimal();
+                }
                 self.surface_back();
                 (Some(tex), true)
             }
             failure => {
                 let (reason, recovery) = surface_failure(&failure);
+                if let Some(profile) = self.profile.as_mut() {
+                    profile.no_texture();
+                }
                 self.surface_gone(reason);
                 self.surface_needs_recreation |= recovery == SurfaceRecovery::Recreate;
                 (None, recovery == SurfaceRecovery::Reconfigure)
@@ -3972,5 +4383,28 @@ mod tests {
         pending.note(640, 480, 130.0);
         assert_eq!(pending.due(230.0), Some((640, 480)));
         assert_eq!(pending.due(300.0), None);
+    }
+
+    /// Whose drag a burst of pump frames belongs to. A rack and its plugin
+    /// editors share one event loop, and the frames a drag posts arrive for the
+    /// window being moved *and* the windows standing still beside it. Measured
+    /// with two editors open and one dragged: the rack was asked 117 times in
+    /// 2.26 s, drew one frame and dropped the rest — still for the whole drag of
+    /// somebody else's window, while that editor painted at 43–63 fps.
+    #[test]
+    fn only_the_window_being_moved_goes_quiet() {
+        const RACK: u64 = 1;
+        const EDITOR: u64 = 2;
+
+        // Our own window, moving right now: these are the drag's frames.
+        assert!(drag_is_ours(Some((RACK, 1_000.0)), RACK, 1_016.0));
+        // Still held at the far edge of what a move is trusted for.
+        assert!(drag_is_ours(Some((RACK, 1_000.0)), RACK, 1_250.0));
+        // A move past that is a window that has been let go, not a drag.
+        assert!(!drag_is_ours(Some((RACK, 1_000.0)), RACK, 1_250.1));
+        // Another window's drag leaves ours drawing.
+        assert!(!drag_is_ours(Some((EDITOR, 1_000.0)), RACK, 1_016.0));
+        // And a window that has never reported a move at all is never judged.
+        assert!(!drag_is_ours(None::<(u64, f64)>, RACK, 1_016.0));
     }
 }

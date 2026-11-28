@@ -1153,6 +1153,15 @@ impl Runtime {
     pub fn busy(&self) -> bool {
         self.action.is_some() || self.opening.is_some() || self.stopping.is_some() || self.closing
     }
+    /// Stand in for a rack whose chain came up. `Runtime::new` starts with the
+    /// action that would bring the chain up, and [`Runtime::busy`] reads that as
+    /// a chain still on its way — the one state in which the rack will not build
+    /// an editor for anything. Only a test needs to claim that without a DSP
+    /// worker to have brought the chain up.
+    #[cfg(all(test, windows))]
+    pub(crate) fn chain_is_up(&mut self) {
+        self.action = None;
+    }
     pub fn apply(&mut self, settings: Settings) -> Result<Receiver<Result<(), String>>, String> {
         if self.busy() {
             return Err("Audio configuration is already changing".into());

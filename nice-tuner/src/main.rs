@@ -1,6 +1,12 @@
 //! Standalone target for testing the tuner without a DAW.
 
 #![deny(unsafe_code)]
+// GUI subsystem: double-clicked, a console-subsystem build spends all of start-up
+// showing the console Windows allocated for it, before any window of ours exists. The
+// reason and the cost are spelled out in `nice-rack/crates/standalone/src/main.rs`.
+// From a terminal the process still inherits that console, so `--list-devices`, the
+// frequency arguments and any error still reach a screen.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use nice_tuner::settings::{self, Settings};
 use std::sync::atomic::Ordering;

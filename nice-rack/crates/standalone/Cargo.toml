@@ -13,6 +13,10 @@ path = "src/main.rs"
 nice-rack = { path = "../.." }
 nice-clap-host = { path = "../../../nice-clap-host" }
 nice-common = { path = "../../../nice-common", features = ["devices"] }
+# Named because `main` calls `frost::pin_gpu_backend` before it hands anything
+# to `nice_rack::run`: the graphics API is a property of the process, and the
+# process is this binary, not the library it embeds.
+frost = { path = "../../.." }
 
 [dev-dependencies]
 rtrb = "0.4"

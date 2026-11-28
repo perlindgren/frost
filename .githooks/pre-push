@@ -318,6 +318,20 @@ cargo test -p nice-ecomplex || fail 'cargo test -p nice-ecomplex'
 printf 'pre-push: running `cargo test -p nice-clone -p nice-dist`...\n'
 cargo test -p nice-clone -p nice-dist || fail 'cargo test -p nice-clone -p nice-dist'
 
+# The graphic equaliser, named like every plugin before it. Its suite is the
+# response and the picture, both measured rather than asserted from the code:
+# the ladder held to an octave grid, every band at its own label and at its
+# neighbours, the lowest section shown to be a hill and the top one a shelf,
+# stability at every rate the settings offer, two lanes that never borrow each
+# other's memory — and on the analyser's side a full-scale sine reading 0 dB at
+# its own bin for every window length, a column reporting the loudest bin in it,
+# the two taps kept apart, and `off` counting no transforms at all. Plus the
+# host-facing parameter list, the settings round trip, the editor's geometry, and
+# `tests/no_alloc.rs` carrying no `cfg` so it runs here on Windows too, where the
+# editor's wgpu graph also compiles. None of it opens a device or a window.
+printf 'pre-push: running `cargo test -p nice-eq`...\n'
+cargo test -p nice-eq || fail 'cargo test -p nice-eq'
+
 # The rack, its host adapter and the two crates under it, named like every
 # plugin before it. Nothing above reaches them: `cargo test` follows
 # `default-members`, which is the engine and its games, and the rack joined the

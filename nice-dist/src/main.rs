@@ -1,5 +1,11 @@
 //! Application-owned standalone host; shares its editor and BS808/BS9/SH-1 DSP with CLAP/VST3.
 #![deny(unsafe_code)]
+// GUI subsystem: double-clicked, a console-subsystem build spends all of start-up
+// showing the console Windows allocated for it, before any window of ours exists. The
+// reason and the cost are spelled out in `nice-rack/crates/standalone/src/main.rs`.
+// From a terminal the process still inherits that console, so `--list-devices` and any
+// error still reach a screen.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--list-devices") {

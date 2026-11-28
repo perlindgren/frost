@@ -4,7 +4,7 @@ Project-owned, safe adapters between nice-plug, baseview and Frost. This is shar
 application code, not a fork or vendored copy of a dependency. Third-party source
 is never modified. The approved migration pins Baseview to 0.4.2.
 
-All nine nice-* effect/instrument editors supply a small `editor::create` factory
+All ten nice-* effect/instrument editors supply a small `editor::create` factory
 and implement `WindowState` for their window preferences. This crate owns the
 nice-plug editor/handle adaptation, keyboard and mouse forwarding, renderer setup,
 resize and surface/device recovery. Baseview owns frame scheduling. A renderer
@@ -28,11 +28,11 @@ a view, and release downloads declare that minimum. Metal-layer preparation
 remains in our safe `macos-metal-view` wrapper.
 
 The optional `standalone` feature adds one Apply/rollback owner and transport pump
-for Clone, Dist, Echo, Ecomplex, Phase, Pi Face and Wah. Mono layouts fold transport
-input and duplicate the mono output; Pi Face's stereo layout preserves both
+for Clone, Dist, Echo, Ecomplex, Eq, Phase, Pi Face and Wah. Mono layouts fold transport
+input and duplicate the mono output; Pi Face's second, stereo layout preserves both
 channels. Buffer bounds and plugin-declared layouts remain explicit. Tuner's test
 tone/analysis input and NAM's model/device path retain their specialized adapters;
-all nine use the same no-MIDI processing context and successful activation always
+all ten use the same no-MIDI processing context and successful activation always
 calls `reset()` before processing starts, matching the hosted lifecycle.
 
 The `unsafe` feature only enables the existing project-owned Windows placement

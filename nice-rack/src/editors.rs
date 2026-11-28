@@ -349,12 +349,19 @@ impl Windows {
                 .with_title(&card.name)
                 .with_visible(false)
                 .with_inner_size(LogicalSize::new(640.0, 480.0));
+            let name = card.name.clone();
+            let begun = std::time::Instant::now();
+            trace_open(&format!("'{name}': building a frame to hand to the plugin"));
             let result = (|| {
                 let window = Arc::new(
                     event_loop
                         .create_window(attributes)
                         .map_err(|e| e.to_string())?,
                 );
+                trace_open(&format!(
+                    "'{name}': frame ready after {} ms",
+                    begun.elapsed().as_millis()
+                ));
                 if let Some(position) = saved.and_then(|g| g.position) {
                     // Discard positions stranded on a disconnected display.
                     if window.available_monitors().any(|m| {
@@ -379,9 +386,17 @@ impl Windows {
                     .as_mut()
                     .ok_or("Plugin instances are unavailable")?
                     .open_editor(id, window.clone(), size, window.scale_factor())?;
+                trace_open(&format!(
+                    "'{name}': plugin attached its editor in {} ms, {size:?} resizable {resizable}",
+                    begun.elapsed().as_millis()
+                ));
                 window.set_resizable(resizable);
                 let _ = window.request_inner_size(api_size(&window, size));
                 window.set_visible(true);
+                trace_open(&format!(
+                    "'{name}': editor shown, {} ms all told",
+                    begun.elapsed().as_millis()
+                ));
                 Ok::<_, String>(window)
             })();
             match result {
@@ -391,6 +406,10 @@ impl Windows {
                 // A plugin that will not open an editor should not be asked
                 // every frame, so the asking ends with the failure.
                 Err(error) => {
+                    trace_open(&format!(
+                        "'{name}': refused after {} ms: {error}",
+                        begun.elapsed().as_millis()
+                    ));
                     self.forget(id);
                     runtime.message = error;
                 }
@@ -409,6 +428,7 @@ impl Windows {
         };
         match event {
             WindowEvent::CloseRequested => {
+                let begun = std::time::Instant::now();
                 self.capture(runtime);
                 if runtime.busy() || runtime.session.is_none() {
                     self.dismissed.push(node);
@@ -418,6 +438,11 @@ impl Windows {
                 self.close_window(node);
                 self.forget(node);
                 runtime.persist_document();
+                trace_open(&format!(
+                    "editor {} closed in {} ms",
+                    node.0,
+                    begun.elapsed().as_millis()
+                ));
             }
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 let size = api_dimensions(window, *size);
@@ -579,6 +604,23 @@ fn api_dimensions(window: &Window, size: PhysicalSize<u32>) -> [u32; 2] {
         [size.width, size.height]
     }
 }
+/// Whether editor opens are narrated to stderr. See [`trace_open`].
+static TRACING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Narrate the building of one editor window, to stderr.
+///
+/// A plugin builds its GUI inside this call, on this thread, and a plugin that
+/// stops there stops the rack with it: no window paints, no button answers, and
+/// nothing on disk says what was asked for last. Timing each step tells the
+/// three different things an operator then sees apart — a plugin that never came
+/// back, a plugin that took seconds, and a rack that was fine at the moment it
+/// looked frozen. stderr is unbuffered, so the last line survives a process that
+/// has to be killed. Set `NICE_EDITOR_TRACE` to get these.
+fn trace_open(text: &str) {
+    if *TRACING.get_or_init(|| std::env::var_os("NICE_EDITOR_TRACE").is_some()) {
+        eprintln!("[editor] {text}");
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -704,6 +746,451 @@ mod tests {
         service.close(NodeId(2));
         service.quit();
         assert!(result.is_ok(), "the plugin refused the X11 frame");
+    }
+
+    /// The same question the test above asks on X11, asked here on Windows,
+    /// where the frame comes out of this loop: an operator opened an editor and
+    /// the whole rack went quiet — no window painted, no button answered — and
+    /// nothing on disk said what had been asked for last.
+    ///
+    /// It walks the road the rack walks: a hidden frame from `create_window`,
+    /// the same `open_editor`, then `Windows::service` and the session's own
+    /// servicing out of `about_to_wait`, which is where the rack builds the
+    /// frame at all. What is left out is frost's frame loop, so a thread that
+    /// stops in here has stopped in the plugin: nothing between this and the
+    /// plugin is the engine's.
+    ///
+    /// `NICE_RACK_TEST_CLAP` names the `.clap` to load. Every pass is announced
+    /// on stderr before it starts, so a run that never comes back names the pass
+    /// it stopped on, and a stop inside `service` is a stop inside `open_editor`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires NICE_RACK_TEST_CLAP and a desktop to open a window on"]
+    #[allow(unsafe_code)]
+    fn a_real_plugin_editor_does_not_wedge_the_window_thread() {
+        use crate::runtime::{Card, Route, chain};
+        use std::{
+            collections::BTreeMap,
+            path::PathBuf,
+            time::{Duration, Instant},
+        };
+        use winit::application::ApplicationHandler;
+        use winit::event_loop::{ActiveEventLoop, ControlFlow};
+        use winit::platform::pump_events::EventLoopExtPumpEvents;
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+
+        let path = PathBuf::from(
+            std::env::var_os("NICE_RACK_TEST_CLAP")
+                .expect("Set NICE_RACK_TEST_CLAP to the .clap to open an editor for"),
+        );
+        // SAFETY: explicit test opt-in to a plugin this machine named.
+        let entry = unsafe { nice_clap_host::Entry::load(&path) }.unwrap();
+        let class = entry
+            .descriptors()
+            .unwrap()
+            .first()
+            .expect("the plugin named by NICE_RACK_TEST_CLAP has no entry")
+            .id
+            .clone();
+        let card = Card::new(NodeId(2), path, entry, class, "Probe plugin".into()).unwrap();
+        let route = Route {
+            input: crate::routing::Channels::Stereo,
+            input_rate: None,
+            output: crate::routing::Channels::Stereo,
+            output_rate: None,
+        };
+        let cards = vec![card];
+        let (graph, bindings) = chain(&cards, route).unwrap();
+        let (session, _audio) = nice_clap_host::LiveSession::prepare(
+            &graph,
+            &bindings,
+            48000.0,
+            1024,
+            &BTreeMap::new(),
+        )
+        .expect("the probe chain builds");
+
+        struct Probe {
+            windows: Windows,
+            runtime: Runtime,
+            passes: u32,
+        }
+        impl ApplicationHandler for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                event_loop.set_control_flow(ControlFlow::Poll);
+            }
+            fn window_event(
+                &mut self,
+                _event_loop: &ActiveEventLoop,
+                window_id: winit::window::WindowId,
+                event: winit::event::WindowEvent,
+            ) {
+                self.windows.event(window_id, &event, &mut self.runtime);
+            }
+            fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+                self.passes += 1;
+                if self.passes < 4 || self.passes.is_multiple_of(2000) {
+                    eprintln!(
+                        "[probe] pass {}: busy {} cards {} pending {:?} wanted {:?} windows {}",
+                        self.passes,
+                        self.runtime.busy(),
+                        self.runtime.cards.len(),
+                        self.windows.pending,
+                        self.windows.wanted,
+                        self.windows.windows.len(),
+                    );
+                }
+                self.windows.service(event_loop, &mut self.runtime);
+                if let Some(session) = &mut self.runtime.session {
+                    // The editor's own servicing, which is the part of
+                    // `Runtime::tick` an open editor leans on. The rest of the
+                    // tick builds chains and opens devices, which is neither on
+                    // trial here nor something to do to this machine from a test.
+                    let _ = session.service();
+                }
+            }
+        }
+
+        let mut runtime = Runtime::new(crate::Settings::default());
+        runtime.cards = cards;
+        runtime.session = Some(session);
+        // The chain this probe stands in for is already up: `Runtime::new` starts
+        // with the action that would put it there, and `busy()` reads that as a
+        // chain still on its way — which is the one state in which the rack will
+        // not build an editor for anything.
+        runtime.chain_is_up();
+        let mut windows = Windows::default();
+        // The editor button's own call: the queue is what the pass below works off.
+        windows.open(NodeId(2));
+        let mut probe = Probe {
+            windows,
+            runtime,
+            passes: 0,
+        };
+
+        // The harness runs this on a worker thread, and winit warns — loudly, by
+        // panicking — about an event loop off the main thread. The hazard it
+        // warns of is Cocoa's, and Windows takes it quietly; what is being
+        // witnessed here is the plugin, not the loop's apartment.
+        let mut event_loop = winit::event_loop::EventLoop::builder()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let begun = Instant::now();
+        while begun.elapsed() < Duration::from_secs(6) {
+            event_loop.pump_app_events(Some(Duration::from_millis(20)), &mut probe);
+        }
+        eprintln!("[probe] open survived: {} passes", probe.passes);
+        assert!(
+            probe.passes > 10,
+            "the loop ran only {} passes",
+            probe.passes
+        );
+        assert!(
+            probe.windows.windows.contains_key(&NodeId(2)),
+            "six seconds of service built no editor window"
+        );
+        assert!(
+            probe
+                .runtime
+                .session
+                .as_ref()
+                .is_some_and(|session| session.has_editor(NodeId(2))),
+            "the window stands over an instance with no editor"
+        );
+
+        // Closing is the other half of the walk: the editor's windows come down
+        // between the plugin's `hide` and its `destroy`, and a frame still in
+        // flight at that moment is a plugin drawing into a handle that is gone.
+        if let Some(session) = &mut probe.runtime.session {
+            session.close_editor(NodeId(2));
+        }
+        eprintln!("[probe] editor closed");
+        let closed = Instant::now();
+        while closed.elapsed() < Duration::from_secs(1) {
+            event_loop.pump_app_events(Some(Duration::from_millis(20)), &mut probe);
+        }
+        eprintln!("[probe] closed survived: {} passes", probe.passes);
+    }
+
+    /// One editor open is not the workload, and measuring it as if it were is
+    /// how the lag survived this long.
+    ///
+    /// Every editor's frames are clocked by a message posted every 15 ms (see
+    /// `start_editor_frame_pump`), posted messages never coalesce, and every one
+    /// of them is answered on the thread that also moves the windows — so N
+    /// editors is N × 66 frames a second for one thread. What one pass of that
+    /// thread's loop costs is therefore exactly how long a window drag, a click,
+    /// or a knob is allowed to stall: the thread cannot answer a message in the
+    /// middle of a pass.
+    ///
+    /// Measured on this machine with four of our own plugins open, one pass cost
+    /// 1.9 s. The cause was not the number of frames: it was that the host draws
+    /// its window on one graphics API and the plugin editors pick another per
+    /// window, so every frame of every window is a device-context switch inside
+    /// one thread. Pinning the whole process to one API took the same pass from
+    /// 261 ms to 0.1 ms with two editors.
+    ///
+    /// Opens an editor for every plugin named in `NICE_RACK_TEST_CLAPS`
+    /// (`;`-separated), pumps six seconds to let them all come up, then measures
+    /// three seconds of steady state. Every steady pass must fit in
+    /// [`PASS_BUDGET_MS`]; the opening pass is reported, not asserted, because
+    /// building a GPU device is allowed to be slow once.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires NICE_RACK_TEST_CLAPS and a desktop to open windows on"]
+    #[allow(unsafe_code)]
+    fn many_plugin_editors_do_not_drown_the_window_thread() {
+        const PASS_BUDGET_MS: f64 = 33.0;
+
+        // The line the rack's own `main` writes before anything else runs, so
+        // that what this measures is the policy the product actually runs under
+        // rather than an accident of which window was created first.
+        frost::pin_gpu_backend();
+
+        use crate::runtime::{Card, Route, chain};
+        use std::{
+            collections::BTreeMap,
+            path::PathBuf,
+            time::{Duration, Instant},
+        };
+        use winit::application::ApplicationHandler;
+        use winit::event_loop::{ActiveEventLoop, ControlFlow};
+        use winit::platform::pump_events::EventLoopExtPumpEvents;
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+
+        /// The `n`th of a thousand parts of the samples, so `percentile(.., 0.95)`
+        /// is the pass ninety-five percent of passes beat.
+        fn percentile(samples: &mut [f64], part: f64) -> f64 {
+            if samples.is_empty() {
+                return 0.0;
+            }
+            samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let index = ((samples.len() - 1) as f64 * part).round() as usize;
+            samples[index]
+        }
+
+        let paths: Vec<PathBuf> = std::env::var_os("NICE_RACK_TEST_CLAPS")
+            .expect("Set NICE_RACK_TEST_CLAPS to `;`-separated .clap paths")
+            .to_string_lossy()
+            .split(';')
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        assert!(!paths.is_empty(), "NICE_RACK_TEST_CLAPS named no plugin");
+
+        let mut cards = Vec::new();
+        let mut ids = Vec::new();
+        for (nth, path) in paths.iter().enumerate() {
+            let id = NodeId(nth as u64 + 2);
+            // SAFETY: explicit test opt-in to the plugins this machine named.
+            let entry = unsafe { nice_clap_host::Entry::load(path) }.unwrap();
+            let class = entry
+                .descriptors()
+                .unwrap()
+                .first()
+                .unwrap_or_else(|| panic!("{} has no entry", path.display()))
+                .id
+                .clone();
+            cards.push(Card::new(id, path.clone(), entry, class, format!("Probe {nth}")).unwrap());
+            ids.push(id);
+        }
+        let route = Route {
+            input: crate::routing::Channels::Stereo,
+            input_rate: None,
+            output: crate::routing::Channels::Stereo,
+            output_rate: None,
+        };
+        let (graph, bindings) = match chain(&cards, route) {
+            Ok(built) => built,
+            Err(error) => {
+                panic!(
+                    "the probe chain of {} plugins does not build: {error:?}",
+                    paths.len()
+                )
+            }
+        };
+        let (session, _audio) = nice_clap_host::LiveSession::prepare(
+            &graph,
+            &bindings,
+            48000.0,
+            1024,
+            &BTreeMap::new(),
+        )
+        .expect("the probe chain builds");
+
+        struct Probe {
+            windows: Windows,
+            runtime: Runtime,
+            /// Wall time between one `about_to_wait` and the next: how long the
+            /// thread was busy with something else before it could look at a new
+            /// message again. A plugin's frames are answered inside the pump, in
+            /// baseview's window proc, woken by the tick the pump thread posts —
+            /// so that cost shows up here and nowhere in the splits below, and
+            /// this is the span a window drag is actually waiting on.
+            gaps: Vec<f64>,
+            /// The part of that span this thread spent on purpose: building and
+            /// ticking editor windows, and serving the CLAP main thread. What is
+            /// left over is message handling and presents.
+            host: Vec<f64>,
+            clap: Vec<f64>,
+            /// The work of one `about_to_wait`, `host` and `clap` added.
+            passes: Vec<f64>,
+            /// Running maxima rather than recomputed folds: a probe that folds
+            /// its own samples on every pass is quadratic in the pass count, and
+            /// a thread doing fifteen thousand passes a second turns that into a
+            /// run that looks hung.
+            worst_gap: f64,
+            worst: f64,
+            last: Option<Instant>,
+        }
+        impl Probe {
+            fn record(&mut self, total: f64, host: f64, clap: f64) {
+                self.passes.push(total);
+                self.host.push(host);
+                self.clap.push(clap);
+                self.worst = self.worst.max(total);
+            }
+            /// The worst pass of what has been measured since the last reset.
+            fn worst(&self) -> f64 {
+                self.worst
+            }
+            fn reset(&mut self) {
+                self.gaps.clear();
+                self.host.clear();
+                self.clap.clear();
+                self.passes.clear();
+                self.worst_gap = 0.0;
+                self.worst = 0.0;
+                self.last = None;
+            }
+        }
+        impl ApplicationHandler for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                event_loop.set_control_flow(ControlFlow::Poll);
+            }
+            fn window_event(
+                &mut self,
+                _event_loop: &ActiveEventLoop,
+                window_id: winit::window::WindowId,
+                event: winit::event::WindowEvent,
+            ) {
+                self.windows.event(window_id, &event, &mut self.runtime);
+            }
+            fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+                let now = Instant::now();
+                if let Some(previous) = self.last {
+                    let gap = (now - previous).as_secs_f64() * 1000.0;
+                    self.gaps.push(gap);
+                    self.worst_gap = self.worst_gap.max(gap);
+                }
+                self.last = Some(now);
+                let begun = Instant::now();
+                self.windows.service(event_loop, &mut self.runtime);
+                let host = begun.elapsed().as_secs_f64() * 1000.0;
+                let begun = Instant::now();
+                if let Some(session) = &mut self.runtime.session {
+                    let _ = session.service();
+                }
+                let clap = begun.elapsed().as_secs_f64() * 1000.0;
+                self.record(host + clap, host, clap);
+            }
+        }
+
+        let mut runtime = Runtime::new(crate::Settings::default());
+        runtime.cards = cards;
+        runtime.session = Some(session);
+        runtime.chain_is_up();
+        let mut windows = Windows::default();
+        for &id in &ids {
+            windows.open(id);
+        }
+        let mut probe = Probe {
+            windows,
+            runtime,
+            gaps: Vec::new(),
+            host: Vec::new(),
+            clap: Vec::new(),
+            passes: Vec::new(),
+            worst_gap: 0.0,
+            worst: 0.0,
+            last: None,
+        };
+
+        let mut event_loop = winit::event_loop::EventLoop::builder()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let begun = Instant::now();
+        while begun.elapsed() < Duration::from_secs(6) {
+            event_loop.pump_app_events(Some(Duration::from_millis(5)), &mut probe);
+        }
+        eprintln!(
+            "[probe] {} editors standing after 6 s: worst gap {:.1} ms, worst work {:.1} ms",
+            probe.windows.windows.len(),
+            probe.worst_gap,
+            probe.worst(),
+        );
+
+        // Steady state: every editor is up, nothing is being built. This is the
+        // part of the run an operator is living in while they drag a window.
+        probe.reset();
+        let begun = Instant::now();
+        let mut second = 1;
+        let mut seen = 0;
+        // Stop at the gap that is the runaway signature — a queue of frame
+        // requests growing faster than the loop can drain it, which is a gap of
+        // seconds, not milliseconds — and never run longer than twenty seconds.
+        // Bailing at the first pass over budget instead measures forty
+        // milliseconds of a three second run and reports it as steady, which is
+        // how a late frame and a wedged thread read the same.
+        const RUNAWAY_MS: f64 = 2_000.0;
+        while begun.elapsed() < Duration::from_secs(3) {
+            event_loop.pump_app_events(Some(Duration::from_millis(5)), &mut probe);
+            if probe.worst_gap >= RUNAWAY_MS || begun.elapsed() > Duration::from_secs(20) {
+                break;
+            }
+            if begun.elapsed().as_secs() >= second {
+                eprintln!(
+                    "[probe] steady second {second}: {} loop iterations, worst gap {:.1} ms",
+                    probe.gaps.len() - seen,
+                    probe.worst_gap,
+                );
+                seen = probe.gaps.len();
+                second += 1;
+            }
+        }
+        let seconds = begun.elapsed().as_secs_f64();
+        let editors = probe.windows.windows.len();
+        let samples = probe.gaps.len();
+        let rate = samples as f64 / seconds;
+        let (mut gaps, mut host, mut clap) = (probe.gaps, probe.host, probe.clap);
+        let p50 = percentile(&mut gaps, 0.50);
+        let p95 = percentile(&mut gaps, 0.95);
+        let max = percentile(&mut gaps, 1.0);
+        eprintln!(
+            "[probe] {editors} editors steady: {samples} loop iterations in {seconds:.1} s \
+             ({rate:.0}/s), gap p50 {p50:.2} p95 {p95:.2} max {max:.2} ms; work at p95 \
+             {:.2} ms in the editors, {:.2} ms in the CLAP main thread",
+            percentile(&mut host, 0.95),
+            percentile(&mut clap, 0.95),
+        );
+
+        assert_eq!(
+            editors,
+            ids.len(),
+            "only {editors} of {} editors were standing after six seconds of service",
+            ids.len()
+        );
+        assert!(
+            p95 < PASS_BUDGET_MS,
+            "{editors} editors open: ninety-five percent of loop iterations took over \
+             {p95:.1} ms and the worst took {max:.1} ms, against a {PASS_BUDGET_MS} ms budget. \
+             Between one iteration and the next this thread cannot answer a message, so that \
+             gap is the drag, the click and the knob. {samples} iterations were measured at \
+             {rate:.0} a second, so it is not one unlucky frame.",
+        );
     }
 
     /// Quitting is the one interruption after which nothing is asked for again:

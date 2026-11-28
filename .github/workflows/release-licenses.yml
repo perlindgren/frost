@@ -48,6 +48,6 @@ jobs:
             cargo xtask release-notices \
               -p nice-tuner -p nice-nam -p nice-dist -p nice-phase \
               -p nice-clone -p nice-echo -p nice-ecomplex -p nice-wah \
-              -p nice-pi-face -p nice-rack-standalone \
+              -p nice-pi-face -p nice-eq -p nice-rack-standalone \
               --all-features --target "$target" --locked
           done

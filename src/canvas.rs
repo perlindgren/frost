@@ -9,7 +9,6 @@ use crate::collision::Convex;
 use crate::objects::*;
 use crate::particles::*;
 use crate::text;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// What a declared occluder's shape is, in its own space.
@@ -400,8 +399,12 @@ impl Canvas {
     /// so measure and paint agree. Enough to run mixed-colour pieces
     /// end to end, or right-align without guessing. Zero for a font
     /// that cannot be shaped.
+    ///
+    /// The shaping is the memoized one (`text::shaped`): a UI that measures
+    /// a label to place it and then draws that same label pays for the
+    /// shaping once, not once for the ruler and once for the pixels.
     pub fn text_width(&self, font: &Arc<[u8]>, text: &str, size: f32, weight: f32) -> f32 {
-        crate::text::layout(font, text, size, weight).map_or(0.0, |l| l.width)
+        text::shaped(font, text, size, weight).map_or(0.0, |l| l.width)
     }
 
     #[allow(clippy::too_many_arguments)] // immediate-mode draw call
@@ -640,22 +643,22 @@ impl Canvas {
     /// in the group their text node belongs to, so a layer's text is sorted
     /// within that layer.
     ///
-    /// The glyphs are laid out with `text::layout` (pen positions, y up,
-    /// from the text's left baseline origin) and rasterized with
-    /// `text::rasterize` into the per-`(font, size, weight)` atlas in
-    /// `atlases`,
-    /// which the caller keeps between frames so unchanged text never
-    /// re-rasterizes and its texture buffer keeps a stable identity.
-    /// Each glyph's quad is centered on its ink box; the whole text block
-    /// is centered on the text node's origin.
-    pub(crate) fn expand_text(&mut self, atlases: &mut HashMap<(u64, u32, u32), text::Atlas>) {
+    /// The glyphs are laid out with [`text::shaped`] (pen positions,
+    /// y up, from the text's left baseline origin) and rasterized with
+    /// [`text::rasterize`] into the per-`(font, size, weight)` atlas in
+    /// `caches`. The shaping memo is the thread's and the atlases are the
+    /// window's, so unchanged text never re-shapes and never re-rasterizes,
+    /// and a glyph's texture buffer keeps a stable identity. Each glyph's
+    /// quad is centered on its ink box; the whole text block is centered on
+    /// the text node's origin.
+    pub(crate) fn expand_text(&mut self, caches: &mut text::Caches) {
         let pixel = self.user_to_pixel();
         let scale = self.scale;
         let draws = std::mem::take(&mut self.draws);
-        self.draws = expand_text_list(pixel, draws, atlases, scale);
+        self.draws = expand_text_list(pixel, draws, caches, scale);
         for list in &mut self.layer_draws {
             let draws = std::mem::take(list);
-            *list = expand_text_list(pixel, draws, atlases, scale);
+            *list = expand_text_list(pixel, draws, caches, scale);
         }
     }
 
@@ -1337,7 +1340,7 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
             weight,
             ..
         } => {
-            let layout = text::layout(font, text, *size, *weight)?;
+            let layout = text::shaped(font, text, *size, *weight)?;
             let (min, max) = text_ink_bounds(&layout, |id| {
                 let r = text::rasterize(font, id, *size, *weight)?;
                 Some([r.left as f32, r.top as f32, r.width as f32, r.height as f32])
@@ -1469,9 +1472,10 @@ pub(crate) fn text_ink_bounds(
 /// shaped glyph, spliced in at the text draw's position so the stable
 /// z-sort keeps the glyph quads where the text node was.
 ///
-/// The glyphs are laid out with `text::layout` (pen positions, y up, from
-/// the text's left baseline origin) and rasterized with `text::rasterize`
-/// into the per-`(font, raster size, weight)` atlas in `atlases`, which the caller keeps
+/// The glyphs are laid out with [`text::Caches::layout`] (pen positions, y up,
+/// from the text's left baseline origin) and rasterized with `text::rasterize`
+/// into the per-`(font, raster size, weight)` atlas in `caches`, which the
+/// caller keeps
 /// between frames so unchanged text never re-rasterizes and its texture
 /// buffer keeps a stable identity. Each glyph's quad is centered on its ink
 /// box; the whole text block is centered on the text node's origin.
@@ -1488,7 +1492,7 @@ pub(crate) fn text_ink_bounds(
 fn expand_text_list(
     user_to_pixel: Transform,
     draws: Vec<Draw>,
-    atlases: &mut HashMap<(u64, u32, u32), text::Atlas>,
+    caches: &mut text::Caches,
     scale: f32,
 ) -> Vec<Draw> {
     // The reciprocal of the display's scale factor: metrics shaped at the
@@ -1520,15 +1524,11 @@ fn expand_text_list(
                 // A broken font leaves the text undrawn; `Shape::text`
                 // validates the font up front, so this only guards a buffer
                 // that turned out unreadable.
-                let Some(layout) = text::layout(&font, &string, raster, weight) else {
+                let Some(layout) = text::shaped(&font, &string, raster, weight) else {
                     continue;
                 };
-                let key = (
-                    Arc::as_ptr(&font) as *const () as u64,
-                    raster.to_bits(),
-                    weight.to_bits(),
-                );
-                // Pack the missing glyphs into the map's own atlas, not a
+                let key = text::triple(&font, raster, weight);
+                // Pack the missing glyphs into the caches' own atlas, not a
                 // clone: a clone's new cells would be dropped, because the
                 // key is already registered by the time the first new glyph
                 // appears (an earlier draw or frame), and the glyphs would
@@ -1537,7 +1537,8 @@ fn expand_text_list(
                 // every glyph skipped at the default side — and the entry
                 // stays in the map even when nothing is packed (e.g.
                 // all-space text) so later frames hit it.
-                let atlas = atlases
+                let atlas = caches
+                    .atlases
                     .entry(key)
                     .or_insert_with(|| text::Atlas::sized(atlas_side(raster)));
                 // Rasterize the glyphs the atlas does not have yet.
@@ -1567,10 +1568,19 @@ fn expand_text_list(
                 }) else {
                     continue; // Empty strings and spaces have no visible bounds.
                 };
+                // The capital-H center is the same for every string in this
+                // font at this size, and measuring it costs a whole glyph
+                // rasterization, so it is remembered per font rather than
+                // paid once per text draw.
+                let cap = *caches
+                    .shared
+                    .entry(key)
+                    .or_insert_with(|| text_cap_center(&font, raster, weight));
                 let origin = [
                     -(min[0] + max[0]) * inv_scale / 2.0,
-                    -text_cap_center(&font, raster, weight).unwrap_or((min[1] + max[1]) / 2.0)
-                        * inv_scale,
+                    // A font without capitals (an icon font) has no shared
+                    // reference; center the ink the bounds just measured.
+                    -cap.unwrap_or((min[1] + max[1]) / 2.0) * inv_scale,
                 ];
                 let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);
                 for glyph in &layout.glyphs {
@@ -1668,7 +1678,7 @@ mod tests {
                     .unwrap();
                     expected[1] -=
                         (lo[1] + hi[1]) / 2.0 - text_cap_center(&font, raster, 650.0).unwrap();
-                    canvas.expand_text(&mut HashMap::new());
+                    canvas.expand_text(&mut text::Caches::default());
                     let mut min = [f32::INFINITY; 2];
                     let mut max = [f32::NEG_INFINITY; 2];
                     for draw in &canvas.draws {
@@ -1706,7 +1716,7 @@ mod tests {
         for label in ["", "   "] {
             let mut canvas = Canvas::new((640, 400), 2.0);
             canvas.text(0.0, 0.0, &font, label, 19.8, 650.0, WHITE, 0.0);
-            canvas.expand_text(&mut HashMap::new());
+            canvas.expand_text(&mut text::Caches::default());
             assert!(canvas.draws.is_empty());
         }
     }

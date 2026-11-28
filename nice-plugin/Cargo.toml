@@ -24,6 +24,7 @@ keyboard-types = "0.8.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
+macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }
 
 [target.'cfg(windows)'.dependencies]
 window-position = { path = "../nice-tuner/crates/window-position", optional = true }

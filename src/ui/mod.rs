@@ -217,9 +217,6 @@ pub struct Ui {
     layout: Vec<Layout>,
     /// The next draw's `z`, counting up from `style.base_z`.
     z: f32,
-    /// Measured text widths, keyed by the string and the bits of the size
-    /// and weight.
-    text_w: HashMap<(String, u32, u32), f32>,
 }
 
 impl Ui {
@@ -261,7 +258,6 @@ impl Ui {
             align: Align::Center,
             layout: Vec::new(),
             z: 0.0,
-            text_w: HashMap::new(),
         })
     }
 
@@ -509,18 +505,12 @@ impl Ui {
     }
 
     /// The advance width of `s` at the given size and the style's label
-    /// weight, measured once per (string, size, weight) and remembered.
-    fn text_width(&mut self, s: &str, size: f32) -> f32 {
+    /// weight — the shaping the draw will do, taken from the thread's shaping
+    /// memo, so a label measured to place it and drawn a moment later is
+    /// shaped once.
+    fn text_width(&self, s: &str, size: f32) -> f32 {
         let weight = self.style.font_weight;
-        let key = (s.to_owned(), size.to_bits(), weight.to_bits());
-        if let Some(w) = self.text_w.get(&key) {
-            return *w;
-        }
-        let w = crate::text::layout(&self.font, s, size, weight)
-            .map(|l| l.width)
-            .unwrap_or(0.0);
-        self.text_w.insert(key, w);
-        w
+        crate::text::shaped(&self.font, s, size, weight).map_or(0.0, |l| l.width)
     }
 
     /// The widget id: the label hashed into the current panel's scope.

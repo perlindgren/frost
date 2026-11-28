@@ -23,6 +23,7 @@ we link to drawings/manuals rather than package their images or scans.
 | Nice Pi Face | Mu-Tron Bi-Phase manual and service-document notes | unchanged |
 | Nice Phase | MXR Phase 90/45 family and Phase 95 switching descriptions | unchanged |
 | Nice Wah | General wah/filter methods and documented voice approximations | unchanged |
+| Nice Eq | BOSS GE-7 graphic equaliser (1987): control layout, band ladder and range | unchanged |
 | Nice Brain Lag Tube | Original single-head tape-delay approximation; hardware attribution withdrawn | unchanged |
 
 Display names, Rust model identifiers and descriptions changed; DSP equations,
@@ -119,6 +120,40 @@ The `nice-wah/TODO.md` implementation ledger already cites:
 - Will Pirkle, *Designing Audio Effect Plugins*, second edition (2019):
   the envelope-follower reference already recorded in the notes. This is a
   bibliographic reference, not a claim that the book is freely redistributable.
+
+## Nice Eq (nice-eq)
+
+Nice Eq is an independent graphic equaliser inspired by the control layout of the
+1987 **BOSS GE-7**: seven octave-spaced bands from 100 Hz to 6.4 kHz, ±15 dB
+each, a ±15 dB output trim, vertical faders with the lowest at the left. The
+mode is named `G7` for that machine; the displayed name, the crate name, the
+CLAP ID and the VST3 class ID are ours.
+
+The DSP is not a circuit translation. Its sections are Robert Bristow-Johnson's
+peaking and shelving biquads at the ladder's nominal frequencies, with chosen
+Q values; the GE-7's transistor-buffered op-amp network, its headroom and its
++4 dBu output stage are not modelled and are not claimed. Retrieval routes for
+the reference material:
+
+- [Robert Bristow-Johnson's Audio EQ Cookbook, MusicDSP mirror](https://www.musicdsp.org/en/latest/Filters/197-rbj-audio-eq-cookbook.html):
+  the actual equations the filter coefficients come from.
+- [BOSS GE-7 service notes, hosted by Synfo](https://www.synfo.nl/servicemanuals/Boss/BOSS_GE-7_SERVICE_NOTES.pdf):
+  a public route to the reference unit, listed here the way the SD-1 and OD-1
+  service notes are listed above. It is the manufacturer's document about a
+  machine; it was not read part by part to derive these coefficients, and its
+  existence is not evidence of a measured match.
+- The band ladder itself — 100 Hz … 6.4 kHz by octaves at ±15 dB — is the
+  published specification of the unit, the same figures a retailer or manual
+  restates.
+
+A redrawn GE-7 circuit schematic was also read while choosing the ladder and the
+drag directions; it is a hobbyist's drawing by an individual, not a
+manufacturer's document, and it is not redistributed here. What it said, where
+it disagrees with the published specification, and what it could not say — it
+contains no panel geometry at all — are recorded in `nice-eq/DECISIONS.md`.
+No artwork, logo, panel graphics or trade dress of any manufacturer is copied or
+reproduced; the fader row's arrangement follows the widely seen photographs of
+such units rather than any drawing.
 
 ## Brain Lag Tube (nice-ecomplex)
 

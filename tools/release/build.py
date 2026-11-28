@@ -10,7 +10,8 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGES = ('nice-tuner', 'nice-nam', 'nice-dist', 'nice-phase', 'nice-clone',
-            'nice-echo', 'nice-ecomplex', 'nice-wah', 'nice-pi-face', 'nice-rack')
+            'nice-echo', 'nice-ecomplex', 'nice-wah', 'nice-pi-face', 'nice-eq',
+            'nice-rack')
 FLAGS = {
     'aarch64-apple-darwin': '-Ctarget-cpu=apple-m1',
     'x86_64-pc-windows-msvc': '-Ctarget-cpu=x86-64-v3 -Ctarget-feature=+crt-static',
@@ -120,9 +121,9 @@ def main():
         else:
             continue
         count += 1
-    # Nine plugins in two formats, plus ten standalone executables.
-    if count != 28:
-        raise RuntimeError(f'Expected 28 native binaries, inspected {count}')
+    # Ten plugins in two formats, plus eleven standalone executables.
+    if count != 31:
+        raise RuntimeError(f'Expected 31 native binaries, inspected {count}')
     print('\n'.join(report), flush=True)
     check_windows_binaries(windows_binaries)
     archive = output / f'frost-nice-{target}.tar.gz'
