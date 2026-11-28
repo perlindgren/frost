@@ -728,29 +728,17 @@ pub struct Config {
     /// [`Context::set_vsync`]), and the [`Diagnostics`] overlay answers
     /// Alt-V with exactly that.
     pub vsync: bool,
-    /// How many frames the swap chain may hold: the frame **latency** the
-    /// display runs with.
+    /// Desired maximum number of frames queued for presentation.
     ///
-    /// A presented frame is not on the panel the instant it is drawn; it
-    /// waits behind what the chain is already showing. At `1` — the default
-    /// — a vsync'd chain has one frame on the display and one being drawn,
-    /// so the frame drawn now is the frame the next vertical blank shows.
-    /// At `2`, wgpu's own default and what frost ran with before this option
-    /// existed, a second frame may queue behind it: the picture on the panel
-    /// was rendered one blank earlier, so every click and keystroke reaches
-    /// the process a refresh later than it has to.
+    /// Defaults to `2`, preserving wgpu's usual buffering and allowing more
+    /// CPU/GPU overlap. Set `1` for a shallower queue: this can reduce input
+    /// latency, at the cost of less buffering to absorb timing variation.
+    /// The per-frame time budget is unchanged. Actual buffering and waits
+    /// depend on the graphics backend, driver, and presentation mode.
     ///
-    /// The depth is also the queue the GPU draws into. At `1` acquiring a
-    /// drawable waits for a free one, which paces a continuous redraw at the
-    /// refresh rate. At `2` it never waits, and a light scene outruns the
-    /// display: measured on a 60 Hz panel with an RTX 4090, an idle rack
-    /// drew 105–117 frames a second into a chain presenting 60, rendering
-    /// frames whose only destination was the discard bin.
-    ///
-    /// So the trade is latency against headroom: raise it when the GPU is
-    /// the slow part of the frame and a full refresh budget cannot be met
-    /// without the draw stalling on a drawable. `0` is read as `1` — a chain
-    /// with no spare image cannot present at all.
+    /// `0` is clamped to `1`. This setting applies to native windows owned by
+    /// Frost; embedded surfaces keep their host's configuration. The browser
+    /// controls presentation for WebAssembly builds.
     pub frame_latency: u32,
     /// Open the window already fullscreen.
     ///
@@ -948,12 +936,12 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// Vsync on, one frame of swap-chain latency, windowed, a resizable
+    /// Vsync on, two frames of swap-chain latency, windowed, a resizable
     /// window, bilinear upscaling, no bloom, and the platform's default size.
     fn default() -> Self {
         Self {
             vsync: true,
-            frame_latency: 1,
+            frame_latency: 2,
             fullscreen: false,
             window_size: None,
             window_size_px: None,

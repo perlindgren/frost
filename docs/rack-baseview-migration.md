@@ -29,14 +29,64 @@ unchanged; the EQ branch's declared FFT dependencies are included.
   or toolkits. `WGPU_BACKEND` supplied by the launcher is honoured explicitly.
   Arbitrary third-party plugins remain responsible for their own graphics API.
 - Ordinary Frost applications do not opt into backend pinning automatically.
-  The upstream changes to text caching, drag handling, and default swapchain
-  latency do affect them and need runtime regression checks too.
+  The upstream changes to text caching and drag handling do affect them and
+  need runtime regression checks too. Frost retains the frame-latency default
+  of 2; Nice Rack explicitly selects 1. Embedded plugin surfaces are unchanged.
 
 The measurements in [windows-editor-frames.md](windows-editor-frames.md) describe
 its earlier implementation. They are not performance measurements of this
 migration's public paint helper or explicit backend selection. Likewise,
 [macos-plugin-threading-findings.md](macos-plugin-threading-findings.md) records
 the earlier isolation experiment, not new benchmarks of this merged tree.
+
+## Presentation latency: current policy and proposed experiment
+
+`Config::frame_latency` is selectable in application code. It is a desired
+maximum number of frames queued for graphics presentation, not an audio buffer
+size or a guarantee of a particular input-to-display delay. The per-frame time
+budget does not change. Actual buffering, CPU/GPU overlap and acquisition waits
+depend on the backend, driver and present mode, including vsync.
+
+The current policy is:
+
+| Window/surface | Requested latency | Who configures it |
+| --- | --- | --- |
+| Ordinary Frost application, including games | 2 by default | Application's `frost::Config` |
+| Nice Rack's main window | 1 explicitly | Rack's `frost::Config` |
+| Each Nice plugin editor, hosted or standalone | Existing surface configuration retained | Shared `nice-plugin` renderer |
+| Third-party plugin editor | Plugin-defined | The third-party plugin |
+
+Each editor owns its own GPU surface. Setting 1 on the rack does not propagate
+to editors, even though their GUI work may run on the same main thread. The
+embedded Frost renderer leaves the supplied surface configuration in place;
+changing Frost's application default therefore does not change plugin surfaces.
+
+A request of 1 can reduce queued frames and potential input latency, but gives
+CPU/GPU work less buffering to absorb timing variations. A request of 2 retains
+the previous application default and can provide better overlap or smoother
+throughput for demanding games. Neither choice is universally faster. A shallow
+queue may cause longer waits when acquiring the next surface texture, which
+matters when several editors share a GUI thread. Disabling vsync does not
+establish that acquisition or presentation cannot block.
+
+**Deferred experiment:** compare explicit latency requests of 1 and 2 in the
+shared `nice-plugin` surface setup. No editor-latency change has been made as
+part of this discussion. The comparison should:
+
+1. Keep the rack at 1 and vary only the editor-surface setting. Rebuild and load
+   the plugin bundles for each variant; changing only the rack is insufficient.
+2. Use the same backend, display refresh, present mode, window sizes, DSP chain
+   and build mode. Record the effective surface configuration as well as the
+   requested value. Test one, two and four open editors on macOS and Windows.
+3. Compare acquisition/presentation waits, frame-time variation, CPU use and
+   input responsiveness while idle, dragging/resizing, and minimizing/restoring.
+   Rack FPS alone does not establish each editor's FPS or input latency.
+4. Run a separate Frost/game comparison at 2 versus an explicit 1 before making
+   a recommendation for games. Keep the general default at 2 in the meantime.
+
+Third-party editors cannot be assumed to honour this setting. These experiments
+concern presentation only; audio buffer configuration and DSP deadlines remain
+independent, though excessive GUI contention can still affect overall behavior.
 
 ## Build and test
 

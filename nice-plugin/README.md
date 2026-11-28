@@ -21,6 +21,11 @@ Win32 paint operations; it does not send private Baseview timer messages.
 Windows editors still render on the host UI thread; this migration does not
 introduce renderer workers or remove possible GPU-acquisition waits.
 
+Every editor configures its own GPU surface; the rack's `frame_latency: 1` does
+not propagate into plugin windows. Editor surface buffering is currently
+unchanged. The proposed latency-1 versus latency-2 comparison is recorded in
+[the migration notes](../docs/rack-baseview-migration.md#presentation-latency-current-policy-and-proposed-experiment).
+
 On macOS, Baseview now owns the view-bound display link. The former parallel
 `macos-frame-sync` callback is no longer installed by this adapter; that helper
 crate remains in the workspace for its existing examples/tests. Baseview 0.4

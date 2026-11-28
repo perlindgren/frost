@@ -2267,6 +2267,9 @@ pub fn run(
         scene,
         ui,
         frost::Config {
+            // Prefer lower presentation latency for the rack without changing
+            // the buffering default used by games and other Frost applications.
+            frame_latency: 1,
             window_size: Some(size),
             escape_exits: false,
             close_exits: false,
