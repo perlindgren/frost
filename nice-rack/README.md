@@ -10,6 +10,12 @@ vertically. VST3 hosting remains a future step.
 cargo run -p nice-rack-standalone --release
 ```
 
+This branch continues the in-process baseline. The macOS threading measurements
+and isolation limitations are recorded in
+[macOS plugin threading findings](../docs/macos-plugin-threading-findings.md).
+The experimental implementation and benchmarks are preserved separately on
+`codex/rack-process-isolation`; they are not part of this baseline.
+
 The small `crates/window-input` wrapper reads the macOS and Windows cursor during
 OS file drags, which winit 0.30 does not include in its drop events. Its native
 access is documented in its SAFETY.md.
